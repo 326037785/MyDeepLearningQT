@@ -1,0 +1,34 @@
+<RCC>
+  <qresource prefix="/studio/icons">
+    <file alias="previous.svg">icons/previous.svg</file>
+    <file alias="next.svg">icons/next.svg</file>
+    <file alias="pan.svg">icons/pan.svg</file>
+    <file alias="move.svg">icons/move.svg</file>
+    <file alias="brush.svg">icons/brush.svg</file>
+    <file alias="eraser.svg">icons/eraser.svg</file>
+    <file alias="polygon.svg">icons/polygon.svg</file>
+    <file alias="rectangle.svg">icons/rectangle.svg</file>
+    <file alias="ellipse.svg">icons/ellipse.svg</file>
+    <file alias="threshold.svg">icons/threshold.svg</file>
+    <file alias="fill.svg">icons/fill.svg</file>
+    <file alias="pick.svg">icons/pick.svg</file>
+    <file alias="undo.svg">icons/undo.svg</file>
+    <file alias="redo.svg">icons/redo.svg</file>
+    <file alias="zoom-in.svg">icons/zoom-in.svg</file>
+    <file alias="zoom-out.svg">icons/zoom-out.svg</file>
+    <file alias="fit.svg">icons/fit.svg</file>
+    <file alias="save.svg">icons/save.svg</file>
+    <file alias="eye.svg">icons/eye.svg</file>
+    <file alias="trash.svg">icons/trash.svg</file>
+    <file alias="add.svg">icons/add.svg</file>
+    <file alias="rename.svg">icons/rename.svg</file>
+    <file alias="up.svg">icons/up.svg</file>
+    <file alias="down.svg">icons/down.svg</file>
+    <file alias="folder.svg">icons/folder.svg</file>
+    <file alias="refresh.svg">icons/refresh.svg</file>
+    <file alias="play.svg">icons/play.svg</file>
+    <file alias="stop.svg">icons/stop.svg</file>
+    <file alias="export.svg">icons/export.svg</file>
+    <file alias="lock.svg">icons/lock.svg</file>
+  </qresource>
+</RCC>
