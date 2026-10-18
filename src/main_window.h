@@ -130,8 +130,8 @@ private:
     int active_inference_node_id_ = 0;
     QString active_inference_model_id_;
     QString active_inference_weight_id_;
-    jocelin::model::WeightFormat active_inference_weight_format_ =
-        jocelin::model::WeightFormat::LibTorch;
+    jocelin::config::WeightType active_inference_weight_format_ =
+        jocelin::config::WeightType::LibTorch;
     QString active_inference_output_;
     int active_inference_image_count_ = 0;
     std::vector<QAction*> editing_actions_;

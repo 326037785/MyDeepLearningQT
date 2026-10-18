@@ -23,7 +23,10 @@ int main(int argc, char** argv) {
     for (const auto& relative : {
              "datasets/images/input.png",
              "annotations/input.png",
-             "models/checkpoint.pt"}) {
+             "models/checkpoint.pt",
+             "results/input_mask.png",
+             "results/input_color.png",
+             "results/input_meta.json"}) {
         QFile file(root.filePath(relative));
         if (!file.open(QIODevice::WriteOnly) ||
             file.write("test") < 0)
@@ -86,7 +89,7 @@ int main(int argc, char** argv) {
     model.asset_directory = root.filePath("models/train_contract").toStdString();
     jocelin::model::ModelWeight training_weight;
     training_weight.id = "libtorch_fp32";
-    training_weight.format = jocelin::model::WeightFormat::LibTorch;
+    training_weight.format = jocelin::config::WeightType::LibTorch;
     training_weight.precision = jocelin::model::WeightPrecision::Float32;
     training_weight.role = jocelin::model::WeightRole::Training;
     training_weight.path = root.filePath("models/train_contract/best.pt").toStdString();
@@ -113,6 +116,40 @@ int main(int argc, char** argv) {
     if (project.allocate_training_run_number() != 1 ||
         project.allocate_training_run_number() != 2)
         return 19;
+    jocelin::result::sg::SgResult inference;
+    inference.image_path = root.filePath("datasets/images/input.png").toStdString();
+    inference.result_name = "input";
+    inference.save_dir = root.filePath("results").toStdString();
+    inference.mask_path = root.filePath("results/input_mask.png").toStdString();
+    inference.visualization_path = root.filePath("results/input_color.png").toStdString();
+    inference.metadata_path = root.filePath("results/input_meta.json").toStdString();
+    inference.image_width = 5;
+    inference.image_height = 4;
+    inference.min_component_area = 2;
+    inference.min_component_confidence = 0.8;
+    inference.predicted_area = 2;
+    inference.mean_confidence = 0.9;
+    inference.present_labels = {1};
+    jocelin::result::sg::SgResult::Component component;
+    component.label = 1;
+    component.area = 2;
+    component.region = jocelin::geo::Region({{1,1,3,1}});
+    component.bbox = {1,1,2,3};
+    component.aspect_ratio = 2.0;
+    component.confidence = 0.9;
+    component.area_pass = component.aspect_ratio_pass = component.confidence_pass = component.interest = true;
+    inference.components.push_back(component);
+    studio::ResultReference reference;
+    reference.result_id = "result-input";
+    reference.source_sample_id = "sample-input";
+    reference.result = inference;
+    studio::InferenceResultSet result_set;
+    result_set.model_id = added_model.id;
+    result_set.weight_id = "libtorch_fp32";
+    result_set.result_directory = inference.save_dir;
+    result_set.samples.push_back(std::move(reference));
+    std::get<studio::TaskNodeConfig>(project.active_workflow().document.graph.node(task_id).config)
+        .runtime.results.push_back(std::move(result_set));
     project.save_project(temporary.path());
     if (project.is_dirty() ||
         !QFile::exists(root.filePath("project.json")) ||
@@ -170,6 +207,19 @@ int main(int argc, char** argv) {
     const auto& loaded_task =
         std::get<studio::TaskNodeConfig>(
             loaded_graph.node(2).config);
+    if (loaded_task.runtime.results.size() != 1 ||
+        loaded_task.runtime.results.front().samples.size() != 1) return 33;
+    const auto& restored_result = std::get<jocelin::result::sg::SgResult>(
+        loaded_task.runtime.results.front().samples.front().result);
+    if (QDir::cleanPath(QString::fromStdString(restored_result.image_path)) != root.filePath("datasets/images/input.png") ||
+        QDir::cleanPath(QString::fromStdString(restored_result.save_dir)) != root.filePath("results") ||
+        QDir::cleanPath(QString::fromStdString(restored_result.mask_path)) != root.filePath("results/input_mask.png") ||
+        QDir::cleanPath(QString::fromStdString(restored_result.visualization_path)) != root.filePath("results/input_color.png") ||
+        QDir::cleanPath(QString::fromStdString(restored_result.metadata_path)) != root.filePath("results/input_meta.json") ||
+        restored_result.min_component_area != 2 || restored_result.min_component_confidence != 0.8 ||
+        restored_result.components.size() != 1 || !restored_result.components.front().interest ||
+        cv::norm(restored_result.render_interest_mask(), inference.render_interest_mask(), cv::NORM_INF) != 0)
+        return 33;
     if (loaded_graph.connections().size() != 1 ||
         loaded_dataset.items.size() != 1 ||
         loaded_dataset.items.front().sample_id !=

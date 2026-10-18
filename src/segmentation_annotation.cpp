@@ -999,10 +999,7 @@ bool MaskCanvas::transform_region_contains(const QPointF& image_point) const {
     const QPointF source_point = inverse.map(image_point);
     const int x = static_cast<int>(std::floor(source_point.x()));
     const int y = static_cast<int>(std::floor(source_point.y()));
-    for (const auto& run : transform_region_->region.vRun) {
-        if (run.row == y && x >= run.start && x < run.end) return true;
-    }
-    return false;
+    return transform_region_->region.contains(y, x);
 }
 
 void MaskCanvas::begin_transform_drag(TransformHandle handle, const QPointF& point) {

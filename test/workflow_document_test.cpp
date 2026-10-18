@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <limits>
 
 int main() {
     studio::WorkflowGraph empty;
@@ -66,13 +67,19 @@ int main() {
     result_set.weight_format = "libtorch";
     result_set.result_directory = "results/model_1/libtorch";
     result_set.aggregate_metrics = {true, 0.8, 0.75, 0.77};
+    result_set.aggregate_metrics.accuracy = 0.85;
     studio::ResultReference result;
     result.result_id = "result-input";
     result.source_sample_id = "sample-input";
-    result.source_image_path = "dataset/input.png";
-    result.predicted_class = 1;
-    result.confidence = 0.91;
-    result.metadata_path = "results/model_1/libtorch/input.json";
+    jocelin::result::cls::ClsResult classification;
+    classification.image_path = "dataset/input.png";
+    classification.result_name = "input";
+    classification.predicted_class = -1;
+    classification.confidence = 0.91;
+    classification.probabilities = {0.91, 0.09};
+    classification.confidence_threshold = 0.95;
+    classification.metadata_path = "results/model_1/libtorch/input.json";
+    result.result = classification;
     result_set.samples.push_back(std::move(result));
     task.runtime.results.push_back(std::move(result_set));
 
@@ -122,8 +129,59 @@ int main() {
         decoded_task.runtime.training_model_id != "model_1" ||
         decoded_task.runtime.results.size() != 1 ||
         decoded_task.runtime.results.front().model_id != "model_1" ||
-        decoded_task.runtime.results.front().samples.size() != 1)
+        decoded_task.runtime.results.front().samples.size() != 1 ||
+        decoded_task.runtime.results.front().aggregate_metrics.accuracy != 0.85 ||
+        std::get<jocelin::result::cls::ClsResult>(decoded_task.runtime.results.front().samples.front().result).confidence_threshold != 0.95 ||
+        std::get<jocelin::result::cls::ClsResult>(decoded_task.runtime.results.front().samples.front().result).predicted_class != -1 ||
+        std::get<jocelin::result::cls::ClsResult>(decoded_task.runtime.results.front().samples.front().result).probabilities != classification.probabilities ||
+        std::get<jocelin::result::cls::ClsResult>(decoded_task.runtime.results.front().samples.front().result).interest)
         return 3;
+
+    auto& sg_task = std::get<studio::TaskNodeConfig>(graph.node(task_id).config);
+    sg_task.task = "sg";
+    sg_task.model_index = 0;
+    sg_task.model_scale = "s";
+    sg_task.runtime.results.front().aggregate_metrics = {};
+    jocelin::result::sg::SgResult segmentation;
+    segmentation.image_path = "dataset/input.png";
+    segmentation.image_width = 5;
+    segmentation.image_height = 4;
+    segmentation.min_component_area = 2;
+    segmentation.aspect_ratio_range = {0.5, std::numeric_limits<double>::max()};
+    segmentation.min_component_confidence = 0.8;
+    segmentation.metrics = {true, 0.8, 0.75, 0.77, 0.6};
+    jocelin::result::sg::SgResult::Component accepted;
+    accepted.region = jocelin::geo::Region({{1,1,3,1}});
+    accepted.label = 1;
+    accepted.area = 2;
+    accepted.bbox = {1,1,2,3};
+    accepted.aspect_ratio = 2.0;
+    accepted.confidence = 0.9;
+    accepted.area_pass = accepted.aspect_ratio_pass = accepted.confidence_pass = accepted.interest = true;
+    auto rejected = accepted;
+    rejected.region = jocelin::geo::Region({{3,0,1,1}});
+    rejected.area = 1;
+    rejected.bbox = {3,0,4,1};
+    rejected.aspect_ratio = 1.0;
+    rejected.area_pass = rejected.interest = false;
+    segmentation.components = {accepted, rejected};
+    segmentation.present_labels = {1};
+    segmentation.predicted_area = 2;
+    segmentation.mean_confidence = 0.9;
+    sg_task.runtime.results.front().samples.front().result = segmentation;
+    const auto sg_encoded = studio::serialize_workflow(graph, positions);
+    const auto sg_decoded = studio::parse_workflow(sg_encoded);
+    const auto& restored = std::get<jocelin::result::sg::SgResult>(
+        std::get<studio::TaskNodeConfig>(sg_decoded.graph.node(task_id).config)
+            .runtime.results.front().samples.front().result);
+    if (restored.components.size() != 2 || restored.components[1].interest ||
+        !restored.components[1].confidence_pass || restored.components[1].area_pass ||
+        restored.components[0].region.vRun != accepted.region.vRun ||
+        restored.max_component_area != std::numeric_limits<int64_t>::max() ||
+        restored.aspect_ratio_range.high != std::numeric_limits<double>::max() || restored.min_component_confidence != 0.8 ||
+        restored.metrics.mean_iou != 0.6 ||
+        cv::norm(restored.render_interest_mask(), segmentation.render_interest_mask(), cv::NORM_INF) != 0)
+        return 8;
 
     const auto rejects = [](const QJsonObject& value) {
         try {

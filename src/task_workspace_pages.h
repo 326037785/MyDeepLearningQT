@@ -238,6 +238,8 @@ private:
     QLabel* precision_ = nullptr;
     QLabel* recall_ = nullptr;
     QLabel* f1_ = nullptr;
+    QLabel* benchmark_label_ = nullptr;
+    QLabel* benchmark_ = nullptr;
     QLabel* state_ = nullptr;
     QLabel* sample_detail_ = nullptr;
     QStackedWidget* canvas_stack_ = nullptr;
@@ -251,8 +253,8 @@ private:
     QPushButton* open_folder_ = nullptr;
     QPushButton* export_button_ = nullptr;
     QString selected_model_id_;
-    jocelin::model::WeightFormat selected_weight_format_ =
-        jocelin::model::WeightFormat::LibTorch;
+    jocelin::config::WeightType selected_weight_format_ =
+        jocelin::config::WeightType::LibTorch;
 };
 
 } // namespace studio

@@ -275,6 +275,9 @@ int main(int argc, char** argv) {
     if (single_request.samples.samples.size() != 2 ||
         single_request.samples.samples[0].split != jocelin::meta::AiMetaData::Split::Train ||
         single_request.samples.samples[1].split != jocelin::meta::AiMetaData::Split::Validation ||
+        single_request.samples.samples[0].annotation_state != jocelin::meta::AiMetaData::AnnotationState::BackgroundOnly ||
+        single_request.samples.samples[0].image_paths.size() != 1 ||
+        !single_request.samples.samples[0].regions.empty() ||
         single_request.samples.samples[0].sample_id !=
             single_request.samples.samples[1].sample_id)
         return 21;

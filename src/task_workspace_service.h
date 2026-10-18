@@ -92,7 +92,7 @@ public:
         const jocelin::inference::InferenceReport& report,
         const std::string& model_id,
         const std::string& weight_id,
-        jocelin::model::WeightFormat weight_format,
+        jocelin::config::WeightType weight_format,
         const std::string& output_directory,
         const std::string& error);
 

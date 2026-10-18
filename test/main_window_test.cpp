@@ -1,6 +1,10 @@
 #include "main_window.h"
 #include "task_workspace_pages.h"
+#include "node_workspace.h"
+#include <torch/serialize.h>
 #include "workflow_scene.h"
+#include <common/exception/pipeline_exception.h>
+#include <iostream>
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -12,6 +16,8 @@
 #include <QDockWidget>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDialog>
+#include <QMessageBox>
 #include <QGraphicsView>
 #include <QImage>
 #include <QKeySequence>
@@ -57,7 +63,8 @@ bool capture(QWidget& widget, const char* variable) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication application(argc, argv);
     QTemporaryDir temporary;
     if (!temporary.isValid()) return 1;
@@ -430,12 +437,12 @@ int main(int argc, char** argv) {
     route_model.name = "Route model";
     route_model.task = jocelin::config::ToolType::Sg;
     const auto add_route_weight = [&](const std::string& id,
-                                      jocelin::model::WeightFormat format,
+                                      jocelin::config::WeightType format,
                                       const QString& path) {
         jocelin::model::ModelWeight weight;
         weight.id = id;
         weight.format = format;
-        weight.role = format == jocelin::model::WeightFormat::LibTorch
+        weight.role = format == jocelin::config::WeightType::LibTorch
             ? jocelin::model::WeightRole::Training
             : jocelin::model::WeightRole::Inference;
         weight.path = path.toStdString();
@@ -443,13 +450,13 @@ int main(int argc, char** argv) {
             jocelin::model::default_supported_devices(format);
         route_model.weights.push_back(std::move(weight));
     };
-    add_route_weight("libtorch_fp32", jocelin::model::WeightFormat::LibTorch,
+    add_route_weight("libtorch_fp32", jocelin::config::WeightType::LibTorch,
                      root.filePath("route.pt"));
-    add_route_weight("onnx_fp32", jocelin::model::WeightFormat::Onnx,
+    add_route_weight("onnx_fp32", jocelin::config::WeightType::Onnx,
                      root.filePath("route.onnx"));
-    add_route_weight("openvino_fp32", jocelin::model::WeightFormat::OpenVino,
+    add_route_weight("openvino_fp32", jocelin::config::WeightType::OpenVino,
                      root.filePath("route.xml"));
-    add_route_weight("tensorrt_fp16", jocelin::model::WeightFormat::TensorRt,
+    add_route_weight("tensorrt_fp16", jocelin::config::WeightType::TensorRt,
                      root.filePath("route.engine"));
     studio::TaskWorkspaceService route_service(*scene->model(), 2);
     studio::InferenceWorkspace route_workspace;
@@ -610,5 +617,106 @@ int main(int argc, char** argv) {
         classification.model_index != 1 || classification.model_scale != "s" ||
         scene->model()->connections().size() != 1)
         return 45;
+    studio::ProjectManager import_project;
+    const int import_task_id = import_project.active_workflow().document.graph.add_task_node({"cls"});
+    import_project.active_workflow().document.positions.emplace(import_task_id, QPointF(0, 0));
+    const QString import_project_root = root.filePath("import-project");
+    import_project.save_project(import_project_root);
+    studio::MainWindow import_window;
+    import_window.show();
+    QString selected_file = import_project.project_file();
+    bool specified_target = false;
+    QString import_error;
+    QTimer import_dialog_driver;
+    int dialog_ticks = 0;
+    QObject::connect(&import_dialog_driver, &QTimer::timeout, [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        if (++dialog_ticks > 500) {
+            import_error = "model import dialog timed out";
+            dialog->reject();
+            return;
+        }
+        if (auto* files = qobject_cast<QFileDialog*>(dialog)) {
+            files->selectFile(selected_file);
+            QMetaObject::invokeMethod(files, "accept", Qt::DirectConnection);
+        } else if (dialog->objectName() == "importModelSpecDialog") {
+            auto* spec = dialog->findChild<QComboBox*>("importModelSpec");
+            const int index = spec ? spec->findData(2) : -1;
+            if (index < 0) { dialog->reject(); return; }
+            spec->setCurrentIndex(index);
+            dialog->findChild<QSpinBox*>("importImageWidth")->setValue(64);
+            dialog->findChild<QSpinBox*>("importImageHeight")->setValue(64);
+            dialog->findChild<QSpinBox*>("importClassCount")->setValue(2);
+            specified_target = true;
+            dialog->accept();
+        } else if (auto* message = qobject_cast<QMessageBox*>(dialog)) {
+            import_error = message->text();
+            message->accept();
+        }
+    });
+    import_dialog_driver.start(10);
+    import_window.findChild<QAction*>("openProjectAction")->trigger();
+    import_dialog_driver.stop();
+    studio::NodeWorkspace* import_workspace = nullptr;
+    for (auto* widget : import_window.findChildren<QWidget*>())
+        if (auto* candidate = dynamic_cast<studio::NodeWorkspace*>(widget))
+            import_workspace = candidate;
+    if (!import_workspace || !import_error.isEmpty())
+        throw std::runtime_error("cannot open model-import project: " + import_error.toStdString());
+    for (const bool matching : {true, false}) {
+        const QString source = root.filePath(matching ? "external.pt" : "unmatched.pt");
+        torch::serialize::OutputArchive weights;
+        if (matching) {
+            torch::serialize::OutputArchive classifier;
+            classifier.write("bias", torch::full({2}, 4.5));
+            weights.write("classifier", classifier);
+        } else {
+            weights.write("external_only", torch::ones({1}));
+        }
+        weights.save_to(source.toStdString());
+        selected_file = source;
+        specified_target = false;
+        dialog_ticks = 0;
+        import_dialog_driver.start(10);
+        import_workspace->import_model_requested(import_task_id);
+        import_dialog_driver.stop();
+        if (!specified_target || !import_error.isEmpty())
+            throw std::runtime_error("target specification/import failed: " + import_error.toStdString());
+        studio::ProjectManager reopened;
+        reopened.open_project(import_project.project_file());
+        if (reopened.models().size() != (matching ? 1 : 2))
+            throw std::runtime_error("external import did not create an independent model row");
+        const auto& imported_model = reopened.models().back();
+        if (imported_model.task != jocelin::config::ToolType::Cls || imported_model.model_index != 2 ||
+            imported_model.model_scale != jocelin::config::ModelScale::N ||
+            imported_model.training_status != jocelin::model::ModelTrainingStatus::Imported || imported_model.classes.size() != 2 ||
+            imported_model.weights.size() != 1 || imported_model.weights.front().format != jocelin::config::WeightType::LibTorch)
+            throw std::runtime_error("imported model identity or weight branch changed: " +
+                jocelin::config::to_string(imported_model.task) + "/" + std::to_string(imported_model.model_index) +
+                "/" + jocelin::config::to_string(imported_model.model_scale) + " classes=" +
+                std::to_string(imported_model.classes.size()) + " weights=" + std::to_string(imported_model.weights.size()) +
+                " status=" + jocelin::model::to_string(imported_model.training_status));
+        const auto& weight = imported_model.weights.front();
+        const auto metadata = jocelin::checkpoint::inspect_checkpoint(weight.path);
+        if (metadata.resumable() || metadata.num_classes != 2 || metadata.model_spec() != "cls-2-n")
+            throw std::runtime_error("external import fabricated training state or lost the target");
+        QFile load_report(QDir(QString::fromStdString(imported_model.asset_directory)).filePath("libtorch_fp32-load-report.txt"));
+        if (!load_report.open(QIODevice::ReadOnly) ||
+            !load_report.readAll().startsWith(matching ? "loaded=1 " : "loaded=0 "))
+            throw std::runtime_error("external import report was not persisted");
+        if (matching) {
+            torch::serialize::InputArchive saved, classifier;
+            saved.load_from(weight.path);
+            saved.read("classifier", classifier);
+            torch::Tensor bias;
+            classifier.read("bias", bias);
+            if (!bias.eq(4.5).all().item<bool>())
+                throw std::runtime_error("Qt import did not use Core name/shape matching");
+        }
+    }
     return 0;
+} catch (...) {
+    std::cerr << jocelin::exception::message(std::current_exception()) << '\n';
+    return 100;
 }

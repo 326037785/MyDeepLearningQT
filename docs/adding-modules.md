@@ -325,19 +325,15 @@ used by the metric).
         ResultReference stored;
         stored.result_id = result_identifier(record);
         stored.source_sample_id = sample_id_for(record.image_path);
-        stored.source_image_path = record.image_path;
-        stored.confidence = record.mean_confidence;
-        stored.predicted_area = record.box_count;   // reuse the numeric slot
-        stored.visualization_path = record.visualization_path;
-        stored.metadata_path = record.metadata_path;
+        stored.result = record;
         set.samples.push_back(std::move(stored));
     }
 }
 ```
 
-If a new numeric/semantic field is needed in the persisted result, add it to
-`ResultReference` in `workflow.h` and update the three persistence places
-(Recipe B.2) plus every reader.
+Add the Core task Result type to the variant in `ResultReference`. New task
+fields belong to that Core Result; update their project JSON encoding, path
+handling and viewers without adding parallel fields to `ResultReference`.
 
 ### C.6 Annotation editor
 
@@ -377,9 +373,9 @@ Add the member and its setup/clear calls wherever `segmentation_` and
   (sample, prediction, confidence, area). For od, replace the "area" value with
   box count or mean IoU, and update the per-sample detail text in
   `refresh_sample_detail()`.
-- **Aggregate metrics** — classification shows scope-level P/R/F1, sg shows
-  per-image values. Decide which is true for od, and read it from the od
-  `ResultReference`/`InferenceResultSet`; never recompute it in Qt.
+- **Aggregate metrics** — classification shows Accuracy/P/R/F1 over labeled
+  images, sg shows per-image Mean IoU/P/R/F1 for labeled images. Decide which is true for od, and read it from the od
+  Core task Result or batch metrics held by `InferenceResultSet`; never recompute it in Qt.
 - **Canvas classes** — reuse the shared class-color helper so od overlays use
   the same `AnnotationClass` colors as sg.
 
@@ -466,7 +462,7 @@ needs a genuinely new processing stage (for example a "Dataset Merge" node):
 - **Business logic in a widget.** Widgets should call
   `TaskWorkspaceService`; they must not build backend metadata or compute
   metrics.
-- **Second result cache.** Results are persisted per `model_id + WeightFormat`
+- **Second result cache.** Results are persisted per `model_id + WeightType`
   inside the Project. Do not add a parallel list in a page widget.
 - **`QImage` as canonical annotation.** A segmentation mask shown as `QImage`
   is a view/file adapter; committed data is `std::vector<Region>` (or the new

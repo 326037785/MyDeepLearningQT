@@ -1,10 +1,7 @@
 #include "annotation_region_edit_service.h"
 
-#include <QHash>
 #include <QPainter>
-#include <QSet>
 #include <QTransform>
-#include <QVector>
 
 #include <algorithm>
 #include <vector>
@@ -34,56 +31,16 @@ AnnotationRegionEditService::select_connected_region(
     if (mask.constScanLine(seed.y())[seed.x()] != label)
         return std::nullopt;
 
-    std::vector<jocelin::geo::Run> runs;
-    QHash<int, QVector<int>> row_runs;
-    int seed_run = -1;
-    for (int y = 0; y < mask.height(); ++y) {
-        const uchar* row = mask.constScanLine(y);
-        int x = 0;
-        while (x < mask.width()) {
-            while (x < mask.width() && row[x] != label) ++x;
-            if (x >= mask.width()) break;
-            const int start = x;
-            while (x < mask.width() && row[x] == label) ++x;
-            const int index = static_cast<int>(runs.size());
-            runs.emplace_back(y, start, x, label);
-            row_runs[y].append(index);
-            if (y == seed.y() && seed.x() >= start && seed.x() < x)
-                seed_run = index;
-        }
-    }
-    if (seed_run < 0) return std::nullopt;
-
-    QSet<int> selected;
-    QVector<int> pending{seed_run};
-    selected.insert(seed_run);
-    while (!pending.isEmpty()) {
-        const int current_index = pending.takeLast();
-        const auto& current = runs[static_cast<size_t>(current_index)];
-        for (const int neighbour_row : {current.row - 1, current.row + 1}) {
-            for (int candidate_index : row_runs.value(neighbour_row)) {
-                if (selected.contains(candidate_index)) continue;
-                const auto& candidate = runs[static_cast<size_t>(candidate_index)];
-                if (current.start >= candidate.end ||
-                    candidate.start >= current.end)
-                    continue;
-                selected.insert(candidate_index);
-                pending.append(candidate_index);
-            }
-        }
-    }
-
-    std::vector<jocelin::geo::Run> component;
-    component.reserve(static_cast<size_t>(selected.size()));
-    for (int index : selected)
-        component.push_back(runs[static_cast<size_t>(index)]);
-    return LabelRegionSelection{label, jocelin::geo::Region(std::move(component))};
+    auto component = jocelin::geo::image_connected_component_simd_omp({mask.constBits(),
+        mask.height(), mask.width(), static_cast<size_t>(mask.bytesPerLine())}, seed.y(), seed.x());
+    if (component.empty()) return std::nullopt;
+    return LabelRegionSelection{label, std::move(component)};
 }
 
 QRectF AnnotationRegionEditService::region_bounds(
     const LabelRegionSelection& selection)
 {
-    const auto bounds = selection.region.bounding_box();
+    const auto bounds = selection.region.bounding_box_omp();
     return QRectF(bounds.min_col, bounds.min_row,
                   bounds.max_col - bounds.min_col,
                   bounds.max_row - bounds.min_row);

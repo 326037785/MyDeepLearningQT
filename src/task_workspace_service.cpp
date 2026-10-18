@@ -77,18 +77,8 @@ jocelin::geo::Region training_mask_region(const std::string& path) {
     if (source.isNull())
         throw std::runtime_error("cannot read training exclusion mask: " + path);
     const QImage mask = source.convertToFormat(QImage::Format_Grayscale8);
-    std::vector<jocelin::geo::Run> runs;
-    for (int y = 0; y < mask.height(); ++y) {
-        const uchar* row = mask.constScanLine(y);
-        int x = 0;
-        while (x < mask.width()) {
-            while (x < mask.width() && row[x] == 0) ++x;
-            const int start = x;
-            while (x < mask.width() && row[x] != 0) ++x;
-            if (start < x) runs.emplace_back(y, start, x);
-        }
-    }
-    return jocelin::geo::Region(std::move(runs));
+    return jocelin::geo::binary_image_to_region_simd_omp({mask.constBits(),
+        mask.height(), mask.width(), static_cast<size_t>(mask.bytesPerLine())});
 }
 
 std::string split_stratum(
@@ -101,12 +91,11 @@ std::string split_stratum(
     const QImage source(QString::fromStdString(sample.mask_path));
     if (source.isNull()) return "invalid-mask";
     const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
-    std::set<int> values;
-    for (int y = 0; y < labels.height(); ++y) {
-        const uchar* row = labels.constScanLine(y);
-        for (int x = 0; x < labels.width(); ++x)
-            if (row[x] != 0) values.insert(row[x]);
-    }
+    const auto counts = jocelin::geo::label_counts_omp({labels.constBits(),
+        labels.height(), labels.width(), static_cast<size_t>(labels.bytesPerLine())});
+    std::vector<int> values;
+    for (int value = 1; value < 256; ++value)
+        if (counts[value] != 0) values.push_back(value);
     if (values.empty()) return "background-only";
     std::string result = "mask:";
     for (const int value : values) result += std::to_string(value) + ",";
@@ -173,25 +162,14 @@ jocelin::geo::Region segmentation_target_region(
             sample.sample_id);
     source_mask = source_mask.convertToFormat(QImage::Format_Grayscale8);
 
-    std::vector<jocelin::geo::Run> runs;
-    for (int y = 0; y < source_mask.height(); ++y) {
-        const uchar* source = source_mask.constScanLine(y);
-        int x = 0;
-        while (x < source_mask.width()) {
-            while (x < source_mask.width() && source[x] == 0) ++x;
-            if (x >= source_mask.width()) break;
-            const int value = source[x];
-            const auto mapped = foreground_labels.find(value);
-            if (mapped == foreground_labels.end())
-                throw std::runtime_error(
-                    "segmentation mask contains an undefined class value in sample " +
-                    sample.sample_id);
-            const int start = x;
-            while (x < source_mask.width() && source[x] == value) ++x;
-            runs.emplace_back(y, start, x, mapped->second);
-        }
+    try {
+        return jocelin::geo::label_image_to_region_simd_omp({source_mask.constBits(),
+            source_mask.height(), source_mask.width(),
+            static_cast<size_t>(source_mask.bytesPerLine())}, 0, &foreground_labels);
+    } catch (const std::invalid_argument&) {
+        throw std::runtime_error(
+            "segmentation mask contains an undefined class value in sample " + sample.sample_id);
     }
-    return jocelin::geo::Region(std::move(runs));
 }
 
 } // namespace
@@ -693,6 +671,10 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             ? jocelin::meta::AiMetaData::Split::Validation
             : jocelin::meta::AiMetaData::Split::Train;
         sample.image_paths = sample_binding.image_paths;
+        if (sample_binding.annotation_state == "background-only")
+            sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::BackgroundOnly;
+        else if (sample_binding.annotation_state == "annotated")
+            sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::Annotated;
         auto exclusion = training_mask_region(sample_binding.training_mask_path);
         if (!exclusion.empty()) sample.mask.push_back(std::move(exclusion));
         has_train = has_train || split == "train";
@@ -912,7 +894,7 @@ void TaskWorkspaceService::record_inference_result(
     const jocelin::inference::InferenceReport& report,
     const std::string& model_id,
     const std::string& weight_id,
-    jocelin::model::WeightFormat weight_format,
+    jocelin::config::WeightType weight_format,
     const std::string& output_directory,
     const std::string& error)
 {
@@ -923,7 +905,7 @@ void TaskWorkspaceService::record_inference_result(
     InferenceResultSet set;
     set.model_id = model_id;
     set.weight_id = weight_id;
-    set.weight_format = jocelin::model::to_string(weight_format);
+    set.weight_format = jocelin::config::to_string(weight_format);
     set.result_directory = output_directory;
 
     const auto sample_id_for = [this](const std::string& image_path) {
@@ -936,19 +918,12 @@ void TaskWorkspaceService::record_inference_result(
     };
 
     if (const auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&report)) {
-        set.aggregate_metrics.available = cls->metrics.available;
-        set.aggregate_metrics.precision = cls->metrics.precision;
-        set.aggregate_metrics.recall = cls->metrics.recall;
-        set.aggregate_metrics.f1 = cls->metrics.f1;
+        set.aggregate_metrics = cls->metrics;
         for (const auto& record : cls->samples) {
             ResultReference stored;
             stored.result_id = result_identifier(record);
             stored.source_sample_id = sample_id_for(record.image_path);
-            stored.source_image_path = record.image_path;
-            stored.predicted_class = record.predicted_class;
-            stored.confidence = record.confidence;
-            stored.visualization_path = record.heatmap_path;
-            stored.metadata_path = record.metadata_path;
+            stored.result = record;
             set.samples.push_back(std::move(stored));
         }
     } else {
@@ -957,16 +932,7 @@ void TaskWorkspaceService::record_inference_result(
             ResultReference stored;
             stored.result_id = result_identifier(record);
             stored.source_sample_id = sample_id_for(record.image_path);
-            stored.source_image_path = record.image_path;
-            stored.confidence = record.mean_confidence;
-            stored.predicted_area = record.predicted_area;
-            stored.metrics.available = record.metrics.available;
-            stored.metrics.precision = record.metrics.precision;
-            stored.metrics.recall = record.metrics.recall;
-            stored.metrics.f1 = record.metrics.f1;
-            stored.mask_path = record.mask_path;
-            stored.visualization_path = record.visualization_path;
-            stored.metadata_path = record.metadata_path;
+            stored.result = record;
             set.samples.push_back(std::move(stored));
         }
     }
@@ -976,7 +942,7 @@ void TaskWorkspaceService::record_inference_result(
             runtime.results.begin(), runtime.results.end(),
             [&model_id, weight_format](const InferenceResultSet& existing) {
                 return existing.model_id == model_id &&
-                    existing.weight_format == jocelin::model::to_string(weight_format);
+                    existing.weight_format == jocelin::config::to_string(weight_format);
             }),
         runtime.results.end());
     runtime.results.push_back(std::move(set));

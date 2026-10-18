@@ -2,11 +2,14 @@
 
 #include <common/config/augment.h>
 #include <common/config/runtime_route.h>
+#include <Result/cls/cls_result.h>
+#include <Result/sg/sg_result.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -116,24 +119,10 @@ struct TrainingSettings {
     std::string output_directory;
 };
 
-struct ResultMetrics {
-    bool available = false;
-    double precision = 0.0;
-    double recall = 0.0;
-    double f1 = 0.0;
-};
-
 struct ResultReference {
     std::string result_id;
     std::string source_sample_id;
-    std::string source_image_path;
-    int predicted_class = -1;
-    double confidence = 0.0;
-    std::int64_t predicted_area = 0;
-    ResultMetrics metrics;
-    std::string mask_path;
-    std::string visualization_path;
-    std::string metadata_path;
+    std::variant<jocelin::result::cls::ClsResult, jocelin::result::sg::SgResult> result;
 };
 
 struct InferenceResultSet {
@@ -141,7 +130,7 @@ struct InferenceResultSet {
     std::string weight_id;
     std::string weight_format = "libtorch";
     std::string result_directory;
-    ResultMetrics aggregate_metrics;
+    jocelin::result::cls::ClsScopeMetrics aggregate_metrics;
     std::vector<ResultReference> samples;
 };
 

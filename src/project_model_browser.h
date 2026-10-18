@@ -172,10 +172,10 @@ public:
             item->setText(0, QString::fromStdString(model.name));
             item->setData(0, Qt::UserRole, model_id);
             item->setToolTip(0, QString::fromStdString(model.asset_directory));
-            set_weight_cell(item, 1, model, jocelin::model::WeightFormat::LibTorch);
-            set_weight_cell(item, 2, model, jocelin::model::WeightFormat::Onnx);
-            set_weight_cell(item, 3, model, jocelin::model::WeightFormat::OpenVino);
-            set_weight_cell(item, 4, model, jocelin::model::WeightFormat::TensorRt);
+            set_weight_cell(item, 1, model, jocelin::config::WeightType::LibTorch);
+            set_weight_cell(item, 2, model, jocelin::config::WeightType::Onnx);
+            set_weight_cell(item, 3, model, jocelin::config::WeightType::OpenVino);
+            set_weight_cell(item, 4, model, jocelin::config::WeightType::TensorRt);
             if (model_check_selection_) {
                 item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
                 item->setCheckState(0, model_id == checked ? Qt::Checked : Qt::Unchecked);
@@ -318,7 +318,7 @@ public:
 
     void set_current_weight(
         const QString& model_id,
-        jocelin::model::WeightFormat format)
+        jocelin::config::WeightType format)
     {
         const int column = column_for_weight_format(format);
         for (int row = 0; row < table_->topLevelItemCount(); ++row) {
@@ -331,7 +331,7 @@ public:
     }
 
     std::function<void(const QString&)> selection_changed;
-    std::function<void(const QString&, jocelin::model::WeightFormat)> weight_selection_changed;
+    std::function<void(const QString&, jocelin::config::WeightType)> weight_selection_changed;
     std::function<void(const QString&)> checked_model_changed;
     std::function<void()> import_requested;
     std::function<void(const QString&)> export_requested;
@@ -339,22 +339,22 @@ public:
     std::function<void()> clear_models_requested;
 
 private:
-    static int column_for_weight_format(jocelin::model::WeightFormat format) {
+    static int column_for_weight_format(jocelin::config::WeightType format) {
         switch (format) {
-        case jocelin::model::WeightFormat::LibTorch: return 1;
-        case jocelin::model::WeightFormat::Onnx: return 2;
-        case jocelin::model::WeightFormat::OpenVino: return 3;
-        case jocelin::model::WeightFormat::TensorRt: return 4;
+        case jocelin::config::WeightType::LibTorch: return 1;
+        case jocelin::config::WeightType::Onnx: return 2;
+        case jocelin::config::WeightType::OpenVino: return 3;
+        case jocelin::config::WeightType::TensorRt: return 4;
         }
         return 1;
     }
 
-    static jocelin::model::WeightFormat weight_format_for_column(int column) {
+    static jocelin::config::WeightType weight_format_for_column(int column) {
         switch (column) {
-        case 2: return jocelin::model::WeightFormat::Onnx;
-        case 3: return jocelin::model::WeightFormat::OpenVino;
-        case 4: return jocelin::model::WeightFormat::TensorRt;
-        default: return jocelin::model::WeightFormat::LibTorch;
+        case 2: return jocelin::config::WeightType::Onnx;
+        case 3: return jocelin::config::WeightType::OpenVino;
+        case 4: return jocelin::config::WeightType::TensorRt;
+        default: return jocelin::config::WeightType::LibTorch;
         }
     }
 
@@ -371,7 +371,7 @@ private:
         QTreeWidgetItem* item,
         int column,
         const ProjectModel& model,
-        jocelin::model::WeightFormat format)
+        jocelin::config::WeightType format)
     {
         QStringList precisions;
         QStringList branches;
@@ -423,7 +423,7 @@ private:
         QStringList branches;
         for (const auto& weight : model->weights) {
             branches.push_back(
-                QString::fromStdString(jocelin::model::to_string(weight.format)) +
+                QString::fromStdString(jocelin::config::to_string(weight.format)) +
                 QStringLiteral(" / ") + precision_label(weight.precision));
         }
         weights_->setText(branches.isEmpty() ? QStringLiteral("—") : branches.join(QStringLiteral(", ")));

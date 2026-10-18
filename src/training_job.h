@@ -29,6 +29,7 @@ public:
 
     std::function<void(const jocelin::train::TrainingProgress&)> progress;
     std::function<void(const QString&)> log;
+    std::function<void(const QString&)> warning;
     std::function<void(
         const jocelin::training::TrainingResult&,
         const QString&)> completed;

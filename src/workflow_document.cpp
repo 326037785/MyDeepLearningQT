@@ -14,6 +14,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 
 namespace studio {
 
@@ -515,21 +516,26 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object) {
     return binding;
 }
 
-QJsonObject result_metrics_to_json(const ResultMetrics& metrics) {
-    return {
+QJsonObject result_metrics_to_json(const jocelin::result::cls::ClsScopeMetrics& metrics) {
+    QJsonObject object{
         {"available", metrics.available},
         {"precision", metrics.precision},
         {"recall", metrics.recall},
         {"f1", metrics.f1}};
+    object.insert("accuracy", metrics.accuracy);
+    return object;
 }
 
-ResultMetrics result_metrics_from_json(const QJsonObject& object, const QString& context) {
-    require_exact_fields(object, {"available", "precision", "recall", "f1"}, context);
-    ResultMetrics metrics;
+jocelin::result::cls::ClsScopeMetrics result_metrics_from_json(
+    const QJsonObject& object, const QString& context)
+{
+    require_exact_fields(object, {"available", "precision", "recall", "f1", "accuracy"}, context);
+    jocelin::result::cls::ClsScopeMetrics metrics;
     metrics.available = required_bool(object, "available", context);
     metrics.precision = required_number(object, "precision", context);
     metrics.recall = required_number(object, "recall", context);
     metrics.f1 = required_number(object, "f1", context);
+    metrics.accuracy = required_number(object, "accuracy", context);
     return metrics;
 }
 
@@ -538,17 +544,70 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
     for (const auto& set : runtime.results) {
         QJsonArray samples;
         for (const auto& value : set.samples) {
+            const auto payload = std::visit([](const auto& result) {
+                QJsonObject data{
+                    {"image_path", QString::fromStdString(result.image_path)},
+                    {"result_name", QString::fromStdString(result.result_name)},
+                    {"save_dir", QString::fromStdString(result.save_dir)},
+                    {"metadata_path", QString::fromStdString(result.metadata_path)}};
+                using Result = std::decay_t<decltype(result)>;
+                if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
+                    QJsonArray probabilities;
+                    for (double probability : result.probabilities) probabilities.append(probability);
+                    data.insert("predicted_class", result.predicted_class);
+                    data.insert("confidence", result.confidence);
+                    data.insert("probabilities", probabilities);
+                    data.insert("confidence_threshold", result.confidence_threshold);
+                    data.insert("confidence_pass", result.confidence_pass);
+                    data.insert("interest", result.interest);
+                    data.insert("heatmap_class", result.heatmap_class);
+                    data.insert("heatmap_path", QString::fromStdString(result.heatmap_path));
+                } else {
+                    QJsonArray components;
+                    for (const auto& component : result.components) {
+                        QJsonArray runs;
+                        for (const auto& run : component.region.vRun)
+                            runs.append(QJsonArray{run.row, run.start, run.end, run.label});
+                        components.append(QJsonObject{
+                            {"label", component.label}, {"area", static_cast<double>(component.area)},
+                            {"bbox", QJsonArray{component.bbox.min_row, component.bbox.min_col,
+                                component.bbox.max_row, component.bbox.max_col}},
+                            {"aspect_ratio", component.aspect_ratio}, {"confidence", component.confidence},
+                            {"area_pass", component.area_pass}, {"aspect_ratio_pass", component.aspect_ratio_pass},
+                            {"confidence_pass", component.confidence_pass}, {"interest", component.interest},
+                            {"runs", runs}});
+                    }
+                    QJsonArray labels;
+                    for (int label : result.present_labels) labels.append(label);
+                    data.insert("components", components);
+                    data.insert("present_labels", labels);
+                    data.insert("image_width", result.image_width);
+                    data.insert("image_height", result.image_height);
+                    data.insert("morph_kernel_size", result.morph_kernel_size);
+                    data.insert("morph_iterations", result.morph_iterations);
+                    data.insert("min_component_area", result.min_component_area);
+                    data.insert("max_component_area", QString::number(static_cast<qlonglong>(result.max_component_area)));
+                    data.insert("aspect_ratio_range", QJsonArray{result.aspect_ratio_range.low, result.aspect_ratio_range.high});
+                    data.insert("min_component_confidence", result.min_component_confidence);
+                    data.insert("confidence_threshold", result.confidence_threshold);
+                    data.insert("save_option", static_cast<int>(result.save_option));
+                    data.insert("save_color_mask", result.save_color_mask);
+                    data.insert("overlay_alpha", result.overlay_alpha);
+                    data.insert("mean_confidence", result.mean_confidence);
+                    data.insert("predicted_area", static_cast<double>(result.predicted_area));
+                    data.insert("metrics", QJsonObject{
+                        {"available", result.metrics.available}, {"precision", result.metrics.precision},
+                        {"recall", result.metrics.recall}, {"f1", result.metrics.f1}, {"mean_iou", result.metrics.mean_iou}});
+                    data.insert("mask_path", QString::fromStdString(result.mask_path));
+                    data.insert("visualization_path", QString::fromStdString(result.visualization_path));
+                }
+                return data;
+            }, value.result);
             samples.append(QJsonObject{
                 {"result_id", QString::fromStdString(value.result_id)},
                 {"source_sample_id", QString::fromStdString(value.source_sample_id)},
-                {"source_image_path", QString::fromStdString(value.source_image_path)},
-                {"predicted_class", value.predicted_class},
-                {"confidence", value.confidence},
-                {"predicted_area", static_cast<double>(value.predicted_area)},
-                {"metrics", result_metrics_to_json(value.metrics)},
-                {"mask_path", QString::fromStdString(value.mask_path)},
-                {"visualization_path", QString::fromStdString(value.visualization_path)},
-                {"metadata_path", QString::fromStdString(value.metadata_path)}});
+                {"task", std::holds_alternative<jocelin::result::cls::ClsResult>(value.result) ? "cls" : "sg"},
+                {"result", payload}});
         }
         results.append(QJsonObject{
             {"model_id", QString::fromStdString(set.model_id)},
@@ -564,7 +623,7 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
         {"results", results}};
 }
 
-TaskRuntimeState runtime_from_json(const QJsonObject& object) {
+TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string& task_name) {
     const QString context = "Task runtime";
     require_exact_fields(
         object,
@@ -625,34 +684,121 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object) {
             if (!sample_entry.isObject())
                 invalid_document(sample_context, "must be an object");
             const auto sample = sample_entry.toObject();
-            require_exact_fields(
-                sample,
-                {"result_id", "source_sample_id", "source_image_path",
-                 "predicted_class", "confidence", "predicted_area", "metrics",
-                 "mask_path", "visualization_path", "metadata_path"},
-                sample_context);
+            require_exact_fields(sample, {"result_id", "source_sample_id", "task", "result"}, sample_context);
             ResultReference result;
-            result.result_id = required_string(
-                sample, "result_id", sample_context).toStdString();
-            result.source_sample_id = required_string(
-                sample, "source_sample_id", sample_context).toStdString();
-            result.source_image_path = required_string(
-                sample, "source_image_path", sample_context).toStdString();
-            result.predicted_class = required_integer(
-                sample, "predicted_class", sample_context);
-            result.confidence = required_number(
-                sample, "confidence", sample_context);
-            result.predicted_area = static_cast<std::int64_t>(
-                required_number(sample, "predicted_area", sample_context));
-            result.metrics = result_metrics_from_json(
-                required_object(sample, "metrics", sample_context),
-                sample_context + " metrics");
-            result.mask_path = required_string(
-                sample, "mask_path", sample_context).toStdString();
-            result.visualization_path = required_string(
-                sample, "visualization_path", sample_context).toStdString();
-            result.metadata_path = required_string(
-                sample, "metadata_path", sample_context).toStdString();
+            result.result_id = required_string(sample, "result_id", sample_context).toStdString();
+            result.source_sample_id = required_string(sample, "source_sample_id", sample_context).toStdString();
+            const auto task = required_string(sample, "task", sample_context);
+            if (task.toStdString() != task_name)
+                invalid_document(sample_context, "result task does not match the Task node");
+            const auto data = required_object(sample, "result", sample_context);
+            if (task == "cls") result.result = jocelin::result::cls::ClsResult{};
+            else if (task == "sg") result.result = jocelin::result::sg::SgResult{};
+            else invalid_document(sample_context, "unknown result task");
+            std::visit([&](auto& value) {
+                value.image_path = required_string(data, "image_path", sample_context).toStdString();
+                value.result_name = required_string(data, "result_name", sample_context).toStdString();
+                value.save_dir = required_string(data, "save_dir", sample_context).toStdString();
+                value.metadata_path = required_string(data, "metadata_path", sample_context).toStdString();
+                using Result = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
+                    require_exact_fields(data, {"image_path", "result_name", "save_dir", "metadata_path",
+                        "predicted_class", "confidence", "probabilities", "confidence_threshold",
+                        "confidence_pass", "interest", "heatmap_class", "heatmap_path"}, sample_context);
+                    value.predicted_class = required_integer(data, "predicted_class", sample_context);
+                    value.confidence = required_number(data, "confidence", sample_context);
+                    for (const auto& probability : required_array(data, "probabilities", sample_context)) {
+                        if (!probability.isDouble() || !std::isfinite(probability.toDouble()))
+                            invalid_document(sample_context, "probabilities must be finite numbers");
+                        value.probabilities.push_back(probability.toDouble());
+                    }
+                    value.confidence_threshold = required_number(data, "confidence_threshold", sample_context);
+                    value.confidence_pass = required_bool(data, "confidence_pass", sample_context);
+                    value.interest = required_bool(data, "interest", sample_context);
+                    value.heatmap_class = required_integer(data, "heatmap_class", sample_context);
+                    value.heatmap_path = required_string(data, "heatmap_path", sample_context).toStdString();
+                } else {
+                    require_exact_fields(data, {"image_path", "result_name", "save_dir", "metadata_path",
+                        "components", "present_labels", "image_width", "image_height", "morph_kernel_size",
+                        "morph_iterations", "min_component_area", "max_component_area", "aspect_ratio_range",
+                        "min_component_confidence", "confidence_threshold", "save_option", "save_color_mask",
+                        "overlay_alpha", "mean_confidence", "predicted_area", "metrics", "mask_path",
+                        "visualization_path"}, sample_context);
+                    value.image_width = required_integer(data, "image_width", sample_context);
+                    value.image_height = required_integer(data, "image_height", sample_context);
+                    value.morph_kernel_size = required_integer(data, "morph_kernel_size", sample_context);
+                    value.morph_iterations = required_integer(data, "morph_iterations", sample_context);
+                    value.min_component_area = required_integer(data, "min_component_area", sample_context);
+                    bool area_valid = false;
+                    value.max_component_area = required_string(data, "max_component_area", sample_context).toLongLong(&area_valid);
+                    if (!area_valid) invalid_document(sample_context, "max_component_area must be an int64 string");
+                    const auto range = required_array(data, "aspect_ratio_range", sample_context);
+                    if (range.size() != 2 || !range[0].isDouble() || !range[1].isDouble() ||
+                        !std::isfinite(range[0].toDouble()) || !std::isfinite(range[1].toDouble()))
+                        invalid_document(sample_context, "aspect_ratio_range must contain two finite numbers");
+                    value.aspect_ratio_range = {range[0].toDouble(), range[1].toDouble()};
+                    value.min_component_confidence = required_number(data, "min_component_confidence", sample_context);
+                    value.confidence_threshold = static_cast<float>(required_number(data, "confidence_threshold", sample_context));
+                    const int option = required_integer(data, "save_option", sample_context);
+                    if (option < 1 || option > 3) invalid_document(sample_context, "unknown SG save_option");
+                    value.save_option = static_cast<jocelin::result::sg::SaveOption>(option);
+                    value.save_color_mask = required_bool(data, "save_color_mask", sample_context);
+                    value.overlay_alpha = static_cast<float>(required_number(data, "overlay_alpha", sample_context));
+                    value.mean_confidence = required_number(data, "mean_confidence", sample_context);
+                    const double area = required_number(data, "predicted_area", sample_context);
+                    if (area < 0 || std::trunc(area) != area || area >= 9223372036854775808.0)
+                        invalid_document(sample_context, "predicted_area must be a nonnegative int64");
+                    value.predicted_area = static_cast<int64_t>(area);
+                    value.mask_path = required_string(data, "mask_path", sample_context).toStdString();
+                    value.visualization_path = required_string(data, "visualization_path", sample_context).toStdString();
+                    const auto metrics = required_object(data, "metrics", sample_context);
+                    require_exact_fields(metrics, {"available", "precision", "recall", "f1", "mean_iou"}, sample_context);
+                    value.metrics = {required_bool(metrics, "available", sample_context),
+                        required_number(metrics, "precision", sample_context), required_number(metrics, "recall", sample_context),
+                        required_number(metrics, "f1", sample_context), required_number(metrics, "mean_iou", sample_context)};
+                    for (const auto& label : required_array(data, "present_labels", sample_context)) {
+                        if (!label.isDouble() || label.toDouble() < 1 || label.toDouble() > 255 ||
+                            std::trunc(label.toDouble()) != label.toDouble())
+                            invalid_document(sample_context, "present_labels must contain integer foreground labels");
+                        value.present_labels.push_back(label.toInt());
+                    }
+                    for (const auto& entry : required_array(data, "components", sample_context)) {
+                        if (!entry.isObject()) invalid_document(sample_context, "component must be an object");
+                        const auto component_data = entry.toObject();
+                        require_exact_fields(component_data, {"label", "area", "bbox", "aspect_ratio", "confidence",
+                            "area_pass", "aspect_ratio_pass", "confidence_pass", "interest", "runs"}, sample_context);
+                        jocelin::result::sg::SgResult::Component component;
+                        component.label = required_integer(component_data, "label", sample_context);
+                        component.area = required_integer(component_data, "area", sample_context);
+                        const auto bbox = required_array(component_data, "bbox", sample_context);
+                        if (bbox.size() != 4) invalid_document(sample_context, "bbox must contain four integers");
+                        int coordinates[4];
+                        for (int index = 0; index < 4; ++index)
+                            coordinates[index] = required_integer(QJsonObject{{"coordinate", bbox[index]}}, "coordinate", sample_context);
+                        component.bbox = {coordinates[0], coordinates[1], coordinates[2], coordinates[3]};
+                        component.aspect_ratio = required_number(component_data, "aspect_ratio", sample_context);
+                        component.confidence = required_number(component_data, "confidence", sample_context);
+                        component.area_pass = required_bool(component_data, "area_pass", sample_context);
+                        component.aspect_ratio_pass = required_bool(component_data, "aspect_ratio_pass", sample_context);
+                        component.confidence_pass = required_bool(component_data, "confidence_pass", sample_context);
+                        component.interest = required_bool(component_data, "interest", sample_context);
+                        for (const auto& run_data : required_array(component_data, "runs", sample_context)) {
+                            if (!run_data.isArray() || run_data.toArray().size() != 4)
+                                invalid_document(sample_context, "run must contain row, start, end, label");
+                            const auto run = run_data.toArray();
+                            int fields[4];
+                            for (int index = 0; index < 4; ++index)
+                                fields[index] = required_integer(QJsonObject{{"coordinate", run[index]}}, "coordinate", sample_context);
+                            if (fields[0] < 0 || fields[0] >= value.image_height || fields[1] < 0 ||
+                                fields[2] <= fields[1] || fields[2] > value.image_width || fields[3] != component.label ||
+                                component.label < 1 || component.label > 255)
+                                invalid_document(sample_context, "component run is outside image or class bounds");
+                            component.region.vRun.emplace_back(fields[0], fields[1], fields[2], fields[3]);
+                        }
+                        value.components.push_back(std::move(component));
+                    }
+                }
+            }, result.result);
             if (result.result_id.empty() ||
                 !sample_ids.insert(result.result_id).second)
                 invalid_document(
@@ -885,7 +1031,7 @@ void config_from_json(Node& node, const QJsonObject& object) {
         config.runtime =
             runtime_from_json(
                 required_object(
-                    object, "runtime", context));
+                    object, "runtime", context), config.task);
         node.config = std::move(config);
     } else {
         throw std::runtime_error("unsupported node kind");

@@ -1,4 +1,5 @@
 #include "training_job.h"
+#include <common/exception/pipeline_exception.h>
 
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -52,16 +53,24 @@ void TrainingJob::start(
             callbacks.stop_requested = [this] {
                 return stop_requested_.load();
             };
+            callbacks.adjustment = [this](const jocelin::train::ConfigAdjustment& value) {
+                if (value.field != "device") return;
+                const QString message = QObject::tr("Training device fallback: %1 -> %2. %3")
+                    .arg(QString::fromStdString(value.requested),
+                         QString::fromStdString(value.effective),
+                         QString::fromStdString(value.reason));
+                QMetaObject::invokeMethod(this, [this, message] {
+                    if (warning) warning(message);
+                }, Qt::QueuedConnection);
+            };
             callbacks.pause_requested = [this] {
                 return pause_requested_.load();
             };
             outcome.result =
                 jocelin::training::train(request, callbacks);
-        } catch (const std::exception& error) {
-            outcome.error = QString::fromUtf8(error.what());
         } catch (...) {
-            outcome.error =
-                QObject::tr("Unknown training error");
+            outcome.error = QString::fromStdString(jocelin::exception::message(
+                std::current_exception(), QObject::tr("Unknown training error").toStdString()));
         }
         return outcome;
     }));

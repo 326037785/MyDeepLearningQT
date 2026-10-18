@@ -9,6 +9,7 @@
 #include "save_project_as_dialog.h"
 #include "select_task_module_dialog.h"
 #include <checkpoint/checkpoint_catalog.h>
+#include <common/model/model_weight_matcher.h>
 #include "properties_editor.h"
 #include "sample_presentation.h"
 #include "task_workspace_service.h"
@@ -23,6 +24,9 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QSpinBox>
 #include <QDir>
 #include <QDateTime>
 #include <QFileDialog>
@@ -413,6 +417,12 @@ MainWindow::MainWindow() {
         append_log_file(active_training_log_path_, message);
         node_workspace_->append_training_log(active_training_node_id_, message);
     };
+    training_job_.warning = [this](const QString& message) {
+        auto* warning = new QMessageBox(QMessageBox::Warning, tr("Training device fallback"),
+                                       message, QMessageBox::Ok, this);
+        warning->setAttribute(Qt::WA_DeleteOnClose);
+        warning->open();
+    };
     training_job_.completed = [this](const jocelin::training::TrainingResult& result, const QString& error) {
         setEditingEnabled(true);
         auto* model = project_.find_model(active_training_model_id_);
@@ -445,7 +455,7 @@ MainWindow::MainWindow() {
                 } else {
                     jocelin::model::ModelWeight created_weight;
                     created_weight.id = "libtorch_fp32";
-                    created_weight.format = jocelin::model::WeightFormat::LibTorch;
+                    created_weight.format = jocelin::config::WeightType::LibTorch;
                     created_weight.precision = jocelin::model::WeightPrecision::Float32;
                     created_weight.role = jocelin::model::WeightRole::Training;
                     created_weight.path = weight_path;
@@ -569,7 +579,7 @@ MainWindow::MainWindow() {
             if (sample) {
                 display_name = image_display_name(sample_index, *sample);
                 if (sample->image_paths.size() > 1)
-                    display_name = tr("%1 · %2/%3")
+                    display_name = tr("%1 路 %2/%3")
                         .arg(display_name)
                         .arg(image_index + 1)
                         .arg(sample->image_paths.size());
@@ -595,6 +605,10 @@ MainWindow::MainWindow() {
             log_->appendPlainText(message);
             output_tabs_->setCurrentWidget(log_);
             output_dock_->show();
+            auto* warning = new QMessageBox(QMessageBox::Warning, tr("Inference device fallback"),
+                                           message, QMessageBox::Ok, this);
+            warning->setAttribute(Qt::WA_DeleteOnClose);
+            warning->open();
         }
         if (active_inference_node_id_ != 0 &&
             graph().nodes().count(active_inference_node_id_) != 0) {
@@ -625,6 +639,7 @@ MainWindow::MainWindow() {
                     task_metrics = metrics_json(
                         cls->metrics.available, cls->metrics.precision,
                         cls->metrics.recall, cls->metrics.f1);
+                    if (cls->metrics.available) task_metrics.insert("accuracy", cls->metrics.accuracy);
                     for (const auto& record : cls->samples) {
                         QJsonArray probabilities;
                         for (double value : record.probabilities) probabilities.append(value);
@@ -633,6 +648,9 @@ MainWindow::MainWindow() {
                             {"result_name", QString::fromStdString(record.result_name)},
                             {"predicted_class", record.predicted_class},
                             {"confidence", record.confidence},
+                            {"confidence_threshold", record.confidence_threshold},
+                            {"confidence_pass", record.confidence_pass},
+                            {"interest", record.interest},
                             {"probabilities", probabilities},
                             {"heatmap_path", QString::fromStdString(record.heatmap_path)},
                             {"metadata_path", QString::fromStdString(record.metadata_path)}});
@@ -640,14 +658,16 @@ MainWindow::MainWindow() {
                 } else {
                     const auto& sg = std::get<jocelin::result::sg::SgInferenceResult>(outcome.report);
                     for (const auto& record : sg.samples) {
+                        auto sample_metrics = metrics_json(
+                            record.metrics.available, record.metrics.precision,
+                            record.metrics.recall, record.metrics.f1);
+                        if (record.metrics.available) sample_metrics.insert("mean_iou", record.metrics.mean_iou);
                         samples.append(QJsonObject{
                             {"image_path", QString::fromStdString(record.image_path)},
                             {"result_name", QString::fromStdString(record.result_name)},
                             {"mean_confidence", record.mean_confidence},
                             {"predicted_area", static_cast<double>(record.predicted_area)},
-                            {"metrics", metrics_json(
-                                record.metrics.available, record.metrics.precision,
-                                record.metrics.recall, record.metrics.f1)},
+                            {"metrics", sample_metrics},
                             {"mask_path", QString::fromStdString(record.mask_path)},
                             {"visualization_path", QString::fromStdString(record.visualization_path)},
                             {"metadata_path", QString::fromStdString(record.metadata_path)}});
@@ -658,7 +678,7 @@ MainWindow::MainWindow() {
                     {"model_id", active_inference_model_id_},
                     {"weight_id", active_inference_weight_id_},
                     {"weight_format", QString::fromStdString(
-                        jocelin::model::to_string(active_inference_weight_format_))},
+                        jocelin::config::to_string(active_inference_weight_format_))},
                     {"image_count", active_inference_image_count_},
                     {"metrics", task_metrics},
                     {"samples", samples},
@@ -986,22 +1006,29 @@ void MainWindow::buildUi() {
             return;
         }
         const QString manifest_path = QFileDialog::getOpenFileName(
-            this, tr("Import Project model"), {}, tr("Model manifest (model.json)"));
+            this, tr("Import model weights"), {},
+            tr("Model weights or manifest (*.pt *.pth *.bin *.ckpt *.json);;All files (*)"));
         if (manifest_path.isEmpty()) return;
+        QString imported_asset_directory;
+        bool import_added = false;
         try {
-            QFile manifest_file(manifest_path);
-            if (!manifest_file.open(QIODevice::ReadOnly))
-                throw std::runtime_error("cannot read model manifest");
-            const auto document = QJsonDocument::fromJson(manifest_file.readAll());
-            if (!document.isObject())
-                throw std::runtime_error("model manifest must contain a JSON object");
-            const auto object = document.object();
-            if (object.value("format").toString() != "deep_learning_project_model")
-                throw std::runtime_error("unsupported model manifest");
+            const bool raw_weights = QFileInfo(manifest_path).suffix().compare("json", Qt::CaseInsensitive) != 0;
+            QJsonObject object;
+            if (!raw_weights) {
+                QFile manifest_file(manifest_path);
+                if (!manifest_file.open(QIODevice::ReadOnly))
+                    throw std::runtime_error("cannot read model manifest");
+                const auto document = QJsonDocument::fromJson(manifest_file.readAll());
+                if (!document.isObject())
+                    throw std::runtime_error("model manifest must contain a JSON object");
+                object = document.object();
+                if (object.value("format").toString() != "deep_learning_project_model")
+                    throw std::runtime_error("unsupported model manifest");
+            }
             const QString source_directory = QFileInfo(manifest_path).absolutePath();
             struct ImportWeight {
                 std::string id;
-                jocelin::model::WeightFormat format;
+                jocelin::config::WeightType format;
                 jocelin::model::WeightPrecision precision;
                 jocelin::model::WeightRole role;
                 QString source_path;
@@ -1017,7 +1044,12 @@ void MainWindow::buildUi() {
                 std::string target_architecture;
             };
             std::vector<ImportWeight> import_weights;
-            if (object.value("weights").isArray()) {
+            if (raw_weights) {
+                import_weights.push_back({
+                    "libtorch_fp32", jocelin::config::WeightType::LibTorch,
+                    jocelin::model::WeightPrecision::Float32,
+                    jocelin::model::WeightRole::Training, manifest_path, {}, {}});
+            } else if (object.value("weights").isArray()) {
                 for (const auto& entry : object.value("weights").toArray()) {
                     if (!entry.isObject()) continue;
                     const auto weight = entry.toObject();
@@ -1027,12 +1059,12 @@ void MainWindow::buildUi() {
                     const QString source = QDir(source_directory).absoluteFilePath(file);
                     if (!QFileInfo(source).isFile())
                         throw std::runtime_error("model weight file is missing");
-                    const auto format = jocelin::model::weight_format_from_string(
+                    const auto format = jocelin::config::weight_type_from_string(
                         weight.value("format").toString().toStdString());
                     const auto role = weight.contains("role")
                         ? jocelin::model::weight_role_from_string(
                               weight.value("role").toString().toStdString())
-                        : (format == jocelin::model::WeightFormat::LibTorch
+                        : (format == jocelin::config::WeightType::LibTorch
                                ? jocelin::model::WeightRole::Training
                                : jocelin::model::WeightRole::Inference);
                     ImportWeight imported{
@@ -1064,7 +1096,7 @@ void MainWindow::buildUi() {
                 if (!QFileInfo(source).isFile())
                     throw std::runtime_error("model checkpoint is missing");
                 import_weights.push_back({
-                    "libtorch_fp32", jocelin::model::WeightFormat::LibTorch,
+                    "libtorch_fp32", jocelin::config::WeightType::LibTorch,
                     jocelin::model::WeightPrecision::Float32,
                     jocelin::model::WeightRole::Training, source, {}, {}});
             }
@@ -1073,60 +1105,161 @@ void MainWindow::buildUi() {
             const auto libtorch = std::find_if(
                 import_weights.begin(), import_weights.end(),
                 [](const auto& weight) {
-                    return weight.format == jocelin::model::WeightFormat::LibTorch;
+                    return weight.format == jocelin::config::WeightType::LibTorch;
                 });
             if (libtorch == import_weights.end())
                 throw std::runtime_error("import currently requires a LibTorch weight branch");
-            const auto metadata = jocelin::checkpoint::inspect_checkpoint(
-                libtorch->source_path.toStdString());
             TaskWorkspaceService task_service(graph(), task_node_id);
-            const std::string imported_task = jocelin::config::to_string(metadata.tool_type);
-            const std::string imported_scale = jocelin::config::to_string(metadata.model_scale);
-            if (imported_task != task_service.task().task)
+            const auto& task = task_service.task();
+            jocelin::config::AiConfig config;
+            config.tool_type = jocelin::config::tool_type_from_string(task.task);
+            config.model_index = task.model_index;
+            config.model_scale = jocelin::config::model_scale_from_string(task.model_scale);
+            config.image_width = task.training.image_width;
+            config.image_height = task.training.image_height;
+            config.normalize = task_service.binding().preprocessing.normalize;
+            std::vector<jocelin::model::ModelClass> classes;
+            for (const auto& entry : object.value("classes").toArray()) {
+                const auto value = entry.toObject();
+                classes.push_back({value.value("id").toString().toStdString(),
+                    value.value("name").toString().toStdString(), value.value("mask_value").toInt()});
+            }
+            if (classes.empty())
+                for (const auto& value : task_service.binding().classes)
+                    classes.push_back({value.id, value.name, value.mask_value});
+            config.num_classes = 1;
+            for (const auto& value : classes)
+                config.num_classes = std::max(config.num_classes,
+                    value.mask_value + (config.tool_type == jocelin::config::ToolType::Sg ? 1 : 0));
+            std::optional<jocelin::checkpoint::CheckpointMetadata> metadata;
+            try {
+                metadata = jocelin::checkpoint::inspect_checkpoint(libtorch->source_path.toStdString());
+            } catch (const std::exception&) {
+                // External state dictionaries need not carry project metadata.
+            }
+            const bool manifest_spec = object.contains("task") &&
+                object.contains("model_index") && object.contains("model_scale");
+            if (metadata) {
+                config.tool_type = metadata->tool_type;
+                config.model_index = metadata->model_index;
+                config.model_scale = metadata->model_scale;
+                config.image_width = metadata->image_width;
+                config.image_height = metadata->image_height;
+                config.num_classes = metadata->num_classes;
+                config.model_embed_dim = metadata->model_embed_dim;
+                config.model_depth = metadata->model_depth;
+                config.model_num_heads = metadata->model_num_heads;
+                config.normalize = metadata->normalize;
+                std::copy(metadata->mean.begin(), metadata->mean.end(), config.mean);
+                std::copy(metadata->std.begin(), metadata->std.end(), config.std);
+            } else if (manifest_spec) {
+                config.tool_type = jocelin::config::tool_type_from_string(object.value("task").toString().toStdString());
+                config.model_index = object.value("model_index").toInt();
+                config.model_scale = jocelin::config::model_scale_from_string(object.value("model_scale").toString().toStdString());
+                config.image_width = object.value("image_width").toInt(config.image_width);
+                config.image_height = object.value("image_height").toInt(config.image_height);
+            } else {
+                QDialog dialog(this);
+                dialog.setObjectName("importModelSpecDialog");
+                dialog.setWindowTitle(tr("Choose target model"));
+                auto* layout = new QFormLayout(&dialog);
+                layout->addRow(tr("Task"), new QLabel(QString::fromStdString(task.task), &dialog));
+                auto* spec = new QComboBox(&dialog);
+                spec->setObjectName("importModelSpec");
+                for (const auto& option : model_spec_options) {
+                    if (task.task != option.task) continue;
+                    spec->addItem(tr("Capacity %1 / Index %2").arg(option.scale).arg(option.index), option.index);
+                    spec->setItemData(spec->count() - 1, option.scale, Qt::UserRole + 1);
+                    if (task.model_index == option.index && task.model_scale == option.scale)
+                        spec->setCurrentIndex(spec->count() - 1);
+                }
+                auto* width = new QSpinBox(&dialog);
+                auto* height = new QSpinBox(&dialog);
+                auto* count = new QSpinBox(&dialog);
+                width->setObjectName("importImageWidth");
+                height->setObjectName("importImageHeight");
+                count->setObjectName("importClassCount");
+                width->setRange(1, task.task == "cls" ? 1024 : 65536);
+                height->setRange(1, task.task == "cls" ? 1024 : 65536);
+                count->setRange(1, 65536);
+                width->setValue(config.image_width);
+                height->setValue(config.image_height);
+                count->setValue(std::max(2, config.num_classes));
+                layout->addRow(tr("Target model"), spec);
+                layout->addRow(tr("Input width"), width);
+                layout->addRow(tr("Input height"), height);
+                layout->addRow(task.task == "sg" ? tr("Output classes (including background)") : tr("Output classes"), count);
+                auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+                layout->addRow(buttons);
+                connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+                connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+                if (dialog.exec() != QDialog::Accepted) return;
+                config.model_index = spec->currentData().toInt();
+                config.model_scale = jocelin::config::model_scale_from_string(spec->currentData(Qt::UserRole + 1).toString().toStdString());
+                config.image_width = width->value();
+                config.image_height = height->value();
+                config.num_classes = count->value();
+            }
+            const auto imported_task = jocelin::config::to_string(config.tool_type);
+            if (imported_task != task.task)
                 throw std::runtime_error("imported model belongs to a different task repository");
-            if (!supports_model_spec(imported_task, metadata.model_index, imported_scale))
+            if (!supports_model_spec(imported_task, config.model_index, jocelin::config::to_string(config.model_scale)))
                 throw std::runtime_error("imported model spec is not registered for this task");
-
             const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmsszzz");
             const QString asset_directory = QDir(project_.metadata().root_directory)
                 .filePath("models/imported/" + stamp);
             if (!QDir().mkpath(asset_directory))
                 throw std::runtime_error("cannot create imported model directory");
 
+            imported_asset_directory = asset_directory;
             ProjectModel model;
             model.training_run_id = ("import-" + stamp).toStdString();
             model.created_at = object.value("created_at").toString().toStdString();
             if (model.created_at.empty())
                 model.created_at = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
-            model.task = metadata.tool_type;
-            model.model_index = metadata.model_index;
-            model.model_scale = metadata.model_scale;
-            model.image_width = metadata.image_width;
-            model.image_height = metadata.image_height;
+            model.task = config.tool_type;
+            model.model_index = config.model_index;
+            model.model_scale = config.model_scale;
+            model.image_width = config.image_width;
+            model.image_height = config.image_height;
             model.asset_directory = asset_directory.toStdString();
             model.metric_name = object.value("metric_name").toString().toStdString();
             model.metric = object.value("metric").toDouble(0.0);
             model.creation_mode = jocelin::model::ModelCreationMode::Import;
-            for (const auto& entry : object.value("classes").toArray()) {
-                if (!entry.isObject()) continue;
-                const auto value = entry.toObject();
-                const std::string class_id = value.value("id").toString().toStdString();
-                const std::string name = value.value("name").toString().toStdString();
-                const int mask_value = value.value("mask_value").toInt();
-                if (!class_id.empty() && !name.empty() && mask_value > 0)
-                    model.classes.push_back({class_id, name, mask_value});
+            model.training_status = jocelin::model::ModelTrainingStatus::Imported;
+            const int last_class = config.tool_type == jocelin::config::ToolType::Cls
+                ? config.num_classes : config.num_classes - 1;
+            for (int label = 1; label <= last_class; ++label) {
+                const auto found = std::find_if(classes.begin(), classes.end(),
+                    [label](const auto& value) { return value.mask_value == label; });
+                model.classes.push_back(found != classes.end() ? *found : jocelin::model::ModelClass{
+                    "imported_" + std::to_string(label), "Class " + std::to_string(label), label});
             }
             for (const auto& weight : import_weights) {
                 const QFileInfo source_info(weight.source_path);
+                const bool native = weight.format == jocelin::config::WeightType::LibTorch;
                 const QString filename = QString::fromStdString(weight.id) +
-                    (source_info.suffix().isEmpty() ? QString{} : "." + source_info.suffix());
+                    (native ? ".pt" : (source_info.suffix().isEmpty() ? QString{} : "." + source_info.suffix()));
                 const QString destination = QDir(asset_directory).filePath(filename);
-                if (!QFile::copy(weight.source_path, destination))
+                if (native) {
+                    const auto report = jocelin::model::import_model_weights(
+                        config, weight.source_path.toStdString(), destination.toStdString());
+                    QFile report_file(QDir(asset_directory).filePath(QString::fromStdString(weight.id) + "-load-report.txt"));
+                    if (!report_file.open(QIODevice::WriteOnly | QIODevice::Text))
+                        throw std::runtime_error("cannot save model import report");
+                    report_file.write(QByteArray::fromStdString(report.summary() + "\n"));
+                    for (const auto& message : report.messages)
+                        report_file.write(QByteArray::fromStdString(message + "\n"));
+                    log_->appendPlainText(tr("[import] %1: %2").arg(QString::fromStdString(weight.id),
+                        QString::fromStdString(report.summary())));
+                    log_->appendPlainText(tr("Load report: %1").arg(report_file.fileName()));
+                } else if (!QFile::copy(weight.source_path, destination)) {
                     throw std::runtime_error("cannot copy imported model weight into Project");
+                }
                 jocelin::model::ModelWeight imported;
                 imported.id = weight.id;
                 imported.format = weight.format;
-                imported.precision = weight.precision;
+                imported.precision = native ? jocelin::model::WeightPrecision::Float32 : weight.precision;
                 imported.role = weight.role;
                 imported.path = destination.toStdString();
                 imported.parent_weight_id = weight.parent_weight_id;
@@ -1144,11 +1277,14 @@ void MainWindow::buildUi() {
                 model.weights.push_back(std::move(imported));
             }
             const auto added = project_.add_model(std::move(model));
+            import_added = true;
             project_.save_project();
             node_workspace_->refresh_models();
             statusBar()->showMessage(
                 tr("%1 imported into Project Model List").arg(QString::fromStdString(added.name)), 5000);
         } catch (const std::exception& error) {
+            if (!import_added && !imported_asset_directory.isEmpty())
+                QDir(imported_asset_directory).removeRecursively();
             QMessageBox::warning(
                 this, tr("Cannot import model"), QString::fromUtf8(error.what()));
         }
@@ -1188,7 +1324,7 @@ void MainWindow::buildUi() {
                     supported_devices.append(QString::fromStdString(jocelin::config::to_string(type)));
                 weights.append(QJsonObject{
                     {"id", QString::fromStdString(weight.id)},
-                    {"format", QString::fromStdString(jocelin::model::to_string(weight.format))},
+                    {"format", QString::fromStdString(jocelin::config::to_string(weight.format))},
                     {"precision", QString::fromStdString(jocelin::model::to_string(weight.precision))},
                     {"role", QString::fromStdString(jocelin::model::to_string(weight.role))},
                     {"file", filename},
@@ -1837,7 +1973,7 @@ void MainWindow::startTraining(
         node_workspace_->training_started(task_node_id);
         node_workspace_->set_runtime_busy(true);
         const QString start_message =
-            tr("Training %1 started on %2 · source %3")
+            tr("Training %1 started on %2 路 source %3")
                 .arg(run_id,
                      QString::fromStdString(device.display_name),
                      launch.mode);
@@ -1906,7 +2042,7 @@ void MainWindow::startInference(
         if (!project_.has_storage())
             throw std::runtime_error("save the project before inference");
         const QString weight_format = QString::fromStdString(
-            jocelin::model::to_string(inference_weight->format));
+            jocelin::config::to_string(inference_weight->format));
         const QString output = QDir(project_.metadata().root_directory).filePath(
             "results/" + model_id + "/" + weight_format);
         QDir output_directory(output);

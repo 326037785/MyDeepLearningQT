@@ -38,7 +38,7 @@ These structures may reference `sample_id` or backend geometry, but they must no
 
 When Qt imports or edits annotation data, it converts the result into the corresponding `DeepLearning` representation before the sample is consumed by training or inference.
 
-A segmentation mask file or `QImage` becomes `std::vector<Region>` in `AiMetaData::regions`. A training exclusion drawing becomes `AiMetaData::mask`. Neither path is appended to `AiMetaData::image_paths`, because `image_paths` contains bucket input images only.
+A segmentation mask file or `QImage` becomes `std::vector<Region>` in `AiMetaData::regions`. A training exclusion drawing becomes `AiMetaData::mask`. Neither path is appended to `AiMetaData::image_paths`, which stores only bucket input image paths, not image data. Core transforms the image, spatial annotation and exclusion mask together during geometric augmentation, then applies boolean exclusion after augmentation.
 
 ## New task modules
 
