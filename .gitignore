@@ -1,4 +1,28 @@
+# Build output and local verification data
 /build/
 /Testing/
+
+# Local AI bridge notes
 /.ai-bridge/
+
+# IDE and user-specific files
+.vs/
 *.user
+
+# Compiled binaries and runtime dependencies must stay out of version control
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+*.ilk
+*.exe
+*.so
+*.so.*
+*.dylib
+*.a
+
+# CMake and compiler byproducts outside the build tree
+CMakeFiles/
+CMakeCache.txt
+*.tlog
