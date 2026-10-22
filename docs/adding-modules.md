@@ -381,11 +381,8 @@ Add the member and its setup/clear calls wherever `segmentation_` and
 
 ### C.8 File exchange (optional)
 
-If od annotations must import/export a file format, extend
-`src/annotation_exchange.h/.cpp` with a codec that produces the backend
-geometry. Follow the existing format-id pattern (`StudioNative`,
-`ILabelledSegmentation`): unknown formats fail explicitly, and the committed
-data is always `TaskSampleBinding` + backend structures.
+Annotation import and Project storage follow
+[annotation-import-and-storage.md](annotation-import-and-storage.md). A new task first defines its typed Core target, then its source adapters normalize external data into that target through the shared import boundary. Do not create a task-specific persistent representation for COCO, LabelMe, YOLO or another source format. Unknown or ambiguous formats fail explicitly; committed annotations are Project-owned canonical task data.
 
 ### C.9 Tests
 

@@ -79,6 +79,8 @@ Qt is responsible for editing and visualizing the backend structures. External a
 
 For example, a segmentation mask displayed as `QImage` is a UI/file representation; the backend spatial annotation is stored as `std::vector<Region>` in `AiMetaData`.
 
+External annotation import, Project-owned annotation snapshots, bucket binding, annotation states and compact metadata/run storage follow [annotation-import-and-storage.md](annotation-import-and-storage.md). External source formats are adapters and do not become persistent Project data models.
+
 ## Adding a task
 
 A new task starts in `DeepLearning`, not in Qt.
