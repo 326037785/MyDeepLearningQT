@@ -1,10 +1,10 @@
 # AiMetaData in DeepLearningQT
 
-`DeepLearningQT` consumes `jocelin::meta::SampleSet` and `jocelin::meta::AiMetaData` from `DeepLearning` directly. The authoritative definition is `DeepLearning/docs/ai_metadata.md`; this file only defines the Qt-side boundary.
+`DeepLearningQT` consumes `jocelin::meta::SampleSet` and `jocelin::meta::AiMetaData` from `DeepLearning` directly. `DeepLearning/docs/ai_metadata.md` defines the canonical metadata; this document defines the Qt-side boundary.
 
 ## Direct consumption
 
-One `AiMetaData` is one sample/bucket. Qt reads and edits the same backend object instead of building a parallel sample structure.
+One `AiMetaData` is one sample/bucket. Qt reads and edits that backend object directly.
 
 The following data stays in `AiMetaData`:
 
@@ -18,9 +18,9 @@ The following data stays in `AiMetaData`:
 - annotation state;
 - dataset and sample identity.
 
-File-backed annotation formats and canvas buffers are adapters around these fields. They are not another canonical sample model.
+File-backed annotation formats and canvas buffers adapt these authoritative fields for storage and interaction.
 
-Project model identity and model weight branches are also outside `AiMetaData`. Qt reads those from the backend `jocelin::model::ModelList`; sample metadata must not duplicate model ids, checkpoint catalogs or LibTorch/ONNX/TensorRT branch state.
+`jocelin::model::ModelList` owns Project model identity and weight branches. Qt reads model ids, checkpoint information and LibTorch/ONNX/TensorRT branch state from that container.
 
 ## UI-only structures
 
@@ -32,7 +32,7 @@ Qt may define structures that exist only for presentation or interaction, for ex
 - thumbnail/display rows;
 - transient widget selection.
 
-These structures may reference `sample_id` or backend geometry, but they must not duplicate the sample's business data as an independent source of truth.
+These structures reference `sample_id` or backend geometry. The backend object remains the authoritative source of sample business data.
 
 ## Annotation conversion
 
@@ -42,12 +42,10 @@ A segmentation mask file or `QImage` becomes `std::vector<Region>` in `AiMetaDat
 
 ## New task modules
 
-If a new task such as object detection or OCR requires a structure that `AiMetaData` cannot express, do not define the business structure in `DeepLearningQT`.
-
-First extend `DeepLearning`:
+New task data for object detection, OCR or another task starts in `DeepLearning`:
 
 1. add the required geometry/data structure under the backend `common/geometry` or related core module;
 2. add the typed metadata field required by the task;
 3. implement the backend producer and consumer.
 
-After that, Qt may add the corresponding editor and visualization for the new structure. Qt owns the visual management of backend structures, not their domain definition.
+Qt then adds the corresponding editor and visualization. Core owns the domain definition; Qt owns visual interaction and presentation.

@@ -279,13 +279,10 @@ Keep the remaining `config.training.*` and dataset-binding checks unchanged.
 
 `src/task_workspace_service.cpp` contains the task branches. Extend each one:
 
-**Split stratification** — `split_stratum()`: add an `od` branch that groups by
-the task's real target classification (the class reference), not by mask pixels:
-
-```cpp
-if (task.task == "od")
-    return sample.class_id.empty() ? "background-only" : "class:" + sample.class_id;
-```
+**Split stratification** — `split_stratum()`: add an `od` branch that derives
+strata from the task's canonical target and annotation state. An `Annotated`
+sample with empty boxes is a valid zero-object negative sample. Boxes and
+annotation state determine negative-sample membership.
 
 **Quality checks** — `refresh_quality()` currently sets
 `const bool segmentation = task().task == "sg";`. Add detection-specific
@@ -303,13 +300,13 @@ if (tool_type == jocelin::config::ToolType::Od &&
 // ...
 } else if (tool_type == jocelin::config::ToolType::Od) {
     sample.boxes = detection_target_boxes(sample_binding, binding().classes);
-    if (sample.boxes.empty()) continue;
+    // Annotated + empty boxes is valid negative supervision; retain the sample.
 }
 ```
 
-The adapter (`detection_target_boxes`) is Qt-owned and may read a file format,
-but its output is the backend `std::vector<jocelin::geo::DetBox>`. Do not add a
-Qt box type to `AiMetaData`.
+The adapter (`detection_target_boxes`) is Qt-owned and may read a file format.
+It produces the backend `std::vector<jocelin::geo::DetBox>` consumed by
+`AiMetaData`.
 
 **Inference request** — `build_inference_request()` fills `InferenceTarget`
 per image. Add the od target mapping there (for example the ground-truth boxes
@@ -382,7 +379,7 @@ Add the member and its setup/clear calls wherever `segmentation_` and
 ### C.8 File exchange (optional)
 
 Annotation import and Project storage follow
-[annotation-import-and-storage.md](annotation-import-and-storage.md). A new task first defines its typed Core target, then its source adapters normalize external data into that target through the shared import boundary. Do not create a task-specific persistent representation for COCO, LabelMe, YOLO or another source format. Unknown or ambiguous formats fail explicitly; committed annotations are Project-owned canonical task data.
+[annotation-import-and-storage.md](annotation-import-and-storage.md). A new task first defines its typed Core target, then its source adapters normalize external data into that target through the shared import boundary. All source formats use the Project's canonical task storage. Unknown or ambiguous formats fail explicitly.
 
 ### C.9 Tests
 
