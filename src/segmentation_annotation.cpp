@@ -1,4 +1,6 @@
 #include "segmentation_annotation.h"
+#include "result_presentation.h"
+#include "segmentation_annotation_state.h"
 
 #include "icon_provider.h"
 #include "sample_presentation.h"
@@ -236,39 +238,6 @@ qreal normalized_angle_delta(qreal degrees) {
     return degrees;
 }
 
-QImage colored_label_overlay(const QImage& source) {
-    if (source.isNull()) return {};
-    const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
-    QImage result(labels.size(), QImage::Format_ARGB32_Premultiplied);
-    result.fill(Qt::transparent);
-    for (int y = 0; y < labels.height(); ++y) {
-        const uchar* input = labels.constScanLine(y);
-        auto* output = reinterpret_cast<QRgb*>(result.scanLine(y));
-        for (int x = 0; x < labels.width(); ++x)
-            if (input[x] != 0) output[x] = class_color(input[x]).rgba();
-    }
-    return result;
-}
-
-QImage sparse_prediction_overlay(const QImage& label_source, const QImage& color_source) {
-    if (label_source.isNull()) return {};
-    if (color_source.isNull() || color_source.size() != label_source.size())
-        return colored_label_overlay(label_source);
-
-    const QImage labels = label_source.convertToFormat(QImage::Format_Grayscale8);
-    const QImage colors = color_source.convertToFormat(QImage::Format_RGB32);
-    QImage result(labels.size(), QImage::Format_ARGB32_Premultiplied);
-    result.fill(Qt::transparent);
-    for (int y = 0; y < labels.height(); ++y) {
-        const uchar* label = labels.constScanLine(y);
-        const auto* color = reinterpret_cast<const QRgb*>(colors.constScanLine(y));
-        auto* output = reinterpret_cast<QRgb*>(result.scanLine(y));
-        for (int x = 0; x < labels.width(); ++x)
-            if (label[x] != 0) output[x] = qRgba(qRed(color[x]), qGreen(color[x]), qBlue(color[x]), 255);
-    }
-    return result;
-}
-
 QImage neutral_mask_overlay(const QImage& source) {
     if (source.isNull()) return {};
     const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
@@ -330,6 +299,11 @@ bool MaskCanvas::load(const QString& image_path, const QString& mask_path, QStri
     if (zoom_changed) zoom_changed(zoom_percent());
     if (undo_state_changed) undo_state_changed(false, false);
     return true;
+}
+
+void MaskCanvas::mark_saved() {
+    dirty_ = false;
+    if (dirty_changed) dirty_changed(false);
 }
 
 void MaskCanvas::clear() {
@@ -1573,6 +1547,11 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
                                       const std::string& value) {
         if (sample_split_requested && !ids.empty()) sample_split_requested(ids, value);
     };
+    images_->extend_context_menu = [this](QMenu& menu, const std::vector<std::string>& ids) {
+        auto* empty = menu.addAction(tr("Set as empty"));
+        empty->setObjectName("annotationSetAsEmptyAction");
+        connect(empty, &QAction::triggered, this, [this, ids] { set_selected_empty(ids); });
+    };
     canvas_->dirty_changed = [this](bool dirty) {
         state_->setText(dirty ? tr("Mask has unsaved changes") : tr("Mask saved"));
     };
@@ -1764,15 +1743,12 @@ void SegmentationAnnotationWidget::resizeEvent(QResizeEvent* event) {
 void SegmentationAnnotationWidget::set_task_dataset(
     const QString& directory,
     const std::vector<TaskSampleBinding>& samples,
-    const std::vector<AnnotationClass>& classes,
-    const QString& annotation_directory)
+    const std::vector<AnnotationClass>& classes)
 {
     if (!confirm_transition()) return;
     dataset_directory_ = directory;
-    annotation_directory_ = annotation_directory;
     configured_classes_ = classes;
     imported_image_paths_.clear();
-    configured_mask_paths_.clear();
     sample_bindings_.clear();
     sample_ids_.clear();
     sample_image_sets_.clear();
@@ -1791,12 +1767,28 @@ void SegmentationAnnotationWidget::set_task_dataset(
         sample_ids_.push_back(QString::fromStdString(sample.sample_id));
         sample_image_sets_.push_back(images);
         display_names_.push_back(image_display_name(sample_index, sample));
-        if (!sample.mask_path.empty())
-            configured_mask_paths_.insert(
-                primary,
-                QFileInfo(QString::fromStdString(sample.mask_path)).absoluteFilePath());
+
     }
     reload_dataset();
+}
+
+void SegmentationAnnotationWidget::refresh_samples(
+    const std::vector<TaskSampleBinding>& samples,
+    const std::vector<std::string>& reload_sample_ids)
+{
+    bool reload_current = false;
+    for (size_t index = 0; index < sample_bindings_.size(); ++index) {
+        auto& displayed = sample_bindings_[index];
+        const auto source = std::find_if(samples.begin(), samples.end(),
+            [&](const auto& sample) { return sample.sample_id == displayed.sample_id; });
+        if (source == samples.end()) continue;
+        displayed = *source;
+        reload_current = reload_current || (static_cast<int>(index) == current_index_ &&
+            std::find(reload_sample_ids.begin(), reload_sample_ids.end(), displayed.sample_id) != reload_sample_ids.end());
+    }
+    if (reload_current) load_index(current_index_);
+    refresh_sample_status();
+    update_context_label();
 }
 
 void SegmentationAnnotationWidget::set_class_schema(
@@ -1808,9 +1800,8 @@ void SegmentationAnnotationWidget::set_class_schema(
     update_context_label();
 }
 
-void SegmentationAnnotationWidget::set_inference_directory(const QString& directory) {
-    if (directory == inference_directory_) return;
-    inference_directory_ = directory;
+void SegmentationAnnotationWidget::set_inference_result(const InferenceResultSet* result) {
+    inference_results_ = result ? result->samples : std::vector<ResultReference>{};
     refresh_inference_layers();
 }
 
@@ -1824,13 +1815,20 @@ void SegmentationAnnotationWidget::refresh_inference_layers() {
         update_layer_controls();
         return;
     }
-    const QString stem = QFileInfo(image_files_[current_index_]).completeBaseName();
-    const QDir output(inference_directory_);
-    const QImage result_mask(output.filePath(stem + "_mask.png"));
-    const QImage color_mask(output.filePath(stem + "_color_mask.png"));
-    canvas_->set_prediction_overlay(
-        sparse_prediction_overlay(result_mask, color_mask));
-    canvas_->set_heatmap_overlay(QImage(output.filePath(stem + "_heatmap.png")));
+    canvas_->set_prediction_overlay({});
+    canvas_->set_heatmap_overlay({});
+    for (const auto& reference : inference_results_) {
+        const auto* value = std::get_if<jocelin::result::sg::SgResult>(&reference.result);
+        if (!value || current_index_ >= static_cast<int>(sample_bindings_.size()) ||
+            reference.source_sample_id != sample_bindings_[static_cast<size_t>(current_index_)].sample_id ||
+            QFileInfo(QString::fromStdString(value->image_path)).absoluteFilePath() !=
+                QFileInfo(image_files_[current_index_]).absoluteFilePath()) continue;
+        canvas_->set_prediction_overlay(prediction_overlay_from_result(*value));
+        if (!value->result_name.empty() && !value->save_dir.empty())
+            canvas_->set_heatmap_overlay(QImage(QDir(QString::fromStdString(value->save_dir))
+                .filePath(QString::fromStdString(value->result_name) + "_heatmap.png")));
+        break;
+    }
     QImage training_mask;
     if (current_index_ < static_cast<int>(sample_bindings_.size())) {
         const auto& path = sample_bindings_[static_cast<size_t>(current_index_)].training_mask_path;
@@ -2050,18 +2048,12 @@ void SegmentationAnnotationWidget::refresh_sample_status() {
             ? QString::fromStdString(sample->annotation_state)
             : QStringLiteral("unannotated");
         const bool issue = sample &&
-            (!sample->quality_issues.empty() ||
-             annotation_state == QStringLiteral("needs-review"));
+            !sample->quality_issues.empty();
         QString state = tr("Not annotated");
         if (annotation_state == QStringLiteral("annotated"))
             state = tr("Annotated");
-        else if (annotation_state == QStringLiteral("background-only"))
-            state = tr("Background only");
-        else if (issue)
-            state = tr("Needs review");
         const bool complete =
-            annotation_state == QStringLiteral("annotated") ||
-            annotation_state == QStringLiteral("background-only");
+            annotation_state == QStringLiteral("annotated");
         annotated += complete ? 1 : 0;
         quality_issues += issue ? 1 : 0;
         const int row_index = row;
@@ -2109,25 +2101,6 @@ void SegmentationAnnotationWidget::refresh_sample_status() {
         quality_->style()->unpolish(quality_);
         quality_->style()->polish(quality_);
     }
-}
-
-QString SegmentationAnnotationWidget::mask_path_for_image(const QString& image_path) const {
-    const QString absolute_image = QFileInfo(image_path).absoluteFilePath();
-    const auto configured = configured_mask_paths_.constFind(absolute_image);
-    if (configured != configured_mask_paths_.cend()) return configured.value();
-    QString name = QFileInfo(image_path).completeBaseName();
-    for (int index = 0; index < imported_image_paths_.size(); ++index) {
-        if (QFileInfo(imported_image_paths_[index]).absoluteFilePath() !=
-            absolute_image)
-            continue;
-        if (index < sample_ids_.size() && !sample_ids_[index].isEmpty())
-            name = sample_ids_[index];
-        break;
-    }
-    const QString masks = annotation_directory_.isEmpty()
-        ? QDir(dataset_directory_).filePath("masks")
-        : annotation_directory_;
-    return QDir(masks).filePath(name + ".png");
 }
 
 bool SegmentationAnnotationWidget::confirm_transition() {
@@ -2203,9 +2176,11 @@ void SegmentationAnnotationWidget::load_index(int index) {
     if (index < 0 || index >= image_files_.size()) return;
     const QString path = image_files_[index];
     QString error;
-    if (!canvas_->load(path, mask_path_for_image(path), &error)) {
+    if (!canvas_->load(path, {}, &error)) {
         state_->setText(error); if (status) status(error); return;
     }
+    if (index < static_cast<int>(sample_bindings_.size()))
+        canvas_->apply_mask(segmentation_annotation_image(sample_bindings_[static_cast<size_t>(index)]), false);
     current_index_ = index;
     const QSize dimensions = QImageReader(path).size();
     const bool portrait = dimensions.isValid() &&
@@ -2241,41 +2216,27 @@ void SegmentationAnnotationWidget::update_context_label() {
             : QString{});
 }
 
-void SegmentationAnnotationWidget::save_current() {
-    if (current_index_ < 0) return;
-    QString error;
-    const QString path = mask_path_for_image(image_files_[current_index_]);
-    if (!canvas_->save(path, &error)) { state_->setText(error); if (status) status(error); }
-    else {
-        const QString image = QFileInfo(image_files_[current_index_]).absoluteFilePath();
-        const QString mask = QFileInfo(path).absoluteFilePath();
-        configured_mask_paths_.insert(image, mask);
-        if (current_index_ < static_cast<int>(sample_bindings_.size())) {
-            auto& sample = sample_bindings_[static_cast<size_t>(current_index_)];
-            sample.mask_path = mask.toStdString();
-            if (sample.quality_issues.empty()) {
-                const QImage labels(mask);
-                bool has_foreground = false;
-                if (!labels.isNull()) {
-                    const QImage grayscale = labels.convertToFormat(QImage::Format_Grayscale8);
-                    for (int y = 0; y < grayscale.height() && !has_foreground; ++y) {
-                        const uchar* row = grayscale.constScanLine(y);
-                        has_foreground = std::any_of(
-                            row, row + grayscale.width(),
-                            [](uchar value) { return value != 0; });
-                    }
-                }
-                sample.annotation_state =
-                    has_foreground ? "annotated" : "background-only";
-            }
-        }
-        if (mask_saved) mask_saved(image, mask);
-        refresh_sample_status();
-        update_context_label();
-        state_->setText(tr("Mask saved"));
-        state_->setToolTip(mask);
-        if (status) status(state_->text());
-    }
+void SegmentationAnnotationWidget::set_selected_empty(const std::vector<std::string>& ids) {
+    if (!samples_empty_requested) return;
+    if (QMessageBox::question(this, tr("Set as empty"),
+            tr("Confirm %1 sample(s) as pure background? Their foreground annotation will be cleared.")
+                .arg(static_cast<int>(ids.size())),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    samples_empty_requested(ids);
+}
+
+bool SegmentationAnnotationWidget::save_current() {
+    if (current_index_ < 0) return false;
+    if (!canvas_->is_dirty()) return true;
+    if (!mask_saved) return false;
+    mask_saved(QFileInfo(image_files_[current_index_]).absoluteFilePath(), canvas_->mask_image());
+    canvas_->mark_saved();
+    refresh_sample_status();
+    update_context_label();
+    state_->setText(tr("Annotation updated"));
+    if (status) status(state_->text());
+    return true;
 }
 
 } // namespace studio

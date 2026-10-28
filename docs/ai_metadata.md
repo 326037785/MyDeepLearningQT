@@ -1,51 +1,49 @@
 # AiMetaData in DeepLearningQT
 
-`DeepLearningQT` consumes `jocelin::meta::SampleSet` and `jocelin::meta::AiMetaData` from `DeepLearning` directly. `DeepLearning/docs/ai_metadata.md` defines the canonical metadata; this document defines the Qt-side boundary.
+AiMetaData is Core's canonical metadata for one complete sample bucket. SampleSet contains these samples. Qt's TaskDatasetBinding stores the owning TaskNode's persistent sample associations and task targets.
 
-## Direct consumption
+Core field semantics are defined in [Core ai_metadata.md](../../MyLibtorchLearning/docs/ai_metadata.md).
 
-One `AiMetaData` is one sample/bucket. Qt reads and edits that backend object directly.
+## 1. Task data
 
-The following data stays in `AiMetaData`:
+TaskWorkspaceService builds AiMetaData from the current TaskNode binding. Core receives:
 
-- all input image paths in the bucket;
-- region annotation;
-- ROI and ROI four-point geometry;
-- training exclusion masks;
-- class label;
-- sample selection;
-- train/validation split and split mode;
-- annotation state;
-- dataset and sample identity.
+- all ordered input image paths in the bucket;
+- spatial annotation, ROI and exclusion regions;
+- the task's class target;
+- sample selection, split and split mode;
+- annotation state and sample identity.
 
-File-backed annotation formats and canvas buffers adapt these authoritative fields for storage and interaction.
+SG annotation uses Core Regions. CL annotation references a stable class_id in Qt and becomes a Core class_label at the consumption boundary.
 
-`jocelin::model::ModelList` owns Project model identity and weight branches. Qt reads model ids, checkpoint information and LibTorch/ONNX/TensorRT branch state from that container.
+A segmentation mask or canvas QImage is converted into AiMetaData::regions. A training exclusion mask becomes AiMetaData::mask. image_paths contains input image paths only.
 
-## UI-only structures
+Core applies geometric augmentation to the image, annotation and exclusion mask together. Boolean exclusion is applied after augmentation.
 
-Qt may define structures that exist only for presentation or interaction, for example:
+## 2. Binding facts
 
-- canvas tool state;
-- temporary polygon or drag handles;
-- viewport transform;
-- thumbnail/display rows;
-- transient widget selection.
+Each TaskSampleBinding persists sample_id and complete ordered image_paths. TaskDatasetBinding persists bucket_capacity. These existing fields form the last verified bucket snapshot.
 
-These structures reference `sample_id` or backend geometry. The backend object remains the authoritative source of sample business data.
+source_node_id expresses the current Dataset edge. It is zero after disconnect and is not a persisted source identity. Detached Tasks retain samples, targets and assignments.
 
-## Annotation conversion
+Rebind comparison checks sample_id sets, ordered bucket paths and bucket_capacity. It uses Project/runtime path normalization. It does not perform quality checks. Synchronization and refresh_quality handle current input and target validity after a connection is established.
 
-When Qt imports or edits annotation data, it converts the result into the corresponding `DeepLearning` representation before the sample is consumed by training or inference.
+Classes, split_settings and preprocessing belong to Task configuration. Confirmed DataNode deletion/replacement clears samples and Inference only for currently connected Tasks. The class schema, settings and models remain. Explicit annotation-package import supplies its receiving Task's new classes and targets.
 
-A segmentation mask file or `QImage` becomes `std::vector<Region>` in `AiMetaData::regions`. A training exclusion drawing becomes `AiMetaData::mask`. Neither path is appended to `AiMetaData::image_paths`, which stores only bucket input image paths, not image data. Core transforms the image, spatial annotation and exclusion mask together during geometric augmentation, then applies boolean exclusion after augmentation.
+## 3. Models and results
 
-## New task modules
+Each TaskNode holds Core ModelList. ModelEntry holds model identity and specification. ModelWeight holds branch identity, format and artifact/runtime metadata. Models are independent of the current Dataset binding.
 
-New task data for object detection, OCR or another task starts in `DeepLearning`:
+Core task Result objects hold predictions, task parameters, flags and metrics. Qt associates them with source_sample_id and the owning Node's model_id + weight_id. Each pair has one latest result. Core Result structures do not define Project topology or storage ownership.
 
-1. add the required geometry/data structure under the backend `common/geometry` or related core module;
-2. add the typed metadata field required by the task;
-3. implement the backend producer and consumer.
+Annotation, Inference and Results share the current Model/Weight selection. A branch without a result clears the inference overlay.
 
-Qt then adds the corresponding editor and visualization. Core owns the domain definition; Qt owns visual interaction and presentation.
+## 4. Presentation and validity
+
+Widgets retain viewport transforms, temporary drawing handles, display rows and selection. Authoritative sample data remains in the TaskNode binding.
+
+Annotation has two states: Unannotated and Annotated. Classification requires a valid class. SG distinguishes an unfinished empty target from confirmed pure background through annotation_state.
+
+Core owns task geometry, result filtering, metric computation and mask rendering. Qt owns image loading, editing interaction, persistence and presentation.
+
+Identity and ownership are defined in [node_identity.md](node_identity.md). Annotation rules are in [annotation_spec.md](annotation_spec.md). Lifecycle and result selection are in [inference-modelist-todo-guide.md](inference-modelist-todo-guide.md).

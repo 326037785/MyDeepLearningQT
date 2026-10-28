@@ -8,6 +8,7 @@
 #include <training/training_service.h>
 
 #include <QString>
+#include <QImage>
 
 #include <cstdint>
 #include <string>
@@ -40,12 +41,25 @@ struct TaskSplitStats {
 // typed API instead of traversing edges or reading std::variant values.
 class TaskWorkspaceService final {
 public:
-    TaskWorkspaceService(WorkflowGraph& graph, int task_node_id);
+    TaskWorkspaceService(WorkflowGraph& graph, int node_id, const QString& node_directory = {});
 
-    int task_node_id() const { return task_node_id_; }
-    int dataset_node_id() const;
+    int node_id() const { return node_id_; }
+    int source_node_id() const;
     TaskNodeConfig& task();
     const TaskNodeConfig& task() const;
+    const std::vector<jocelin::model::ModelEntry>& models() const;
+    jocelin::model::ModelEntry* find_model(const QString& id);
+    const jocelin::model::ModelEntry* find_model(const QString& id) const;
+    jocelin::model::ModelEntry add_model(jocelin::model::ModelEntry model);
+    bool remove_model(const QString& id);
+    void clear_models();
+    const InferenceResultSet* inference_result(const QString& model_id, const QString& weight_id) const;
+    void select_inference_result(const QString& model_id, const QString& weight_id);
+    void select_inference_model(const QString& model_id);
+    std::function<void()> inference_selection_changed;
+    const QString& selected_model_id() const { return selected_model_id_; }
+    const QString& selected_weight_id() const { return selected_weight_id_; }
+    const InferenceResultSet* selected_inference_result() const;
     TaskDatasetBinding& binding();
     const TaskDatasetBinding& binding() const;
     const DatasetConfig& source_dataset() const;
@@ -66,8 +80,9 @@ public:
                                    int test_percent,
                                    std::uint32_t seed,
                                    bool replace_manual_overrides = false);
-    void set_mask_path_for_image(const std::string& image_path,
-                                 const std::string& mask_path);
+    void set_segmentation_mask_for_image(const std::string& image_path,
+                                         const QImage& mask);
+    void set_segmentation_sample_empty(const std::string& sample_id);
     void set_class_for_sample(const std::string& sample_id,
                               const std::string& class_id);
 
@@ -80,11 +95,13 @@ public:
 
     jocelin::training::TrainingRequest build_training_request(
         const jocelin::config::Device& device,
-        jocelin::config::WeightSource weight_source = {}) const;
+        jocelin::config::WeightSource weight_source = {},
+        const jocelin::model::ModelEntry* resume_model = nullptr) const;
     jocelin::inference::InferenceRequest build_inference_request(
         const jocelin::config::Device& device,
         const jocelin::model::ModelEntry& model,
-        const jocelin::model::ModelWeight& weight) const;
+        const jocelin::model::ModelWeight& weight,
+        const std::string& output_directory = {}) const;
 
     void record_training_started(const std::string& model_id);
     void record_inference_started();
@@ -101,7 +118,10 @@ private:
     AnnotationClass& require_class(const std::string& class_id);
 
     WorkflowGraph* graph_ = nullptr;
-    int task_node_id_ = 0;
+    int node_id_ = 0;
+    QString selected_model_id_;
+    QString selected_weight_id_;
+    QString node_directory_;
 };
 
 } // namespace studio

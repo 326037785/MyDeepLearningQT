@@ -23,17 +23,23 @@ const AnnotationClass* find_annotation_class_by_mask(
     const TaskDatasetBinding& binding,
     int mask_value);
 
+// Identity comparison only. Input quality and availability remain task checks.
+void validate_task_dataset_rebind(const TaskDatasetBinding& binding,
+                                  const DatasetConfig& dataset);
+// Leaves Task configuration, class schema and ModelList intact.
+void clear_task_dataset_state(TaskNodeConfig& task);
+
 // Synchronizes the Task-side binding with the one connected raw Dataset.
 // Existing Task annotations, selection, splits, and stable class identities
 // remain authoritative while raw sample membership follows the Dataset.
 BindingSyncResult synchronize_task_dataset_binding(
     WorkflowGraph& graph,
-    int task_node_id);
+    int node_id);
 
 // Refreshes every Task connected to a Dataset after its raw inventory changes.
 // The UI uses this command instead of walking graph edges itself.
 bool synchronize_task_bindings_for_dataset(
     WorkflowGraph& graph,
-    int dataset_node_id);
+    int node_id);
 
 } // namespace studio

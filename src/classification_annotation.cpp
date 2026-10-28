@@ -4,16 +4,12 @@
 
 #include <QAbstractItemView>
 #include <QAction>
-#include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImageReader>
 #include <QInputDialog>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -270,9 +266,11 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) 
     });
 }
 
-void ClassificationAnnotationWidget::set_inference_directory(const QString& directory) {
-    if (directory == inference_directory_) return;
-    inference_directory_ = directory;
+void ClassificationAnnotationWidget::set_inference_result(
+    const InferenceResultSet* result, const QStringList& model_classes)
+{
+    inference_results_ = result ? result->samples : std::vector<ResultReference>{};
+    prediction_class_names_ = model_classes;
     refresh_inference_result();
 }
 
@@ -282,25 +280,16 @@ void ClassificationAnnotationWidget::refresh_inference_result() {
     has_prediction_ = false;
     current_heatmap_ = {};
 
-    if (current_row_ >= 0 && current_row_ < image_paths_.size() &&
-        !inference_directory_.isEmpty()) {
-        const QString stem = QFileInfo(image_paths_[current_row_]).completeBaseName();
-        QFile metadata(QDir(inference_directory_).filePath(stem + "_meta.json"));
-        if (metadata.open(QIODevice::ReadOnly)) {
-            const auto document = QJsonDocument::fromJson(metadata.readAll());
-            if (document.isObject()) {
-                const auto object = document.object();
-                predicted_class_ = object.value("predicted_class").toInt(-1);
-                confidence_ = object.value("confidence").toDouble(0.0);
-                has_prediction_ = predicted_class_ > 0;
-
-                QString heatmap_path = object.value("heatmap_path").toString();
-                if (heatmap_path.isEmpty())
-                    heatmap_path = QDir(inference_directory_).filePath(stem + "_heatmap.png");
-                else if (!QFileInfo::exists(heatmap_path))
-                    heatmap_path = QDir(inference_directory_).filePath(QFileInfo(heatmap_path).fileName());
-                current_heatmap_ = QImage(heatmap_path);
-            }
+    if (current_row_ >= 0 && current_row_ < image_paths_.size()) {
+        for (const auto& reference : inference_results_) {
+            const auto* value = std::get_if<jocelin::result::cls::ClsResult>(&reference.result);
+            if (!value || reference.source_sample_id != sample_bindings_[static_cast<size_t>(current_row_)].sample_id ||
+                QFileInfo(QString::fromStdString(value->image_path)).absoluteFilePath() != image_paths_[current_row_]) continue;
+            predicted_class_ = value->predicted_class;
+            confidence_ = value->confidence;
+            has_prediction_ = true;
+            current_heatmap_ = QImage(QString::fromStdString(value->heatmap_path));
+            break;
         }
     }
 
@@ -408,8 +397,8 @@ void ClassificationAnnotationWidget::update_review_state() {
     const QString ground_truth = label >= 0 && label < class_names_.size()
         ? class_names_[label] : tr("Unassigned");
     const int predicted_index = predicted_class_ - 1;
-    const QString prediction = predicted_index >= 0 && predicted_index < class_names_.size()
-        ? class_names_[predicted_index]
+    const QString prediction = predicted_index >= 0 && predicted_index < prediction_class_names_.size()
+        ? prediction_class_names_[predicted_index]
         : predicted_class_ > 0 ? tr("Class %1").arg(predicted_class_) : tr("Unavailable");
 
     if (view_mode_ == 0) {
@@ -506,6 +495,11 @@ void ClassificationAnnotationWidget::show_class_menu(const QPoint& global_positi
             if (!ids.empty()) sample_split_requested(ids, value);
         });
     }
+    menu.addSeparator();
+    auto* empty = menu.addAction(tr("Set as empty"));
+    empty->setObjectName("annotationSetAsEmptyAction");
+    empty->setEnabled(false);
+    empty->setToolTip(tr("Classification requires an assigned class."));
     menu.exec(global_position);
 }
 

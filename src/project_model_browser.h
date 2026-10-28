@@ -33,7 +33,7 @@ public:
         root->setSpacing(8);
 
         auto* header = new QHBoxLayout;
-        auto* title = new QLabel(tr("PROJECT MODELS"), this);
+        auto* title = new QLabel(tr("TASK MODELS"), this);
         title->setProperty("eyebrow", true);
         header->addWidget(title);
         header->addStretch();
@@ -110,6 +110,7 @@ public:
         });
         connect(table_, &QTreeWidget::itemClicked, this,
                 [this](QTreeWidgetItem*, int column) {
+            if (selection_changed) selection_changed(current_model_id());
             if (!weight_selection_mode_ || column < 1 || column > 4) return;
             if (model_check_selection_) set_checked_model_id(current_model_id());
             if (weight_selection_changed)

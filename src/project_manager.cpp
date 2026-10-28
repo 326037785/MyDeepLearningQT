@@ -1,6 +1,9 @@
 #include "project_manager.h"
+#include "model_list_storage.h"
 #include "project_path_validator.h"
 #include "project_storage.h"
+#include "task_workspace_service.h"
+#include "task_dataset_binding.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -15,7 +18,6 @@
 #include <QUuid>
 
 #include <algorithm>
-#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <type_traits>
@@ -49,26 +51,6 @@ void require_exact_fields(
     }
 }
 
-QString validated_relative_path(const QString& value, const char* label) {
-    const QString relative = QDir::cleanPath(QDir::fromNativeSeparators(value));
-    if (relative.isEmpty() || relative == "." || QFileInfo(relative).isAbsolute() ||
-        relative == ".." || relative.startsWith("../"))
-        throw std::runtime_error(std::string("invalid ") + label + " path");
-    return relative;
-}
-
-QString portable_path(const std::string& value, const QString& root_directory) {
-    if (value.empty()) return {};
-    const QString path = QDir::cleanPath(QString::fromStdString(value));
-    if (path.startsWith("project:"))
-        throw std::runtime_error("runtime path must not contain a serialized project reference");
-    if (!QFileInfo(path).isAbsolute()) return "project:" + validated_relative_path(path, "resource");
-    const QString relative = QDir(root_directory).relativeFilePath(path);
-    if (relative != ".." && !relative.startsWith("../") && !QFileInfo(relative).isAbsolute())
-        return "project:" + QDir::fromNativeSeparators(relative);
-    return QDir::toNativeSeparators(path);
-}
-
 std::string relocated_path(
     const std::string& value,
     const QString& source_root,
@@ -89,8 +71,8 @@ void relocate_graph_paths(
     const QString& source_root,
     const QString& destination_root)
 {
-    for (const auto& [id, node] : graph.nodes()) {
-        auto& mutable_node = graph.node(id);
+    for (const auto& [node_id, node] : graph.nodes()) {
+        auto& mutable_node = graph.node(node_id);
         if (node.kind == NodeKind::DatasetInput) {
             auto& config = std::get<DatasetConfig>(mutable_node.config);
             config.directory = relocated_path(config.directory, source_root, destination_root);
@@ -98,12 +80,16 @@ void relocate_graph_paths(
                 item.path = relocated_path(item.path, source_root, destination_root);
         } else {
             auto& config = std::get<TaskNodeConfig>(mutable_node.config);
+            for (auto& model : config.model_list.entries()) {
+                model.asset_directory = relocated_path(model.asset_directory, source_root, destination_root);
+                for (auto& weight : model.weights)
+                    weight.path = relocated_path(weight.path, source_root, destination_root);
+            }
             config.training.output_directory = relocated_path(config.training.output_directory, source_root, destination_root);
             config.inference_output_directory = relocated_path(config.inference_output_directory, source_root, destination_root);
             for (auto& sample : config.dataset_binding.samples) {
                 for (auto& path : sample.image_paths)
                     path = relocated_path(path, source_root, destination_root);
-                sample.mask_path = relocated_path(sample.mask_path, source_root, destination_root);
                 sample.training_mask_path = relocated_path(
                     sample.training_mask_path, source_root, destination_root);
             }
@@ -129,46 +115,44 @@ void relocate_graph_paths(
     }
 }
 
-std::string runtime_path(const QString& value, const QString& root_directory) {
-    if (!value.startsWith("project:")) return QDir::toNativeSeparators(value).toStdString();
-    const QString relative = validated_relative_path(value.mid(8), "project-relative resource");
-    return QDir::toNativeSeparators(QDir(root_directory).absoluteFilePath(relative)).toStdString();
-}
-
 WorkflowGraph portable_graph(const WorkflowGraph& source, const QString& root_directory) {
     WorkflowGraph graph = source;
-    for (const auto& [id, node] : graph.nodes()) {
-        auto& mutable_node = graph.node(id);
+    for (const auto& [node_id, node] : graph.nodes()) {
+        auto& mutable_node = graph.node(node_id);
         if (node.kind == NodeKind::DatasetInput) {
             auto& config = std::get<DatasetConfig>(mutable_node.config);
-            config.directory = portable_path(config.directory, root_directory).toStdString();
+            config.directory = ProjectStorage::portable_path(config.directory, root_directory).toStdString();
             for (auto& item : config.items)
-                item.path = portable_path(item.path, root_directory).toStdString();
+                item.path = ProjectStorage::portable_path(item.path, root_directory).toStdString();
         } else {
             auto& config = std::get<TaskNodeConfig>(mutable_node.config);
-            config.training.output_directory = portable_path(config.training.output_directory, root_directory).toStdString();
-            config.inference_output_directory = portable_path(config.inference_output_directory, root_directory).toStdString();
+            for (auto& model : config.model_list.entries()) {
+                model.asset_directory = ProjectStorage::portable_path(model.asset_directory, root_directory).toStdString();
+                for (auto& weight : model.weights)
+                    weight.path = ProjectStorage::portable_path(weight.path, root_directory).toStdString();
+            }
+            config.training.output_directory = ProjectStorage::portable_path(config.training.output_directory, root_directory).toStdString();
+            config.inference_output_directory = ProjectStorage::portable_path(config.inference_output_directory, root_directory).toStdString();
             for (auto& sample : config.dataset_binding.samples) {
                 for (auto& image_path : sample.image_paths)
-                    image_path = portable_path(image_path, root_directory).toStdString();
-                sample.mask_path = portable_path(sample.mask_path, root_directory).toStdString();
-                sample.training_mask_path = portable_path(
+                    image_path = ProjectStorage::portable_path(image_path, root_directory).toStdString();
+                sample.training_mask_path = ProjectStorage::portable_path(
                     sample.training_mask_path, root_directory).toStdString();
             }
             for (auto& result_set : config.runtime.results) {
-                result_set.result_directory = portable_path(
+                result_set.result_directory = ProjectStorage::portable_path(
                     result_set.result_directory, root_directory).toStdString();
                 for (auto& result : result_set.samples) {
                     std::visit([&](auto& task_result) {
-                        task_result.image_path = portable_path(task_result.image_path, root_directory).toStdString();
-                        task_result.save_dir = portable_path(task_result.save_dir, root_directory).toStdString();
-                        task_result.metadata_path = portable_path(task_result.metadata_path, root_directory).toStdString();
+                        task_result.image_path = ProjectStorage::portable_path(task_result.image_path, root_directory).toStdString();
+                        task_result.save_dir = ProjectStorage::portable_path(task_result.save_dir, root_directory).toStdString();
+                        task_result.metadata_path = ProjectStorage::portable_path(task_result.metadata_path, root_directory).toStdString();
                         using Result = std::decay_t<decltype(task_result)>;
                         if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
-                            task_result.mask_path = portable_path(task_result.mask_path, root_directory).toStdString();
-                            task_result.visualization_path = portable_path(task_result.visualization_path, root_directory).toStdString();
+                            task_result.mask_path = ProjectStorage::portable_path(task_result.mask_path, root_directory).toStdString();
+                            task_result.visualization_path = ProjectStorage::portable_path(task_result.visualization_path, root_directory).toStdString();
                         } else {
-                            task_result.heatmap_path = portable_path(task_result.heatmap_path, root_directory).toStdString();
+                            task_result.heatmap_path = ProjectStorage::portable_path(task_result.heatmap_path, root_directory).toStdString();
                         }
                     }, result.result);
                 }
@@ -179,41 +163,81 @@ WorkflowGraph portable_graph(const WorkflowGraph& source, const QString& root_di
 }
 
 void resolve_graph_paths(WorkflowGraph& graph, const QString& root_directory) {
-    for (const auto& [id, node] : graph.nodes()) {
-        auto& mutable_node = graph.node(id);
+    for (const auto& [node_id, node] : graph.nodes()) {
+        auto& mutable_node = graph.node(node_id);
         if (node.kind == NodeKind::DatasetInput) {
             auto& config = std::get<DatasetConfig>(mutable_node.config);
-            config.directory = runtime_path(QString::fromStdString(config.directory), root_directory);
+            config.directory = ProjectStorage::runtime_path(QString::fromStdString(config.directory), root_directory);
             for (auto& item : config.items)
-                item.path = runtime_path(QString::fromStdString(item.path), root_directory);
+                item.path = ProjectStorage::runtime_path(QString::fromStdString(item.path), root_directory);
         } else {
             auto& config = std::get<TaskNodeConfig>(mutable_node.config);
-            config.training.output_directory = runtime_path(QString::fromStdString(config.training.output_directory), root_directory);
-            config.inference_output_directory = runtime_path(QString::fromStdString(config.inference_output_directory), root_directory);
+            for (auto& model : config.model_list.entries()) {
+                model.asset_directory = ProjectStorage::runtime_path(QString::fromStdString(model.asset_directory), root_directory);
+                for (auto& weight : model.weights)
+                    weight.path = ProjectStorage::runtime_path(QString::fromStdString(weight.path), root_directory);
+            }
+            config.training.output_directory = ProjectStorage::runtime_path(QString::fromStdString(config.training.output_directory), root_directory);
+            config.inference_output_directory = ProjectStorage::runtime_path(QString::fromStdString(config.inference_output_directory), root_directory);
             for (auto& sample : config.dataset_binding.samples) {
                 for (auto& image_path : sample.image_paths)
-                    image_path = runtime_path(QString::fromStdString(image_path), root_directory);
-                sample.mask_path = runtime_path(QString::fromStdString(sample.mask_path), root_directory);
-                sample.training_mask_path = runtime_path(
+                    image_path = ProjectStorage::runtime_path(QString::fromStdString(image_path), root_directory);
+                sample.training_mask_path = ProjectStorage::runtime_path(
                     QString::fromStdString(sample.training_mask_path), root_directory);
             }
             for (auto& result_set : config.runtime.results) {
-                result_set.result_directory = runtime_path(
+                result_set.result_directory = ProjectStorage::runtime_path(
                     QString::fromStdString(result_set.result_directory), root_directory);
                 for (auto& result : result_set.samples) {
                     std::visit([&](auto& task_result) {
-                        task_result.image_path = runtime_path(QString::fromStdString(task_result.image_path), root_directory);
-                        task_result.save_dir = runtime_path(QString::fromStdString(task_result.save_dir), root_directory);
-                        task_result.metadata_path = runtime_path(QString::fromStdString(task_result.metadata_path), root_directory);
+                        task_result.image_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.image_path), root_directory);
+                        task_result.save_dir = ProjectStorage::runtime_path(QString::fromStdString(task_result.save_dir), root_directory);
+                        task_result.metadata_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.metadata_path), root_directory);
                         using Result = std::decay_t<decltype(task_result)>;
                         if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
-                            task_result.mask_path = runtime_path(QString::fromStdString(task_result.mask_path), root_directory);
-                            task_result.visualization_path = runtime_path(QString::fromStdString(task_result.visualization_path), root_directory);
+                            task_result.mask_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.mask_path), root_directory);
+                            task_result.visualization_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.visualization_path), root_directory);
                         } else {
-                            task_result.heatmap_path = runtime_path(QString::fromStdString(task_result.heatmap_path), root_directory);
+                            task_result.heatmap_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.heatmap_path), root_directory);
                         }
                     }, result.result);
                 }
+            }
+        }
+    }
+}
+
+void validate_inference_results(const WorkflowGraph& graph, const QString& workflow_id, const QString& root) {
+    for (const auto& [node_id, node] : graph.nodes()) {
+        if (node.kind != NodeKind::TaskConfig) continue;
+        const auto& task = std::get<TaskNodeConfig>(node.config);
+        std::set<std::pair<std::string, std::string>> keys;
+        for (const auto& result : task.runtime.results) {
+            const auto* model = task.model_list.find(result.model_id);
+            const auto* weight = model ? jocelin::model::find_weight(*model, result.weight_id) : nullptr;
+            if (!weight || jocelin::config::to_string(weight->format) != result.weight_format ||
+                !keys.emplace(result.model_id, result.weight_id).second)
+                throw std::runtime_error("inference result must reference a unique model/weight in its TaskNode");
+            const auto expected = QDir(root).filePath("nodes/" + workflow_id + "/" +
+                inference_result_directory(node_id, result.model_id, result.weight_id));
+            if (QDir::cleanPath(QString::fromStdString(result.result_directory)) != QDir::cleanPath(expected))
+                throw std::runtime_error("inference result directory must belong to its Node/model/weight");
+            const auto inspect = [&expected](const std::string& value) {
+                if (value.empty()) return;
+                const auto relative = QDir(expected).relativeFilePath(QString::fromStdString(value));
+                if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute())
+                    throw std::runtime_error("inference artifact must stay in its branch directory");
+            };
+            for (const auto& sample : result.samples) {
+                if (sample.source_sample_id.empty()) throw std::runtime_error("inference result requires source_sample_id");
+                std::visit([&](const auto& value) {
+                    inspect(value.save_dir);
+                    inspect(value.metadata_path);
+                    using Result = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
+                        inspect(value.mask_path); inspect(value.visualization_path);
+                    } else inspect(value.heatmap_path);
+                }, sample.result);
             }
         }
     }
@@ -232,8 +256,8 @@ void ProjectManager::new_project(const QString& name) {
     metadata_.created_at = now;
     metadata_.modified_at = now;
     workflows_.clear();
-    model_list_.restore({}, 1);
-    next_training_run_number_ = 1;
+    training_runs_ = {};
+    root_directory_.clear();
     ProjectWorkflow workflow;
     workflow.id = "workflow_1";
     workflow.name = "Workflow 1";
@@ -253,14 +277,13 @@ void ProjectManager::open_project(const QString& project_file_path) {
     require_exact_fields(
         root,
         {"format", "project_id", "name", "description",
-         "created_at", "modified_at", "derived_from", "active_workflow",
-         "workflows", "models", "next_model_number", "next_training_run_number"},
+         "created_at", "modified_at", "workflows"},
         "Project document");
     if (root.value("format").toString() != "deep_learning_project")
         throw std::runtime_error("unsupported project format");
     if (!root.value("name").isString() || root.value("name").toString().trimmed().isEmpty() ||
         !root.value("description").isString() || !root.value("created_at").isString() ||
-        !root.value("active_workflow").isString() || !root.value("workflows").isArray())
+        !root.value("workflows").isArray())
         throw std::runtime_error("project metadata is incomplete");
 
     ProjectMetadata metadata;
@@ -269,20 +292,13 @@ void ProjectManager::open_project(const QString& project_file_path) {
     metadata.description = root.value("description").toString();
     metadata.created_at = root.value("created_at").toString();
     metadata.modified_at = root.value("modified_at").toString();
-    metadata.root_directory = QFileInfo(file_path).absolutePath();
+    const QString root_directory = QFileInfo(file_path).absolutePath();
     if (metadata.project_id.isEmpty() ||
-        !QDateTime::fromString(metadata.modified_at, Qt::ISODate).isValid() ||
-        !root.value("derived_from").isObject())
+        !QDateTime::fromString(metadata.modified_at, Qt::ISODate).isValid())
         throw std::runtime_error("project version metadata is invalid");
-    const auto derived = root.value("derived_from").toObject();
-    require_exact_fields(derived, {"project_id", "project_path"}, "Project derivation");
-    metadata.derived_from_project_id = derived.value("project_id").toString();
-    metadata.derived_from_project_path = derived.value("project_path").toString();
     if (!QDateTime::fromString(metadata.created_at, Qt::ISODate).isValid())
         throw std::runtime_error("project creation timestamp is invalid");
     std::vector<ProjectWorkflow> workflows;
-    const QString active_id = root.value("active_workflow").toString();
-    size_t active_index = static_cast<size_t>(-1);
     for (const auto value : root.value("workflows").toArray()) {
         if (!value.isObject()) throw std::runtime_error("invalid project workflow entry");
         const auto object = value.toObject();
@@ -294,233 +310,102 @@ void ProjectManager::open_project(const QString& project_file_path) {
         const QString relative_file = object.value("file").toString();
         if (!QRegularExpression("^[A-Za-z0-9_-]+$").match(id).hasMatch() || name.isEmpty() || relative_file.isEmpty())
             throw std::runtime_error("invalid project workflow metadata");
-        const QString safe_relative_file = validated_relative_path(relative_file, "workflow file");
+        const QString safe_relative_file = ProjectStorage::validated_relative_path(relative_file, "workflow file");
         const bool duplicate = std::any_of(workflows.begin(), workflows.end(), [&id](const auto& item) { return item.id == id; });
         if (duplicate) throw std::runtime_error("duplicate workflow id in project");
-        QFile workflow_file(QDir(metadata.root_directory).filePath(safe_relative_file));
+        QFile workflow_file(QDir(root_directory).filePath(safe_relative_file));
         if (!workflow_file.open(QIODevice::ReadOnly))
             throw std::runtime_error(("cannot open workflow " + name).toStdString());
-        ProjectWorkflow workflow{id, name, parse_workflow(workflow_file.readAll()), false};
-        resolve_graph_paths(workflow.document.graph, metadata.root_directory);
-        if (id == active_id) active_index = workflows.size();
+        ProjectWorkflow workflow{id, name, parse_workflow(workflow_file.readAll(), QDir(root_directory).filePath("nodes/" + id)), false};
+        resolve_graph_paths(workflow.document.graph, root_directory);
+        for (const auto& [node_id, node] : workflow.document.graph.nodes()) {
+            if (node.kind != NodeKind::TaskConfig) continue;
+            auto& task = std::get<TaskNodeConfig>(workflow.document.graph.node(node_id).config);
+            task.model_list = ModelListStorage::load(
+                QDir(root_directory).filePath("nodes/" + id + "/" + QString::number(node_id)),
+                root_directory);
+            const auto task_type = jocelin::config::tool_type_from_string(task.task);
+            for (const auto& model : task.model_list.entries())
+                if (model.task != task_type)
+                    throw std::runtime_error("model task does not match the owning TaskNode");
+            TaskWorkspaceService(workflow.document.graph, node_id).refresh_quality();
+        }
+        validate_inference_results(workflow.document.graph, id, root_directory);
         workflows.push_back(std::move(workflow));
     }
-    if (workflows.empty() || active_index == static_cast<size_t>(-1))
-        throw std::runtime_error("project has no valid active workflow");
+    if (workflows.empty())
+        throw std::runtime_error("project has no workflows");
 
-    if (!root.value("next_training_run_number").isDouble())
-        throw std::runtime_error("next training run number is invalid");
-    const int next_training_run_number = root.value("next_training_run_number").toInt();
-    if (next_training_run_number < 1)
-        throw std::runtime_error("next training run number must be positive");
-
-    std::vector<ProjectModel> models;
-    int next_model_number = 1;
-    {
-        if (!root.value("models").isArray() ||
-            !root.value("next_model_number").isDouble())
-            throw std::runtime_error("project model catalog is invalid");
-        next_model_number = root.value("next_model_number").toInt();
-        if (next_model_number < 1)
-            throw std::runtime_error("next model number must be positive");
-        std::set<QString> model_ids;
-        std::set<int> model_numbers;
-        for (const auto value : root.value("models").toArray()) {
-            if (!value.isObject())
-                throw std::runtime_error("invalid project model entry");
-            const auto object = value.toObject();
-            require_exact_fields(
-                object,
-                {"id", "number", "name", "training_run_id", "created_at",
-                 "task", "model_index", "model_scale", "classes",
-                 "image_width", "image_height", "asset_directory", "weights",
-                 "completed_epochs", "best_epoch", "training_loss", "metric_name",
-                 "metric", "creation_mode", "training_status", "parent_model_id"},
-                "Project model entry");
-            ProjectModel model;
-            model.id = object.value("id").toString().toStdString();
-            model.number = object.value("number").toInt();
-            model.name = object.value("name").toString().toStdString();
-            model.training_run_id = object.value("training_run_id").toString().toStdString();
-            model.created_at = object.value("created_at").toString().toStdString();
-            model.task = jocelin::config::tool_type_from_string(
-                object.value("task").toString().toStdString());
-            model.model_index = object.value("model_index").toInt();
-            model.model_scale = jocelin::config::model_scale_from_string(
-                object.value("model_scale").toString().toStdString());
-            model.image_width = object.value("image_width").toInt();
-            model.image_height = object.value("image_height").toInt();
-            model.asset_directory = runtime_path(
-                object.value("asset_directory").toString(), metadata.root_directory);
-            if (!object.value("weights").isArray())
-                throw std::runtime_error("project model weights are invalid");
-            for (const auto weight_value : object.value("weights").toArray()) {
-                if (!weight_value.isObject())
-                    throw std::runtime_error("invalid project model weight entry");
-                const auto weight_object = weight_value.toObject();
-                require_exact_fields(
-                    weight_object,
-                    {"id", "format", "precision", "role", "path",
-                     "parent_weight_id", "created_at", "supported_devices",
-                     "runtime_name", "runtime_version", "artifact_version",
-                     "onnx_opset", "input_signature", "output_signature",
-                     "target_architecture"},
-                    "Project model weight");
-                jocelin::model::ModelWeight weight;
-                weight.id = weight_object.value("id").toString().toStdString();
-                weight.format = jocelin::config::weight_type_from_string(
-                    weight_object.value("format").toString().toStdString());
-                weight.precision = jocelin::model::weight_precision_from_string(
-                    weight_object.value("precision").toString().toStdString());
-                weight.role = jocelin::model::weight_role_from_string(
-                    weight_object.value("role").toString().toStdString());
-                weight.path = runtime_path(
-                    weight_object.value("path").toString(), metadata.root_directory);
-                weight.parent_weight_id =
-                    weight_object.value("parent_weight_id").toString().toStdString();
-                weight.created_at = weight_object.value("created_at").toString().toStdString();
-                if (!weight_object.value("supported_devices").isArray())
-                    throw std::runtime_error("project model weight devices are invalid");
-                for (const auto value : weight_object.value("supported_devices").toArray())
-                    weight.supported_device_types.push_back(
-                        jocelin::config::device_type_from_string(value.toString().toStdString()));
-                weight.runtime_name = weight_object.value("runtime_name").toString().toStdString();
-                weight.runtime_version = weight_object.value("runtime_version").toString().toStdString();
-                weight.artifact_version = weight_object.value("artifact_version").toString().toStdString();
-                weight.onnx_opset = weight_object.value("onnx_opset").toInt();
-                weight.input_signature = weight_object.value("input_signature").toString().toStdString();
-                weight.output_signature = weight_object.value("output_signature").toString().toStdString();
-                weight.target_architecture = weight_object.value("target_architecture").toString().toStdString();
-                model.weights.push_back(std::move(weight));
-            }
-            model.creation_mode = jocelin::model::model_creation_mode_from_string(
-                object.value("creation_mode").toString().toStdString());
-            model.training_status = jocelin::model::model_training_status_from_string(
-                object.value("training_status").toString().toStdString());
-            model.completed_epochs = object.value("completed_epochs").toInt();
-            model.best_epoch = object.value("best_epoch").toInt();
-            model.training_loss = object.value("training_loss").toDouble();
-            model.metric_name = object.value("metric_name").toString().toStdString();
-            model.metric = object.value("metric").toDouble();
-            model.parent_model_id = object.value("parent_model_id").toString().toStdString();
-            if (model.id.empty() || model.number < 1 ||
-                model.name.empty() || model.training_run_id.empty() ||
-                !QDateTime::fromString(QString::fromStdString(model.created_at), Qt::ISODate).isValid() ||
-                model.model_index < 0 || model.image_width <= 0 ||
-                model.image_height <= 0 || model.completed_epochs < 0 ||
-                model.best_epoch < 0 || model.best_epoch > model.completed_epochs ||
-                !std::isfinite(model.training_loss) || model.asset_directory.empty() ||
-                !model_ids.insert(QString::fromStdString(model.id)).second ||
-                !model_numbers.insert(model.number).second)
-                throw std::runtime_error("project model metadata is invalid");
-            const bool requires_weight =
-                model.training_status == jocelin::model::ModelTrainingStatus::Paused ||
-                model.training_status == jocelin::model::ModelTrainingStatus::Completed ||
-                model.training_status == jocelin::model::ModelTrainingStatus::Imported;
-            if ((requires_weight && !jocelin::model::find_training_weight(model)) ||
-                ((model.creation_mode == jocelin::model::ModelCreationMode::Import) !=
-                 (model.training_status == jocelin::model::ModelTrainingStatus::Imported)))
-                throw std::runtime_error("project model lifecycle metadata is invalid");
-            if (!object.value("classes").isArray())
-                throw std::runtime_error("project model classes are invalid");
-            for (const auto class_value : object.value("classes").toArray()) {
-                if (!class_value.isObject())
-                    throw std::runtime_error("invalid project model class entry");
-                const auto class_object = class_value.toObject();
-                require_exact_fields(class_object, {"id", "name", "mask_value"}, "Project model class");
-                ProjectModelClass item{
-                    class_object.value("id").toString().toStdString(),
-                    class_object.value("name").toString().toStdString(),
-                    class_object.value("mask_value").toInt()};
-                if (item.id.empty() || item.name.empty() || item.mask_value <= 0)
-                    throw std::runtime_error("project model class metadata is invalid");
-                model.classes.push_back(std::move(item));
-            }
-            models.push_back(std::move(model));
-        }
-        if (!model_numbers.empty() &&
-            next_model_number <= *model_numbers.rbegin())
-            throw std::runtime_error(
-                "next model number must exceed all assigned numbers");
-    }
+    auto training_runs = TrainingRunStore::load(root_directory);
     metadata_ = std::move(metadata);
     workflows_ = std::move(workflows);
-    model_list_.restore(std::move(models), next_model_number);
-    next_training_run_number_ = next_training_run_number;
-    active_index_ = active_index;
+    training_runs_ = std::move(training_runs);
+    root_directory_ = root_directory;
+    active_index_ = 0;
     metadata_dirty_ = false;
 }
 
-void ProjectManager::save_project(const QString& root_directory) {
-    QString root = root_directory.isEmpty() ? metadata_.root_directory : QDir(root_directory).absolutePath();
-    if (root.isEmpty()) throw std::runtime_error("project root directory is not selected");
-    if (!QDir().mkpath(QDir(root).filePath("workflows")))
-        throw std::runtime_error("cannot create project workflows directory");
+void ProjectManager::clear_dataset_dependents(const std::vector<int>& dataset_node_ids) {
+    auto& graph = active_workflow().document.graph;
+    std::set<int> owners;
+    for (int source : dataset_node_ids) {
+        if (graph.node(source).kind != NodeKind::DatasetInput)
+            throw std::runtime_error("Dataset cleanup requires a DataNode");
+        for (const auto& edge : graph.connections())
+            if (edge.from_node_id == source && graph.node(edge.to_node_id).kind == NodeKind::TaskConfig)
+                owners.insert(edge.to_node_id);
+    }
+    if (owners.empty()) return;
+    for (int owner : owners)
+        clear_task_dataset_state(std::get<TaskNodeConfig>(graph.node(owner).config));
+    mark_active_dirty();
+    if (!has_storage()) return;
+    // No files are removed until all persisted references have been cleared.
+    save_project();
+    QStringList failures;
+    for (int owner : owners) {
+        const auto directory = QFileInfo(node_models_directory(owner)).absolutePath();
+        for (const auto& leaf : {QStringLiteral("annotations"), QStringLiteral("inference")}) {
+            const auto path = QDir(directory).filePath(leaf);
+            if (QDir(path).exists() && !QDir(path).removeRecursively()) failures.append(path);
+        }
+    }
+    if (!failures.empty())
+        throw std::runtime_error(("Dataset references cleared, but cannot remove:\n" + failures.join('\n')).toStdString());
+}
 
+void ProjectManager::save_project(const QString& root_directory) {
+    QString root = root_directory.isEmpty() ? root_directory_ : QDir(root_directory).absolutePath();
+    if (root.isEmpty()) throw std::runtime_error("project root directory is not selected");
     QJsonArray workflow_entries;
     std::vector<std::pair<QString, QByteArray>> serialized_workflows;
+    std::vector<std::pair<QString, QByteArray>> serialized_regions;
+    std::vector<std::pair<QString, QByteArray>> serialized_models;
     for (const auto& workflow : workflows_) {
         const QString relative_file = "workflows/" + workflow.id + ".json";
+        validate_inference_results(workflow.document.graph, workflow.id, root);
         const auto graph = portable_graph(workflow.document.graph, root);
-        serialized_workflows.emplace_back(
-            QDir(root).filePath(relative_file), serialize_workflow(graph, workflow.document.positions));
-        workflow_entries.append(QJsonObject{{"id", workflow.id}, {"name", workflow.name}, {"file", relative_file}});
-    }
-    QJsonArray model_entries;
-    for (const auto& model : model_list_.entries()) {
-        QJsonArray classes;
-        for (const auto& value : model.classes)
-            classes.append(QJsonObject{
-                {"id", QString::fromStdString(value.id)},
-                {"name", QString::fromStdString(value.name)},
-                {"mask_value", value.mask_value}});
-        QJsonArray weights;
-        for (const auto& weight : model.weights) {
-            QJsonArray supported_devices;
-            const auto devices = weight.supported_device_types.empty()
-                ? jocelin::model::default_supported_devices(weight.format)
-                : weight.supported_device_types;
-            for (const auto type : devices)
-                supported_devices.append(QString::fromStdString(jocelin::config::to_string(type)));
-            weights.append(QJsonObject{
-                {"id", QString::fromStdString(weight.id)},
-                {"format", QString::fromStdString(jocelin::config::to_string(weight.format))},
-                {"precision", QString::fromStdString(jocelin::model::to_string(weight.precision))},
-                {"role", QString::fromStdString(jocelin::model::to_string(weight.role))},
-                {"path", portable_path(weight.path, root)},
-                {"parent_weight_id", QString::fromStdString(weight.parent_weight_id)},
-                {"created_at", QString::fromStdString(weight.created_at)},
-                {"supported_devices", supported_devices},
-                {"runtime_name", QString::fromStdString(weight.runtime_name)},
-                {"runtime_version", QString::fromStdString(weight.runtime_version)},
-                {"artifact_version", QString::fromStdString(weight.artifact_version)},
-                {"onnx_opset", weight.onnx_opset},
-                {"input_signature", QString::fromStdString(weight.input_signature)},
-                {"output_signature", QString::fromStdString(weight.output_signature)},
-                {"target_architecture", QString::fromStdString(weight.target_architecture)}});
+        auto serialized = serialize_workflow(graph, workflow.document.positions);
+        for (const auto& [node_id, node] : workflow.document.graph.nodes()) {
+            if (node.kind != NodeKind::TaskConfig) continue;
+            const auto& task = std::get<TaskNodeConfig>(node.config);
+            const auto task_type = jocelin::config::tool_type_from_string(task.task);
+            for (const auto& model : task.model_list.entries())
+                if (model.task != task_type)
+                    throw std::runtime_error("model task does not match the owning TaskNode");
+            serialized_models.emplace_back(
+                QDir(root).filePath("nodes/" + workflow.id + "/" + QString::number(node_id)),
+                ModelListStorage::serialize(task.model_list, root));
         }
-        model_entries.append(QJsonObject{
-            {"id", QString::fromStdString(model.id)},
-            {"number", model.number},
-            {"name", QString::fromStdString(model.name)},
-            {"training_run_id", QString::fromStdString(model.training_run_id)},
-            {"created_at", QString::fromStdString(model.created_at)},
-            {"task", QString::fromStdString(jocelin::config::to_string(model.task))},
-            {"model_index", model.model_index},
-            {"model_scale", QString::fromStdString(jocelin::config::to_string(model.model_scale))},
-            {"classes", classes},
-            {"image_width", model.image_width},
-            {"image_height", model.image_height},
-            {"asset_directory", portable_path(model.asset_directory, root)},
-            {"weights", weights},
-            {"completed_epochs", model.completed_epochs},
-            {"best_epoch", model.best_epoch},
-            {"training_loss", model.training_loss},
-            {"metric_name", QString::fromStdString(model.metric_name)},
-            {"metric", model.metric},
-            {"creation_mode", QString::fromStdString(jocelin::model::to_string(model.creation_mode))},
-            {"training_status", QString::fromStdString(jocelin::model::to_string(model.training_status))},
-            {"parent_model_id", QString::fromStdString(model.parent_model_id)}});
+        for (auto& [file, data] : serialized.inference_assets)
+            serialized_regions.emplace_back(
+                QDir(root).filePath("nodes/" + workflow.id + "/" + file), std::move(data));
+        for (auto& [file, data] : serialized.region_assets)
+            serialized_regions.emplace_back(
+                QDir(root).filePath("nodes/" + workflow.id + "/" + file), std::move(data));
+        serialized_workflows.emplace_back(
+            QDir(root).filePath(relative_file), std::move(serialized.json));
+        workflow_entries.append(QJsonObject{{"id", workflow.id}, {"name", workflow.name}, {"file", relative_file}});
     }
     const QString modified_at = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     const QJsonObject project{
@@ -530,21 +415,27 @@ void ProjectManager::save_project(const QString& root_directory) {
         {"description", metadata_.description},
         {"created_at", metadata_.created_at},
         {"modified_at", modified_at},
-        {"derived_from", QJsonObject{
-             {"project_id", metadata_.derived_from_project_id},
-             {"project_path", metadata_.derived_from_project_path}}},
-        {"active_workflow", active_workflow().id},
-        {"workflows", workflow_entries},
-        {"models", model_entries},
-        {"next_model_number", model_list_.next_number()},
-        {"next_training_run_number", next_training_run_number_}};
+        {"workflows", workflow_entries}};
+    const auto serialized_project = QJsonDocument(project).toJson(QJsonDocument::Indented);
+    const auto serialized_runs = training_runs_.serialize();
+
+    if (!QDir().mkpath(QDir(root).filePath("workflows")))
+        throw std::runtime_error("cannot create project workflows directory");
+    for (const auto& [path, data] : serialized_regions) {
+        if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+            throw std::runtime_error("cannot create Node asset directory");
+        ProjectStorage::write_atomic(path, data);
+    }
+    for (const auto& [node_directory, data] : serialized_models)
+        ModelListStorage::save(data, node_directory);
+    training_runs_.save(root, serialized_runs);
     for (const auto& [path, data] : serialized_workflows)
         ProjectStorage::write_atomic(path, data);
     ProjectStorage::write_atomic(
         QDir(root).filePath(ProjectFileName),
-        QJsonDocument(project).toJson(QJsonDocument::Indented));
+        serialized_project);
     metadata_.modified_at = modified_at;
-    metadata_.root_directory = root;
+    root_directory_ = root;
     metadata_dirty_ = false;
     for (auto& workflow : workflows_) {
         auto normalized = portable_graph(workflow.document.graph, root);
@@ -559,7 +450,7 @@ void ProjectManager::save_project_as(
     const QString& parent_directory)
 {
     const auto validation = ProjectPathValidator::validate_save_as(
-        name, parent_directory, metadata_.root_directory);
+        name, parent_directory, root_directory_);
     if (!validation)
         throw std::runtime_error(validation.error.toStdString());
 
@@ -568,7 +459,7 @@ void ProjectManager::save_project_as(
         "." + QFileInfo(destination).fileName() + ".staging-" +
         QUuid::createUuid().toString(QUuid::WithoutBraces));
     ProjectManager candidate = *this;
-    const QString source_root = metadata_.root_directory;
+    const QString source_root = root_directory_;
     try {
         if (!source_root.isEmpty())
             ProjectStorage::copy_directory(source_root, staging);
@@ -577,19 +468,11 @@ void ProjectManager::save_project_as(
 
         for (auto& workflow : candidate.workflows_)
             relocate_graph_paths(workflow.document.graph, source_root, staging);
-        for (auto& model : candidate.model_list_.entries()) {
-            model.asset_directory = relocated_path(
-                model.asset_directory, source_root, staging);
-            for (auto& weight : model.weights)
-                weight.path = relocated_path(weight.path, source_root, staging);
-        }
 
         candidate.metadata_.name = name.trimmed();
         candidate.metadata_.project_id =
             QUuid::createUuid().toString(QUuid::WithoutBraces);
-        candidate.metadata_.derived_from_project_id = metadata_.project_id;
-        candidate.metadata_.derived_from_project_path = project_file();
-        candidate.metadata_.root_directory = staging;
+        candidate.root_directory_ = staging;
         candidate.metadata_dirty_ = true;
         candidate.save_project();
 
@@ -599,15 +482,9 @@ void ProjectManager::save_project_as(
             throw std::runtime_error("Save As staging verification failed");
 
         ProjectStorage::commit_staging(staging, destination);
-        candidate.metadata_.root_directory = destination;
+        candidate.root_directory_ = destination;
         for (auto& workflow : candidate.workflows_)
             relocate_graph_paths(workflow.document.graph, staging, destination);
-        for (auto& model : candidate.model_list_.entries()) {
-            model.asset_directory = relocated_path(
-                model.asset_directory, staging, destination);
-            for (auto& weight : model.weights)
-                weight.path = relocated_path(weight.path, staging, destination);
-        }
         *this = std::move(candidate);
     } catch (...) {
         ProjectStorage::remove_directory(staging);
@@ -636,7 +513,6 @@ void ProjectManager::set_active_index(size_t index) {
     if (index >= workflows_.size()) throw std::runtime_error("workflow index is out of range");
     if (index == active_index_) return;
     active_index_ = index;
-    metadata_dirty_ = true;
 }
 
 void ProjectManager::rename_active_workflow(const QString& name) {
@@ -663,40 +539,121 @@ void ProjectManager::set_project_description(const QString& description) {
 
 void ProjectManager::mark_active_dirty() { active_workflow().dirty = true; }
 
-void ProjectManager::mark_models_dirty() { metadata_dirty_ = true; }
-
-ProjectModel ProjectManager::add_model(ProjectModel model) {
-    if (model.created_at.empty())
-        model.created_at = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
-    const auto added = model_list_.add(std::move(model));
-    metadata_dirty_ = true;
-    return added;
+QString ProjectManager::node_models_directory(int node_id) const {
+    if (!has_storage()) throw std::runtime_error("save the project before storing model assets");
+    if (active_workflow().document.graph.node(node_id).kind != NodeKind::TaskConfig)
+        throw std::runtime_error("models require a TaskNode owner");
+    return QDir(root_directory_).filePath(
+        "nodes/" + active_workflow().id + "/" + QString::number(node_id) + "/models");
 }
 
-bool ProjectManager::remove_model(const QString& id) {
-    const bool removed = model_list_.remove(id.toStdString());
-    if (removed) metadata_dirty_ = true;
-    return removed;
+QString ProjectManager::prepare_inference_directory(int node_id, const QString& model_id, const QString& weight_id) const {
+    const auto& task = std::get<TaskNodeConfig>(active_workflow().document.graph.node(node_id).config);
+    const auto* model = task.model_list.find(model_id.toStdString());
+    if (!has_storage() || !model || !jocelin::model::find_weight(*model, weight_id.toStdString()))
+        throw std::runtime_error("inference requires a stored TaskNode model/weight");
+    const auto final = QDir(root_directory_).filePath("nodes/" + active_workflow().id + "/" +
+        inference_result_directory(node_id, model_id.toStdString(), weight_id.toStdString()));
+    const auto staging = QDir(QFileInfo(final).absolutePath()).filePath(
+        "." + weight_id + ".pending-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    if (!QDir().mkpath(staging)) throw std::runtime_error("cannot prepare inference branch directory");
+    return staging;
 }
 
-void ProjectManager::clear_models() {
-    if (model_list_.empty()) return;
-    model_list_.clear();
-    metadata_dirty_ = true;
+void ProjectManager::discard_inference_directory(int node_id, const QString& model_id, const QString& weight_id,
+                                                const QString& staging) const {
+    if (staging.isEmpty()) return;
+    if (!has_storage()) throw std::runtime_error("inference cleanup requires a stored Node");
+    const auto final = QDir(root_directory_).filePath("nodes/" + active_workflow().id + "/" +
+        inference_result_directory(node_id, model_id.toStdString(), weight_id.toStdString()));
+    if (QFileInfo(staging).absolutePath() != QFileInfo(final).absolutePath() ||
+        !QFileInfo(staging).fileName().startsWith("." + weight_id + ".pending-") ||
+        QUuid(QFileInfo(staging).fileName().mid(weight_id.size() + 10)).isNull())
+        throw std::runtime_error("temporary inference directory must belong to its Node/model/weight");
+    if (QFileInfo::exists(staging) && !QDir(staging).removeRecursively())
+        throw std::runtime_error("cannot remove temporary inference directory");
 }
 
-int ProjectManager::allocate_training_run_number() {
-    const int number = next_training_run_number_++;
-    metadata_dirty_ = true;
-    return number;
-}
-
-const ProjectModel* ProjectManager::find_model(const QString& id) const {
-    return model_list_.find(id.toStdString());
-}
-
-ProjectModel* ProjectManager::find_model(const QString& id) {
-    return model_list_.find(id.toStdString());
+void ProjectManager::commit_inference_result(int node_id, const QString& model_id, const QString& weight_id,
+                                            const jocelin::inference::InferenceReport& report, const QString& staging) {
+    if (!has_storage()) throw std::runtime_error("inference commit requires a stored Node");
+    const auto final = QDir(root_directory_).filePath("nodes/" + active_workflow().id + "/" +
+        inference_result_directory(node_id, model_id.toStdString(), weight_id.toStdString()));
+    if (QFileInfo(staging).absolutePath() != QFileInfo(final).absolutePath() ||
+        !QFileInfo(staging).fileName().startsWith("." + weight_id + ".pending-") ||
+        QUuid(QFileInfo(staging).fileName().mid(weight_id.size() + 10)).isNull() || !QDir(staging).exists())
+        throw std::runtime_error("invalid inference branch staging directory");
+    auto candidate = active_workflow().document.graph;
+    TaskWorkspaceService service(candidate, node_id);
+    const auto* model = service.find_model(model_id);
+    const auto* weight = model ? jocelin::model::find_weight(*model, weight_id.toStdString()) : nullptr;
+    if (!weight) throw std::runtime_error("inference model/weight no longer exists in its TaskNode");
+    auto relocated = report;
+    const auto relocate = [&staging, &final](std::string& path) {
+        if (path.empty()) return;
+        const auto relative = QDir(staging).relativeFilePath(QString::fromStdString(path));
+        if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute())
+            throw std::runtime_error("new inference artifact is outside its temporary branch");
+        path = QDir(final).absoluteFilePath(relative).toStdString();
+    };
+    std::visit([&](auto& batch) {
+        for (auto& result : batch.samples) {
+            if (!result.metadata_path.empty()) {
+                const auto file = QString::fromStdString(result.metadata_path);
+                auto checked = result.metadata_path;
+                relocate(checked);
+                // Core's per-image metadata accompanies the same branch artifacts.
+                QJsonParseError error;
+                const auto document = QJsonDocument::fromJson(ProjectStorage::read(file), &error);
+                if (error.error != QJsonParseError::NoError || !document.isObject())
+                    throw std::runtime_error("invalid staged inference metadata");
+                auto metadata = document.object();
+                for (auto it = metadata.begin(); it != metadata.end(); ++it) {
+                    if (!it.value().isString()) continue;
+                    auto value = QDir::fromNativeSeparators(it.value().toString());
+                    const auto prefix = QDir::fromNativeSeparators(staging) + "/";
+                    if (value.startsWith(prefix)) it.value() = QDir(final).filePath(value.mid(prefix.size()));
+                }
+                ProjectStorage::write_atomic(file, QJsonDocument(metadata).toJson());
+            }
+            relocate(result.save_dir); relocate(result.metadata_path);
+            using Result = std::decay_t<decltype(result)>;
+            if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
+                relocate(result.mask_path); relocate(result.visualization_path);
+            } else relocate(result.heatmap_path);
+        }
+    }, relocated);
+    service.record_inference_result(relocated, model_id.toStdString(), weight_id.toStdString(), weight->format,
+        final.toStdString(), {});
+    service.task().inference_output_directory = final.toStdString();
+    validate_inference_results(candidate, active_workflow().id, root_directory_);
+    const auto serialized = serialize_workflow(portable_graph(candidate, root_directory_), active_workflow().document.positions);
+    const auto relative = inference_result_directory(node_id, model_id.toStdString(), weight_id.toStdString()) + "/result.json";
+    const auto asset = std::find_if(serialized.inference_assets.begin(), serialized.inference_assets.end(),
+        [&relative](const auto& value) { return value.first == relative; });
+    if (asset == serialized.inference_assets.end()) throw std::runtime_error("inference result was not serialized");
+    ProjectStorage::write_atomic(QDir(staging).filePath("result.json"), asset->second);
+    QSaveFile workflow_file(QDir(root_directory_).filePath("workflows/" + active_workflow().id + ".json"));
+    if (!workflow_file.open(QIODevice::WriteOnly) || workflow_file.write(serialized.json) != serialized.json.size())
+        throw std::runtime_error("cannot prepare inference Workflow reference");
+    QDir parent(QFileInfo(final).absolutePath());
+    const auto backup = staging + ".previous";
+    const bool had_result = QDir(final).exists();
+    if (had_result && !parent.rename(final, backup)) throw std::runtime_error("cannot retain previous inference branch");
+    if (!parent.rename(staging, final)) {
+        if (had_result && !parent.rename(backup, final))
+            throw std::runtime_error(("previous inference branch remains at " + backup).toStdString());
+        throw std::runtime_error("cannot publish inference branch");
+    }
+    if (!workflow_file.commit()) {
+        const bool undone = parent.rename(final, staging);
+        if (!undone || (had_result && !parent.rename(backup, final)))
+            throw std::runtime_error(("cannot restore previous inference branch at " + backup).toStdString());
+        throw std::runtime_error("cannot commit inference Workflow reference; previous branch restored");
+    }
+    active_workflow().document.graph = std::move(candidate);
+    active_workflow().dirty = false;
+    if (had_result) QDir(backup).removeRecursively();
 }
 
 const ProjectWorkflow& ProjectManager::active_workflow() const {
@@ -710,11 +667,11 @@ ProjectWorkflow& ProjectManager::active_workflow() {
 }
 
 bool ProjectManager::is_dirty() const {
-    return metadata_dirty_ || std::any_of(workflows_.begin(), workflows_.end(), [](const auto& workflow) { return workflow.dirty; });
+    return metadata_dirty_ || training_runs_.is_dirty() || std::any_of(workflows_.begin(), workflows_.end(), [](const auto& workflow) { return workflow.dirty; });
 }
 
 QString ProjectManager::project_file() const {
-    return has_storage() ? QDir(metadata_.root_directory).filePath(ProjectFileName) : QString{};
+    return has_storage() ? QDir(root_directory_).filePath(ProjectFileName) : QString{};
 }
 
 size_t ProjectManager::external_reference_count() const {
@@ -724,12 +681,12 @@ size_t ProjectManager::external_reference_count() const {
         if (value.empty()) return;
         const QString path = QDir::cleanPath(QString::fromStdString(value));
         if (!QFileInfo(path).isAbsolute()) return;
-        const QString relative = QDir(metadata_.root_directory).relativeFilePath(path);
+        const QString relative = QDir(root_directory_).relativeFilePath(path);
         if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute())
             external.insert(path.toCaseFolded());
     };
     for (const auto& workflow : workflows_) {
-        for (const auto& [id, node] : workflow.document.graph.nodes()) {
+        for (const auto& [node_id, node] : workflow.document.graph.nodes()) {
             if (node.kind == NodeKind::DatasetInput) {
                 const auto& config = std::get<DatasetConfig>(node.config);
                 inspect(config.directory);
@@ -740,7 +697,6 @@ size_t ProjectManager::external_reference_count() const {
                 inspect(config.inference_output_directory);
                 for (const auto& sample : config.dataset_binding.samples) {
                     for (const auto& path : sample.image_paths) inspect(path);
-                    inspect(sample.mask_path);
                 }
                 for (const auto& result_set : config.runtime.results) {
                     inspect(result_set.result_directory);
@@ -762,20 +718,17 @@ size_t ProjectManager::external_reference_count() const {
             }
         }
     }
-    for (const auto& model : model_list_.entries())
-        for (const auto& weight : model.weights) inspect(weight.path);
+    for (const auto& workflow : workflows_)
+        for (const auto& [node_id, node] : workflow.document.graph.nodes())
+            if (node.kind == NodeKind::TaskConfig)
+                for (const auto& model : std::get<TaskNodeConfig>(node.config).model_list.entries())
+                    for (const auto& weight : model.weights) inspect(weight.path);
     return external.size();
 }
 
 QString ProjectManager::next_workflow_id() const {
-    int suffix = 1;
-    while (true) {
-        const QString candidate = "workflow_" + QString::number(suffix++);
-        const bool exists = std::any_of(workflows_.begin(), workflows_.end(), [&candidate](const auto& workflow) {
-            return workflow.id == candidate;
-        });
-        if (!exists) return candidate;
-    }
+    return "workflow_" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+
 }
 
 } // namespace studio

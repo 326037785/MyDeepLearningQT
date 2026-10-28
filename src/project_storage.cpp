@@ -9,6 +9,32 @@
 
 namespace studio {
 
+QString ProjectStorage::validated_relative_path(const QString& value, const char* label) {
+    const QString relative = QDir::cleanPath(QDir::fromNativeSeparators(value));
+    if (relative.isEmpty() || relative == "." || QFileInfo(relative).isAbsolute() ||
+        relative == ".." || relative.startsWith("../"))
+        throw std::runtime_error(std::string("invalid ") + label + " path");
+    return relative;
+}
+
+QString ProjectStorage::portable_path(const std::string& value, const QString& root_directory) {
+    if (value.empty()) return {};
+    const QString path = QDir::cleanPath(QString::fromStdString(value));
+    if (path.startsWith("project:"))
+        throw std::runtime_error("runtime path must not contain a serialized project reference");
+    if (!QFileInfo(path).isAbsolute()) return "project:" + validated_relative_path(path, "resource");
+    const QString relative = QDir(root_directory).relativeFilePath(path);
+    if (relative != ".." && !relative.startsWith("../") && !QFileInfo(relative).isAbsolute())
+        return "project:" + QDir::fromNativeSeparators(relative);
+    return QDir::toNativeSeparators(path);
+}
+
+std::string ProjectStorage::runtime_path(const QString& value, const QString& root_directory) {
+    if (!value.startsWith("project:")) return QDir::toNativeSeparators(value).toStdString();
+    const QString relative = validated_relative_path(value.mid(8), "project-relative resource");
+    return QDir::toNativeSeparators(QDir(root_directory).absoluteFilePath(relative)).toStdString();
+}
+
 QByteArray ProjectStorage::read(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))

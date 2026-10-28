@@ -55,9 +55,9 @@ private:
     void showProjectHome();
     void showWorkflowWorkspace();
     void openNodeWorkspace(int node_id);
-    QString connectedDatasetDirectory(int task_node_id);
-    void startTraining(int task_node_id, const TrainingLaunchRequest& launch);
-    void startInference(int task_node_id, const InferenceLaunchRequest& launch);
+    QString connectedDatasetDirectory(int node_id);
+    void startTraining(int node_id, const TrainingLaunchRequest& launch);
+    void startInference(int node_id, const InferenceLaunchRequest& launch);
     void refreshProjectUi();
     void updateWindowTitle();
     void updateRecentProjects(const QString& project_file = {});
@@ -74,6 +74,8 @@ private:
     void clearWorkflow();
     void loadExampleWorkflow();
     void deleteSelected();
+    bool confirmDatasetChange(const std::vector<int>& sources, bool importing_annotations = false);
+    bool replaceDataset(int source, DatasetConfig dataset, int annotation_owner, const TaskDatasetBinding* imported);
     void showProperties();
     void refreshValidation(bool report_to_log = false);
     void markWorkflowChanged();
@@ -130,10 +132,8 @@ private:
     int active_inference_node_id_ = 0;
     QString active_inference_model_id_;
     QString active_inference_weight_id_;
-    jocelin::config::WeightType active_inference_weight_format_ =
-        jocelin::config::WeightType::LibTorch;
-    QString active_inference_output_;
-    int active_inference_image_count_ = 0;
+    QString active_inference_staging_;
+    std::string active_inference_previous_status_;
     std::vector<QAction*> editing_actions_;
     std::vector<ValidationIssue> issues_;
 };

@@ -29,9 +29,7 @@ public:
     void edit_node(
         WorkflowGraph* graph,
         int node_id,
-        const QString& dataset_directory,
-        const std::vector<ProjectModel>* models = nullptr,
-        const QString& annotation_directory = {});
+        const QString& dataset_directory);
     void refresh_models();
     void clear_node();
     void show_inference();
@@ -55,16 +53,17 @@ public:
 
     std::function<void()> back_requested;
     std::function<void()> changed;
-    std::function<void(int, const TrainingLaunchRequest&)> training_launch_requested;
-    std::function<void(int, const InferenceLaunchRequest&)> infer_requested;
+    std::function<bool(int, DatasetConfig, int, const TaskDatasetBinding*)> dataset_replace_requested;
+    std::function<void(int node_id, const TrainingLaunchRequest&)> training_launch_requested;
+    std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
     std::function<void()> stop_requested;
     std::function<void()> pause_requested;
     std::function<void(const QString&)> run_details_requested;
-    std::function<void(int)> import_model_requested;
-    std::function<void(int, const QString&)> export_model_requested;
-    std::function<void(int, const QStringList&)> delete_models_requested;
-    std::function<void(int)> clear_models_requested;
-    std::function<void(int)> node_requested;
+    std::function<void(int node_id)> import_model_requested;
+    std::function<void(int node_id, const QString&)> export_model_requested;
+    std::function<void(int node_id, const QStringList&)> delete_models_requested;
+    std::function<void(int node_id)> clear_models_requested;
+    std::function<void(int node_id)> node_requested;
     std::function<void(const QString&)> status;
 
 private:
@@ -76,8 +75,6 @@ private:
     WorkflowGraph* graph_ = nullptr;
     int node_id_ = 0;
     QString dataset_directory_;
-    QString annotation_directory_;
-    const std::vector<ProjectModel>* project_models_ = nullptr;
     QLabel* title_ = nullptr;
     QWidget* header_ = nullptr;
     QVBoxLayout* content_ = nullptr;

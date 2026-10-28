@@ -4,6 +4,7 @@
 #include "icon_provider.h"
 #include "segmentation_annotation.h"
 #include "task_workspace_pages.h"
+#include "project_model_browser.h"
 #include "task_module_catalog.h"
 #include "ui_metrics.h"
 
@@ -94,14 +95,18 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
         annotation_binding_dirty_ = true;
         domain_changed();
     };
-    data_->open_dataset_requested = [this](int id) {
-        if (dataset_requested) dataset_requested(id);
+    data_->open_dataset_requested = [this](int node_id) {
+        if (dataset_requested) dataset_requested(node_id);
+    };
+    data_->dataset_replace_requested = [this](int source, DatasetConfig dataset, int owner, const TaskDatasetBinding* imported) {
+        if (!dataset_replace_requested) throw std::runtime_error("Dataset replacement handler unavailable");
+        return dataset_replace_requested(source, std::move(dataset), owner, imported);
     };
     split_->changed = [this] { domain_changed(); };
     split_->status = [this](const QString& text) { if (status) status(text); };
     training_->changed = [this] { domain_changed(); };
     training_->start_requested = [this](const TrainingLaunchRequest& request) {
-        if (train_requested) train_requested(task_node_id_, request);
+        if (train_requested) train_requested(node_id_, request);
     };
     training_->stop_requested = [this] {
         if (stop_training_requested) stop_training_requested();
@@ -113,32 +118,32 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
         if (run_details_requested) run_details_requested(run_id);
     };
     training_->import_model_requested = [this] {
-        if (import_model_requested) import_model_requested(task_node_id_);
+        if (import_model_requested) import_model_requested(node_id_);
     };
     training_->export_model_requested = [this](const QString& model_id) {
-        if (export_model_requested) export_model_requested(task_node_id_, model_id);
+        if (export_model_requested) export_model_requested(node_id_, model_id);
     };
     training_->delete_models_requested = [this](const QStringList& model_ids) {
-        if (delete_models_requested) delete_models_requested(task_node_id_, model_ids);
+        if (delete_models_requested) delete_models_requested(node_id_, model_ids);
     };
     training_->clear_models_requested = [this] {
-        if (clear_models_requested) clear_models_requested(task_node_id_);
+        if (clear_models_requested) clear_models_requested(node_id_);
     };
     inference_->import_model_requested = [this] {
-        if (import_model_requested) import_model_requested(task_node_id_);
+        if (import_model_requested) import_model_requested(node_id_);
     };
     inference_->export_model_requested = [this](const QString& model_id) {
-        if (export_model_requested) export_model_requested(task_node_id_, model_id);
+        if (export_model_requested) export_model_requested(node_id_, model_id);
     };
     inference_->delete_models_requested = [this](const QStringList& model_ids) {
-        if (delete_models_requested) delete_models_requested(task_node_id_, model_ids);
+        if (delete_models_requested) delete_models_requested(node_id_, model_ids);
     };
     inference_->clear_models_requested = [this] {
-        if (clear_models_requested) clear_models_requested(task_node_id_);
+        if (clear_models_requested) clear_models_requested(node_id_);
     };
     inference_->changed = [this] { domain_changed(); };
     inference_->start_requested = [this](const InferenceLaunchRequest& request) {
-        if (infer_requested) infer_requested(task_node_id_, request);
+        if (infer_requested) infer_requested(node_id_, request);
     };
     UiMetrics::apply_semantic_metrics(this);
     activate_step(Step::Data);
@@ -151,6 +156,28 @@ QWidget* TaskWorkspace::build_annotation_page() {
     layout->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
                                ThemeTokens::Space2, ThemeTokens::Space2);
     layout->setSpacing(0);
+    auto* selector = new QWidget(page);
+    auto* selector_layout = new QHBoxLayout(selector);
+    selector_layout->setContentsMargins(0, 0, 0, 0);
+    annotation_models_ = new ProjectModelBrowser(selector);
+    annotation_models_->setObjectName("annotationProjectModelBrowser");
+    annotation_models_->set_management_actions_enabled(false);
+    annotation_models_->set_detail_visible(false);
+    annotation_models_->setMaximumHeight(140);
+    annotation_models_->selection_changed = [this](const QString& model_id) {
+        if (service_) service_->select_inference_model(model_id);
+    };
+    annotation_weight_branch_ = new QComboBox(selector);
+    annotation_weight_branch_->setObjectName("annotationWeightBranch");
+    annotation_weight_branch_->setMinimumContentsLength(16);
+    annotation_weight_branch_->setToolTip(tr("Choose this model's inference weight branch"));
+    connect(annotation_weight_branch_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (service_) service_->select_inference_result(service_->selected_model_id(), annotation_weight_branch_->currentData().toString());
+    });
+    selector_layout->addWidget(annotation_models_, 1);
+    selector_layout->addWidget(new QLabel(tr("Weight branch"), selector));
+    selector_layout->addWidget(annotation_weight_branch_);
+    layout->addWidget(selector);
     segmentation_ = new SegmentationAnnotationWidget(page);
     classification_ = new ClassificationAnnotationWidget(page);
     segmentation_->hide();
@@ -161,11 +188,11 @@ QWidget* TaskWorkspace::build_annotation_page() {
     segmentation_->status = [this](const QString& text) {
         if (status) status(text);
     };
-    segmentation_->mask_saved = [this](const QString& image, const QString& mask) {
+    segmentation_->mask_saved = [this](const QString& image, const QImage& mask) {
         if (!service_) return;
         try {
-            service_->set_mask_path_for_image(
-                image.toStdString(), mask.toStdString());
+            service_->set_segmentation_mask_for_image(image.toStdString(), mask);
+            segmentation_->refresh_samples(service_->binding().samples, {});
             domain_changed();
         } catch (const std::exception& error) {
             QMessageBox::warning(this, tr("Mask metadata failed"),
@@ -184,10 +211,10 @@ QWidget* TaskWorkspace::build_annotation_page() {
         }
     };
     segmentation_->class_rename_requested =
-        [this](const QString& id, const QString& name) {
+        [this](const QString& node_id, const QString& name) {
         if (!service_) return;
         try {
-            service_->rename_class(id.toStdString(), name.toStdString());
+            service_->rename_class(node_id.toStdString(), name.toStdString());
             segmentation_->set_class_schema(service_->binding().classes);
             domain_changed();
         } catch (const std::exception& error) {
@@ -195,10 +222,10 @@ QWidget* TaskWorkspace::build_annotation_page() {
                                  QString::fromUtf8(error.what()));
         }
     };
-    segmentation_->class_retire_requested = [this](const QString& id) {
+    segmentation_->class_retire_requested = [this](const QString& node_id) {
         if (!service_) return;
         try {
-            service_->retire_class(id.toStdString());
+            service_->retire_class(node_id.toStdString());
             segmentation_->set_class_schema(service_->binding().classes);
             domain_changed();
         } catch (const std::exception& error) {
@@ -206,32 +233,42 @@ QWidget* TaskWorkspace::build_annotation_page() {
                                  QString::fromUtf8(error.what()));
         }
     };
-    segmentation_->class_move_requested = [this](const QString& id, int direction) {
+    segmentation_->class_move_requested = [this](const QString& node_id, int direction) {
         if (!service_) return;
-        service_->move_class(id.toStdString(), direction);
+        service_->move_class(node_id.toStdString(), direction);
         segmentation_->set_class_schema(service_->binding().classes);
         domain_changed();
     };
     segmentation_->class_visibility_changed =
-        [this](const QString& id, bool visible) {
+        [this](const QString& node_id, bool visible) {
         if (!service_) return;
-        service_->set_class_visible(id.toStdString(), visible);
+        service_->set_class_visible(node_id.toStdString(), visible);
         segmentation_->set_class_schema(service_->binding().classes);
         domain_changed();
     };
-    segmentation_->class_lock_changed = [this](const QString& id, bool locked) {
+    segmentation_->class_lock_changed = [this](const QString& node_id, bool locked) {
         if (!service_) return;
-        service_->set_class_locked(id.toStdString(), locked);
+        service_->set_class_locked(node_id.toStdString(), locked);
         segmentation_->set_class_schema(service_->binding().classes);
         domain_changed();
     };
     auto assign_sample_split = [this](
         const std::vector<std::string>& sample_ids, const std::string& split) {
         if (!service_) return;
-        for (const auto& id : sample_ids) service_->set_sample_split(id, split);
+        for (const auto& node_id : sample_ids) service_->set_sample_split(node_id, split);
         refresh_annotation();
         if (split_) split_->refresh();
         domain_changed();
+    };
+    segmentation_->samples_empty_requested = [this](const std::vector<std::string>& ids) {
+        if (!service_) return;
+        try {
+            for (const auto& node_id : ids) service_->set_segmentation_sample_empty(node_id);
+            segmentation_->refresh_samples(service_->binding().samples, ids);
+            domain_changed();
+        } catch (const std::exception& error) {
+            QMessageBox::warning(this, tr("Cannot set empty target"), QString::fromUtf8(error.what()));
+        }
     };
     segmentation_->sample_split_requested = assign_sample_split;
     classification_->sample_split_requested = assign_sample_split;
@@ -269,22 +306,26 @@ QWidget* TaskWorkspace::build_annotation_page() {
 }
 
 void TaskWorkspace::bind(
-    WorkflowGraph* graph, int task_node_id,
-    const std::vector<ProjectModel>* models,
-    const QString& annotation_directory)
+    WorkflowGraph* graph, int node_id)
 {
     graph_ = graph;
-    task_node_id_ = task_node_id;
-    project_models_ = models;
-    annotation_directory_ = annotation_directory;
+    node_id_ = node_id;
+    training_->set_service(nullptr);
+    inference_->set_service(nullptr);
+    results_->set_service(nullptr);
     service_.reset();
-    if (!graph_ || graph_->nodes().count(task_node_id_) == 0 ||
-        graph_->node(task_node_id_).kind != NodeKind::TaskConfig) {
+    if (!graph_ || graph_->nodes().count(node_id_) == 0 ||
+        graph_->node(node_id_).kind != NodeKind::TaskConfig) {
         clear();
         return;
     }
     try {
-        service_ = std::make_unique<TaskWorkspaceService>(*graph_, task_node_id_);
+        service_ = std::make_unique<TaskWorkspaceService>(*graph_, node_id_);
+        service_->inference_selection_changed = [this] {
+            inference_->synchronize_result_selection();
+            results_->refresh();
+            refresh_inference_result();
+        };
         service_->synchronize();
         refresh();
         activate_step(Step::Data);
@@ -295,18 +336,22 @@ void TaskWorkspace::bind(
 }
 
 void TaskWorkspace::refresh_models() {
-    const auto models = project_models_ ? *project_models_ : std::vector<ProjectModel>{};
+    const auto models = service_ ? service_->models() : std::vector<ProjectModel>{};
+    annotation_models_->set_models(models);
     if (training_) training_->set_models(models);
     if (inference_) inference_->set_models(models);
     if (results_) results_->set_models(models);
+    if (service_ && !service_->find_model(service_->selected_model_id()))
+        service_->select_inference_model(models.empty() ? QString{} : QString::fromStdString(models.front().id));
+    if (inference_) inference_->synchronize_result_selection();
+    if (results_) results_->refresh();
+    refresh_inference_result();
 }
 
 void TaskWorkspace::clear() {
     service_.reset();
     graph_ = nullptr;
-    task_node_id_ = 0;
-    project_models_ = nullptr;
-    annotation_directory_.clear();
+    node_id_ = 0;
     annotation_binding_dirty_ = true;
     identity_->setText(tr("Task"));
     context_->clear();
@@ -318,11 +363,19 @@ void TaskWorkspace::clear() {
     inference_->set_models({});
     results_->set_service(nullptr);
     results_->set_models({});
+    annotation_models_->set_models({});
+    refresh_inference_result();
     refresh_step_availability();
 }
 
 void TaskWorkspace::refresh_annotation() {
-    if (!service_) return;
+    if (!service_ || service_->source_node_id() == 0) {
+        segmentation_->set_task_dataset({}, {}, {});
+        classification_->set_dataset({}, {}, {});
+        segmentation_->set_inference_result(nullptr);
+        classification_->set_inference_result(nullptr);
+        return;
+    }
     const auto& task = service_->task();
     const QString directory = QString::fromStdString(service_->source_dataset().directory);
     const bool segmentation = task.task == "sg";
@@ -331,12 +384,8 @@ void TaskWorkspace::refresh_annotation() {
     if (segmentation) {
         segmentation_->set_task_dataset(
             directory, service_->binding().samples,
-            service_->binding().classes, annotation_directory_);
-        segmentation_->set_inference_directory(
-            QString::fromStdString(task.inference_output_directory));
+            service_->binding().classes);
     } else {
-        classification_->set_inference_directory(
-            QString::fromStdString(task.inference_output_directory));
         QVector<int> labels;
         QStringList class_names;
         std::vector<const AnnotationClass*> active;
@@ -357,6 +406,26 @@ void TaskWorkspace::refresh_annotation() {
             labels);
     }
     annotation_binding_dirty_ = false;
+    refresh_inference_result();
+}
+
+void TaskWorkspace::refresh_inference_result() {
+    const QSignalBlocker blocker(annotation_weight_branch_);
+    annotation_weight_branch_->clear();
+    if (service_) {
+        annotation_models_->set_current_model_id(service_->selected_model_id());
+        if (const auto* model = service_->find_model(service_->selected_model_id()))
+            for (const auto& weight : model->weights)
+                annotation_weight_branch_->addItem(QString::fromStdString(weight.id), QString::fromStdString(weight.id));
+        annotation_weight_branch_->setCurrentIndex(annotation_weight_branch_->findData(service_->selected_weight_id()));
+    }
+    const auto* selected = service_ && service_->source_node_id() != 0 ? service_->selected_inference_result() : nullptr;
+    QStringList classes;
+    if (service_)
+        if (const auto* model = service_->find_model(service_->selected_model_id()))
+            for (const auto& value : model->classes) classes.push_back(QString::fromStdString(value.name));
+    segmentation_->set_inference_result(selected);
+    classification_->set_inference_result(selected, classes);
 }
 
 void TaskWorkspace::refresh() {
@@ -371,9 +440,9 @@ void TaskWorkspace::refresh() {
         data_->set_service(service_.get());
         split_->set_service(service_.get());
         training_->set_service(service_.get());
-        refresh_models();
         inference_->set_service(service_.get());
         results_->set_service(service_.get());
+        refresh_models();
         refresh_annotation();
         refresh_step_availability();
     } catch (const std::exception& error) {
@@ -384,7 +453,7 @@ void TaskWorkspace::refresh() {
 }
 
 void TaskWorkspace::refresh_step_availability() {
-    const bool bound = service_ && service_->dataset_node_id() != 0;
+    const bool bound = service_ && service_->source_node_id() != 0;
     const bool has_samples = bound && !service_->binding().samples.empty();
     for (int index = 0; index < static_cast<int>(step_buttons_.size()); ++index) {
         const bool enabled = index == static_cast<int>(Step::Data) ||
@@ -440,12 +509,12 @@ void TaskWorkspace::domain_changed() {
 void TaskWorkspace::set_runtime_busy(bool busy) {
     runtime_busy_ = busy;
     bool training_busy = false;
-    if (busy && service_ && project_models_) {
+    if (busy && service_) {
         const std::string& model_id = service_->task().runtime.training_model_id;
         const auto model = std::find_if(
-            project_models_->begin(), project_models_->end(),
+            service_->models().begin(), service_->models().end(),
             [&model_id](const ProjectModel& value) { return value.id == model_id; });
-        training_busy = model != project_models_->end() &&
+        training_busy = model != service_->models().end() &&
             model->training_status == jocelin::model::ModelTrainingStatus::Running;
     }
     const bool inference_busy =

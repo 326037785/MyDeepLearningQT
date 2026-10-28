@@ -1,94 +1,129 @@
 # DeepLearningQT
 
-`DeepLearningQT` is the Qt frontend for `DeepLearning::Core`. It manages project interaction, workflow presentation, annotation editing, training/inference controls and result visualization. Backend task data and task mathematics belong to `DeepLearning`.
+`DeepLearningQT` is the Qt frontend for `DeepLearning::Core`. Qt owns Project interaction, Workflow topology, Node assets and UI selection. Core owns task data, model computation, training, inference and metrics.
 
-## Current workflow
+## Project and Node ownership
+
+A Project contains Workflows. Each Workflow contains persistent Nodes and connections.
 
 ```text
 Project
-  -> Workflow
-       -> Dataset -> Task
+└── Workflow
+    ├── DataNode
+    │   └── input inventory and sample buckets
+    └── TaskNode
+        ├── Task configuration
+        ├── Dataset binding and Annotation
+        ├── ModelList
+        │   └── ModelEntry
+        │       └── ModelWeight
+        └── Inference
+            └── model_id + weight_id -> latest result
 ```
 
-Dataset import establishes the raw assets and sample buckets. A Task operates on the backend sample container produced from those assets.
+A DataNode can connect to several TaskNodes. Each TaskNode owns its Annotation, ModelList and Inference independently. Nodes of the same task type also have separate assets and model-number sequences.
 
-Core owns label-image scanning, exclusion-region conversion, label statistics, region containment and connected-component selection. Qt passes grayscale image buffers with their row stride to these operations and retains image loading, sample-specific diagnostics, drawing and interaction.
+`workflow_id + node_id` locates a Node in the Project. `task_id` identifies a runtime Task instance. `sample_id` identifies a complete sample bucket. See [node_identity.md](node_identity.md).
 
-## Data boundary
+## Dataset binding
 
-Per-sample task data uses `jocelin::meta::SampleSet` and `jocelin::meta::AiMetaData` from `DeepLearning` directly. Qt must not maintain another business structure that duplicates:
+A DataNode owns its input inventory, stable sample ids and `bucket_capacity`. One sample can contain several ordered image paths.
 
-- bucket image paths;
-- task annotation;
-- ROI;
-- training exclusion masks;
-- sample class labels;
-- sample selection;
-- train/validation split;
-- annotation state.
+`TaskDatasetBinding` belongs to a TaskNode. Its samples contain `sample_id`, complete ordered `image_paths`, Annotation, selection, split assignments and training-mask references. Its `bucket_capacity` records the last verified bucket configuration. These fields form the retained binding snapshot.
 
-Qt may keep presentation-only state such as widget selection, viewport transforms, temporary drawing handles and display rows. Presentation state must not become a second source of truth for backend sample data.
+`source_node_id` expresses the current connection. Workflow edges determine its value. It is zero without a Dataset edge and is not persisted as a source reference.
 
-The authoritative metadata rules are defined in `DeepLearning/docs/ai_metadata.md`. See [ai_metadata.md](ai_metadata.md) for the Qt consumption rules.
+Classes, split settings and preprocessing are Task configuration. Annotation and input associations belong to samples. Core receives the resulting `SampleSet` and `AiMetaData` through `TaskWorkspaceService`.
 
-## ModelList boundary
+### Connection lifecycle
 
-Project models use `jocelin::model::ModelList` from `DeepLearning`. Qt persists the same container inside the Project and presents it through one shared model browser; Training and Inference must not maintain separate model inventories or raw checkpoint catalogs.
+A fresh binding has no samples and has `bucket_capacity == 0`. It connects and synchronizes normally. A verified empty Dataset has a positive bucket capacity.
 
-The Task workspace presents the ModelList **within one task type** (for example SG). A shared task type does not require the same Dataset, class schema, `model_index`, or **Capacity** across rows. The browser's Capacity means Core `model_scale`; it is **not** Dataset `bucket_capacity` (input images per sample). Model-specific compatibility is checked only for the user-selected operation, rather than restricting all rows to identical model specs.
+A detached Task has no Dataset edge and retains its binding snapshot. It also retains Annotation, Inference, ModelList and weights. Disconnecting does not clear these assets. Deleting a DataNode has no effect on Tasks that are already detached.
 
-**One row identifies one independent training run's logical model, or one externally imported model that was trained before import.** An imported trained model receives its own row. New, Inherit and Transfer are new training runs and create new logical model rows; pausing and resuming an unfinished run operates on its existing row, not one new row per Resume or per Epoch checkpoint. Training status distinguishes Running, Paused, Completed, Failed and Imported when relevant.
+Before reconnecting a detached Task, compare the candidate Dataset with its retained binding:
 
-Columns display **the weight formats and derived branches of that same row** (not the four training modes):
+- the sample_id sets must match;
+- each sample must have the same complete image_paths, including count and order;
+- bucket_capacity must match.
+
+Comparison normalizes paths using the Project and runtime path conventions. It does not check file availability or task compatibility. A match permits connection and ordinary synchronization. A mismatch leaves the edge absent and retained data unchanged. Existing quality checks diagnose missing files, invalid inputs and task targets.
+
+### DataNode deletion and replacement
+
+Deletion and destructive replacement require user confirmation. The affected Tasks are determined by current edges. Cancelling changes neither topology nor assets.
+
+Confirmed cleanup removes sample bindings and their Annotation, selection, split assignments and training-mask associations. It also clears Inference records, status and input/output path associations. Classes, split settings, preprocessing, other Task settings, ModelList and weights remain.
+
+Cleared references must save successfully before the affected TaskNode's `annotations/` and `inference/` directories are removed. Cleanup errors report the exact paths. External input images and training masks are retained.
+
+Replacement then writes the new Dataset and synchronizes fresh bindings. Reviewing an unchanged image inventory preserves Annotation and Inference. Annotation-package import explicitly supplies the receiving Task's new classes and annotations. Other connected Tasks retain their class configuration and receive fresh samples.
+
+## ModelList
+
+`jocelin::model::ModelList` is the Core model container held by each `TaskNodeConfig`. Training, Inference and Results access that Node's same list through `TaskWorkspaceService`.
+
+One `ModelEntry` represents one logical model created by training or external import. New, Inherit and Transfer create rows. Pause and Resume continue an unfinished row. Model conversion adds `ModelWeight` branches to the same row and records their source through `parent_weight_id`.
+
+The owning TaskNode determines the list's task type. Rows may have different model indices, scales, input sizes and class schemas. Compatibility is checked for the selected operation. The UI's model Capacity means `model_scale`; Dataset `bucket_capacity` means input images per sample.
+
+Each ModelWeight has a branch id, format, precision, role and artifact/runtime metadata. The browser groups branches under LibTorch, ONNX, OpenVINO and TensorRT columns. A concrete branch is selected by weight_id.
+
+Import creates a row in the receiving Node. Core matches external LibTorch/PyTorch parameters by registered name and shape. Unmatched values retain initialization; zero matches are valid for import. Only Resume requires a complete training Checkpoint.
+
+`runtime.training_model_id` refers to the row controlled by the current TaskNode. Training progress and checkpoint ownership stay with that row. Export copies selected model assets outward.
+
+Deleting a model removes its row, controlled-training association and associated Inference records. It also deletes that Node's `inference/<model_id>/` directory. Clear removes the Node's models and Inference records, including its whole `inference/` directory. Other Nodes remain independent.
+
+## Inference and result selection
+
+Inference belongs to a TaskNode. Within that Node, `model_id + weight_id` identifies one latest result. The ids come from Core ModelEntry and ModelWeight. Format and precision describe a branch; they do not identify a result.
+
+`ResultReference` associates source_sample_id with a complete Core ClsResult or SgResult. The Core image path distinguishes image records within a bucket. Qt keeps the typed result and its application association together.
+
+Annotation, Inference and Results share the TaskWorkspaceService model/weight selection. Annotation contains a view of the current Node's ModelList and a branch selector. Clicking a model changes model_id. Choosing a branch changes weight_id.
+
+All result views use the current TaskNode and exact selected pair. A branch without a result shows an empty result state and clears the prediction overlay. It does not display another branch's result. Runtime availability controls execution, while saved branch results remain selectable for viewing.
+
+### Successful replacement
+
+Inference saves ordinary Project state before execution. The worker writes new artifacts to a temporary directory beside the selected branch. The current valid branch remains accessible during execution.
+
+On success, Qt prepares result.json and relocates artifact paths to the final branch. It publishes the branch and Workflow reference using a temporary backup for rollback. Memory changes after commit. Inference or commit failure preserves the valid result and its files. Temporary output and backup directories serve only this replacement operation.
+
+Rerunning a branch replaces only its latest result. Other models, branches and Nodes keep their results.
+
+## Persistence
 
 ```text
-Model | LibTorch | ONNX | OpenVINO | TensorRT
+project.json
+workflows/<workflow_id>.json
+nodes/<workflow_id>/<node_id>/
+├── annotations/<encoded_sample_id>.regions.json
+├── models/model_list.json
+└── inference/<model_id>/<weight_id>/
+    ├── result.json
+    └── prediction artifacts
 ```
 
-The UI exposes all four weight families, while a family is selectable for inference only when its runtime is installed and a compatible weight exists. A cell can contain multiple branches/precisions such as `FP32 / FP16`. The model-acceleration operation creates converted/optimized weights in the **same row**, with their source relationship recorded by the weight branch (e.g. `parent_weight_id`), rather than becoming independent trained models.
+Workflow configuration saves Task bindings and model/weight result references. ModelListStorage saves `models` and `next_number` in each Node's model_list.json. Each result.json contains the selected model/weight ids, format metadata, aggregate metrics and typed sample results.
 
-**LibTorch serves both training and inference.** ONNX, OpenVINO and TensorRT are inference-only. Device and weight type are independent: LibTorch/ONNX support CPU and GPU, OpenVINO is CPU-only, and TensorRT is GPU-only. Inference selection is ordered: choose CPU/GPU first, choose a concrete GPU when applicable, then show only compatible weights whose runtimes are installed. Training source selection uses a compatible LibTorch weight belonging to a selected ModelList row. The ordinary inference path does not ask users to browse arbitrary checkpoints.
+ProjectManager coordinates these modules. Ordinary save prepares serialization before writing. Each file uses QSaveFile replacement, and the Project entry is written last. Atomicity is per file. See [project_spec.md](project_spec.md).
 
-Core fallback is defensive and does not drive the UI choices. If a UI defect or stale project produces an invalid route, Core preserves the selected weight, uses CPU and returns a structured notice that Studio logs and displays as a warning. Training is LibTorch-only and reports unavailable-device adjustment before training through the same UI warning responsibility. Qt excludes incompatible inference weight/device combinations; no cross-format or TensorRT-specific CPU fallback is provided.
+Project open restores Nodes, bindings, result assets and each Node's ModelList. It checks result associations against that Node's models and weights. Result directories and output artifact paths must remain within their branch. Invalid references and missing referenced assets produce loading errors. Detached bindings retain their paths and Annotation until reconnection.
 
-The Qt operation defines the Core `WeightMode`: default pretrained, inheritance, transfer or resume. ModelList row identity, weight-format column and `WeightMode` are three separate concepts. An imported Model Weights file does **not** need Optimizer/Scheduler/Epoch to be a legitimate imported row and inheritance/transfer source; only Resume requires a complete training Checkpoint. One full Checkpoint can also contribute Model parameters for inheritance without forcing that operation to Resume.
+Save As copies Project assets and relocates internal resource paths. Workflow, Node, sample, model and weight ids remain stable. External resource references remain external.
 
-Import, Export, Delete and Clear are ModelList operations. Import accepts LibTorch archives and Python PyTorch state dictionaries. It uses available task/capacity/index metadata or asks the user to select a registered target plus input dimensions and class count. Core constructs the target, loads parameters/buffers with matching registered names and shapes, preserves initialization for all unmatched values (including zero matches), and writes the complete LibTorch model plus a load report into Project-owned storage. The imported trained model creates its own row; Export copies a Project model outward without changing ownership. Delete removes one selected model asset and its row; Clear removes the collection. Project Delete is a separate project-lifecycle operation.
+## Core task data and computation
 
-A Task keeps only the `training_model_id` of the ModelList row it controls. Pause/resume state and the LibTorch checkpoint path live on that model row; they are not a second model inventory or a general checkpoint browser. Stop/failed runs do not become completed model results; handling their in-progress row remains a lifecycle concern.
+Core owns the task representations in AiMetaData, including bucket inputs, annotation, ROI, exclusion regions, class labels, selection, splits and annotation state. Qt owns drawing, viewport state and display rows. Persistent business data remains in the TaskNode binding. See [ai_metadata.md](ai_metadata.md) and [annotation-import-and-storage.md](annotation-import-and-storage.md).
 
-Qt does not implement forward or backward propagation. It sends the selected ModelList source, task settings and Stop/Pause requests to Core, then renders Core's `Completed`, `Paused` or `Stopped` result. Core alone owns batch updates, Scheduler/Epoch commit order and Checkpoint validity.
+SG Annotation uses Core Regions. The editor converts canvas pixels when applying edits. Core owns label scanning, region operations, tensor conversion and result-mask rendering. Qt loads images and presents diagnostics.
 
-## Results boundary
+Training uses LibTorch on CPU or a selected GPU. Inference combines the selected weight with a compatible device and available executor. LibTorch and ONNX support CPU/GPU routes, OpenVINO supports CPU, and TensorRT supports GPU. Qt filters unsupported routes. Core reports device adjustments while preserving the selected weight; Qt displays the warning.
 
-Results inherit the ModelList matrix coordinates. One persisted result belongs to one logical model row and one weight-format column, identified by `model_id + WeightType`. The Project owns these assets under `results/<model_id>/<libtorch|onnx|tensorrt>/`. Running inference again for the same model and weight format replaces that directory. Different precision modes of the same format do not create result history; the user explicitly selects the precision mode and the current result is overwritten.
+Qt sends task filtering inputs through InferenceRequest::config. Core produces the effective parameters, flags, predictions and metrics in task Result objects. SG previews use SgResult::render_interest_mask(). Classification rejection is -1 and displays as Unknown.
 
-The Results workspace reuses the ModelList matrix as its selector so users can switch between LibTorch, ONNX, OpenVINO and TensorRT results of the same trained/imported model. The selected `(model, format)` result then exposes its sample list and detail view instead of flattening every model/result into one table.
+Training validation uses Mean IoU for SG and Accuracy for CL. Inference consumes Core's task metrics, including Precision, Recall and F1. Label-dependent metrics require valid supervision. An unavailable metric remains unavailable. Qt does not recalculate metrics.
 
-Qt does not calculate task metrics. Training validation and best-model selection use Mean IoU for SG and Accuracy for CL. Inference consumes task Result metrics from `DeepLearning`: scope-level Accuracy/Precision/Recall/F1-score for labeled classification images, and per-image Mean IoU/Precision/Recall/F1-score for labeled segmentation images. Background-only annotation is valid; unlabeled images still have predictions but no label-dependent metrics. Unavailable metrics are displayed as unavailable, never as zero. Segmentation also shows mean confidence and predicted area. Prediction artifacts and a self-contained `result.json` are persisted inside the Project result directory; Export only copies the selected result outward.
-
-`ResultReference` stores project result/sample identities and a variant of Core `ClsResult` or `SgResult`. Classification batch metrics use Core `ClsScopeMetrics`. Qt sends filter switches and values through `InferenceRequest::config` (Core AiConfig). Core task postprocessing extracts those values and outputs Result, including the effective parameter snapshot and flags. Qt does not use a request Result as a competing filter input or define a second task result. Each persisted result entry requires `result_id`, `source_sample_id`, `task` and the typed `result` object. Project JSON retains task parameters, probabilities, component attributes, flags, runs and artifact paths; dense image buffers stay in memory or external artifacts. SG previews after reopening use `SgResult::render_interest_mask()` on the restored runs.
-
-Core returns -1 for a classification prediction rejected by confidence, and Qt displays it as `Unknown`. Core alone calculates rejection and includes labeled rejections in Precision/Recall/F1 and Accuracy; Qt does not turn missing annotations into rejected predictions or calculate these metrics.
-
-Training and inference jobs use Core's `common/exception/pipeline_exception.h` to preserve errors from their normal pipeline. Qt presents those messages and supplies the translated fallback for unknown exceptions; it does not run a second validation pipeline. Training pause and stop remain lifecycle results.
-
-## Annotation and visualization
-
-Qt is responsible for editing and visualizing the backend structures. External annotation formats may use temporary parser or canvas representations, but committed project/task data is converted into the corresponding `DeepLearning` structures.
-
-For example, a segmentation mask displayed as `QImage` is a UI/file representation; the backend spatial annotation is stored as `std::vector<Region>` in `AiMetaData`.
-
-External annotation import, Project-owned annotation snapshots, bucket binding, annotation states and compact metadata/run storage follow [annotation-import-and-storage.md](annotation-import-and-storage.md). External source formats are adapters and do not become persistent Project data models.
-
-## Adding a task
-
-A new task starts in `DeepLearning`, not in Qt.
-
-1. Define any required task geometry or data structure in `DeepLearning`, normally under `common/geometry` and `common/meta`.
-2. Add the task's backend Dataset, model, trainer, inference, loss, metric and result support as required.
-3. After the backend structure exists, add the corresponding Qt editor, viewer and presentation logic.
-
-Qt must not introduce a backend-style `BBox`, OCR target, polygon target, Region replacement or other task data structure merely to make the UI compile. If the task needs that data, the structure belongs to `DeepLearning`; Qt only manages its visual interaction and presentation.
-
-The ordered extension points, persistence rules and code examples are in [adding-modules.md](adding-modules.md).
+Core's pipeline exceptions carry execution errors to Qt. Pause, Stop and Completed are training lifecycle outcomes. Extension rules are in [adding-modules.md](adding-modules.md).

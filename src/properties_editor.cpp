@@ -29,14 +29,14 @@ QLabel* heading(const QString& text, QWidget* parent) {
     return label;
 }
 
-QWidget* dataset_editor(WorkflowGraph* graph, int id, std::function<void()> changed) {
+QWidget* dataset_editor(WorkflowGraph* graph, int node_id, std::function<void()> changed) {
     (void)changed;
     auto* editor = new QWidget;
     auto* layout = new QVBoxLayout(editor);
-    layout->addWidget(heading(PropertiesEditor::tr("Dataset  #%1").arg(id), editor));
+    layout->addWidget(heading(PropertiesEditor::tr("Dataset  #%1").arg(node_id), editor));
     auto* group = new QGroupBox(PropertiesEditor::tr("Data source"), editor);
     auto* form = new QFormLayout(group);
-    auto& config = std::get<DatasetConfig>(graph->node(id).config);
+    auto& config = std::get<DatasetConfig>(graph->node(node_id).config);
     auto* directory = new QLabel(config.directory.empty()
         ? PropertiesEditor::tr("Not imported")
         : QString::fromStdString(config.directory), group);
@@ -60,11 +60,11 @@ QWidget* dataset_editor(WorkflowGraph* graph, int id, std::function<void()> chan
     return editor;
 }
 
-QWidget* task_editor(WorkflowGraph* graph, int id, std::function<void()> changed) {
+QWidget* task_editor(WorkflowGraph* graph, int node_id, std::function<void()> changed) {
     auto* editor = new QWidget;
     auto* layout = new QVBoxLayout(editor);
-    layout->addWidget(heading(PropertiesEditor::tr("Task  #%1").arg(id), editor));
-    auto& config = std::get<TaskNodeConfig>(graph->node(id).config);
+    layout->addWidget(heading(PropertiesEditor::tr("Task  #%1").arg(node_id), editor));
+    auto& config = std::get<TaskNodeConfig>(graph->node(node_id).config);
     const auto* module = find_task_module(config.task);
 
     auto* identity_group = new QGroupBox(PropertiesEditor::tr("Task"), editor);

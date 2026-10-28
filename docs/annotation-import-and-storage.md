@@ -1,12 +1,10 @@
 # Annotation import and project storage
 
-This document defines the DeepLearningQT rules for importing external annotations and storing task annotations inside a Project. External dataset formats are input adapters. A successful import creates a Project-owned annotation snapshot that supports reopening, editing, training and inference independently of the original annotation files.
-
-ROI and training exclusion masks are adjacent Core semantics. Changes to them require a current requirement that directly involves them.
+Annotation is the task target owned by a TaskNode for one complete sample bucket. External dataset formats are input adapters. A successful import commits annotations to the receiving TaskNode. Reopening, editing, training and inference use those committed targets independently of the original annotation files.
 
 ## Ownership and canonical data
 
-External sources such as LabelMe, COCO, YOLO, MVTec-style datasets and custom datasets may organize images and targets differently. Import support requires a task target and a deterministic mapping from that target to a Studio sample. Each source adapter resolves its own directory layout and annotation-file relationships.
+External sources organize images and targets according to their own formats. Each adapter resolves its directory layout and annotation files. It maps the supported task target to complete Studio sample buckets.
 
 The import pipeline is:
 
@@ -15,31 +13,17 @@ External dataset
   -> source adapter / converter
   -> import representation
   -> sample and class mapping
-  -> Project-owned annotation snapshot
-  -> DeepLearning canonical task data
+  -> TaskNode-owned Annotation
+  -> Core SampleSet for the selected operation
 ```
 
-The committed Project snapshot is the authoritative annotation source. Source provenance may be retained for diagnostics.
+The receiving TaskNode owns the committed annotation. External format identifiers and source paths belong to import diagnostics.
 
-Dataset owns the input image assets. Annotation import uses their existing paths. Portable image asset ownership is a separate Dataset lifecycle decision.
-
-## Requirement and implementation priority
-
-The annotation format serves DeepLearning Core's canonical task data. Qt modules serve product requirements and user workflow.
-
-Core task semantics define Project annotation storage and import normalization: sample identity, bucket inputs, class identity, annotation state and the task's typed target. Qt widgets, services, file layouts and external-format adapters implement this contract.
-
-DeepLearningQT provides sample selection, annotation editing, class editing, import dialogs and converter integration as required by the workflow. These modules consume and update the Project/Core data defined by the requirement.
-
-The current requirement and this document define intended behavior; Core typed data defines the canonical backend representation; Qt and converter implementations satisfy that behavior. Source code and tests describe the current implementation. Requirement changes belong to the project owner.
-
-Do not modify this specification or add wrappers, compatibility layers, duplicate fields, fallback branches or parallel old/new pipelines solely to preserve conflicting code. Such mechanisms require an independently valid current product need or an explicit project-owner decision.
-
-When an existing interface or data flow conflicts with the requirement, report the conflict and change the implementation at the owning layer.
+DataNode owns the input image inventory. Annotation import uses input paths. Project Annotation stores typed targets and references; it does not copy input images during ordinary save.
 
 ## Sample and bucket binding
 
-One annotation binds to one Studio sample through its stable `sample_id`. A sample is one bucket and may contain one or more input image paths:
+Each TaskNode owns its annotations and binds them to Dataset samples through stable `sample_id`. The Project locator is the owning Workflow, `node_id` and `sample_id`. A sample is one bucket and may contain one or more input image paths:
 
 ```text
 sample_id
@@ -51,11 +35,9 @@ The task defines the valid image count and input compatibility rules. A shared s
 
 Source adapters resolve filenames, relative paths, numeric ids or manifest records to the stable Studio `sample_id` used by committed annotations. Filename matching is a source-specific codec rule.
 
-Tasks that need a different target for each image inside one bucket define the corresponding typed Core structure when that requirement arises.
-
 ## Sample acquisition and converter exchange
 
-The import contract has exactly two sample acquisition origins: Qt-selected and converter-selected. Sequential and random sampling are modes within the same converter-selected pipeline. Both origins produce the same import representation before Project data is committed.
+The import rules define exactly two sample acquisition origins: Qt-selected and converter-selected. Sequential and random sampling are modes within the same converter-selected pipeline. Both origins produce the same import representation before TaskNode data is committed.
 
 For Qt-selected samples, Qt sends a selection manifest for the `N` selected buckets. Each entry contains the stable `sample_id` and complete `image_paths` array. The converter locates the corresponding annotation using those paths and the external dataset rules. Annotation lookup uses path references and supports multi-image buckets.
 
@@ -63,7 +45,7 @@ For converter-selected samples, the converter selects `N` buckets using the requ
 
 The converter returns an explicit result for every requested or selected sample, including samples with missing or unusable targets. Each result identifies whether valid supervision exists. A missing annotation resource is `Unannotated` unless the source format or dataset rules explicitly establish a valid task target for that sample.
 
-Import-local external ids help resolve correspondence. The Project binding key is `sample_id`: Qt-selected results preserve the original id; converter-selected results receive their Project identity from Qt before the annotation snapshot is committed.
+Import-local external ids help resolve correspondence. The Project binding key is `sample_id`: Qt-selected results preserve the original id; converter-selected results receive their Project identity from Qt before Annotation is committed.
 
 ## Annotation state
 
@@ -72,59 +54,79 @@ Annotation state describes supervision validity and has exactly two values:
 - `Unannotated`: no valid supervision has been supplied for the sample.
 - `Annotated`: the sample contains valid task supervision.
 
-`BackgroundOnly` and `NeedsReview` are removed states. The two-state contract applies to import exchange, Project storage and Core metadata.
+Each task owns target validity and annotation-state transitions. Classification requires an active, valid class. Semantic segmentation supports valid foreground regions and explicitly confirmed pure background as `Annotated` with empty regions. Empty regions alone leave an unfinished sample `Unannotated`.
 
-Task targets express supervision content:
+Qt provides task-owned annotation actions. Classification disables `Set as empty`; segmentation asks the user to confirm pure background before clearing foreground and marking the sample `Annotated`.
 
-- SG: `Annotated` with empty foreground regions represents an explicitly all-background sample. Background has label `0`.
-- OD: `Annotated` with empty boxes represents an explicitly zero-object negative sample.
-- CL: an unassigned `class_label = -1` is `Unannotated`. Classification has no segmentation-style background target.
-
-Annotation state and task target together distinguish valid negative samples from missing supervision. A missing mask or label file represents valid supervision only when the source rules define the corresponding target deterministically.
+The complete identity, state, target and interaction rules are defined in [annotation_spec.md](annotation_spec.md). Source adapters distinguish an explicitly valid zero mask from a missing target resource.
 
 ## Project storage
 
-Project storage uses JSON for compact metadata and separate spatial assets using the Core run representation where appropriate.
-
-Core `jocelin::geo::Run` has the semantic tuple
+Workflow documents save persistent Node IDs, connections, allocation sequence and Node configuration. source_node_id is reconstructed from current edges. Each TaskNode owns `config.dataset_binding.classes` and `config.dataset_binding.samples`. Annotation scalar fields live in that Node's sample records; SG spatial data lives under the same Node's asset directory.
 
 ```text
-(row, start, end, label)
+project.json
+workflows/<workflow_id>.json
+nodes/<workflow_id>/<node_id>/annotations/<encoded_sample_id>.regions.json
 ```
 
-with the covered column interval `[start, end)`. Core `Region` is a collection of these runs. Project spatial assets store this run data. Physical run-file encodings may evolve while preserving Core `Run` semantics exactly.
+Node IDs are unique within their Workflow. The asset namespace includes the Workflow ID, so identical Node IDs in different Workflows retain separate assets. Filenames use lowercase hexadecimal encoding of the stable sample ID's UTF-8 bytes, preserving identity on case-insensitive filesystems and avoiding reserved filesystem names.
 
-Project metadata follows these rules:
+Sample records store `sample_id`, ordered complete `image_paths`, `annotation_state`, selection, split assignments and the existing training-exclusion reference. The binding also saves `bucket_capacity` as its last verified bucket configuration (zero with no samples means fresh). Task target fields follow the task:
 
-- use flat records for scalar metadata and nesting for genuine one-to-many or structured relations;
-- give each semantic value one authoritative field;
-- store large run arrays and dense mask pixels in separate spatial assets;
-- resolve bucket `image_paths` through `sample_id` and the owning Dataset;
-- include target fields used by the task.
+| Task | Annotation target fields | Spatial data |
+| --- | --- | --- |
+| Classification | `class_id` | Stable semantic class reference. Backend labels are calculated when consumed. |
+| Semantic Segmentation | `region_file` | Reference relative to `nodes/<workflow_id>`, confined to the owning Node and sample. Empty Regions use an empty reference. |
 
-A conceptual sample record is intentionally shallow:
+The Node's Task type comes from its configuration. Saved input paths are the Task's last verified bucket snapshot. A graph edge establishes the current runtime source_node_id; disconnect sets it to zero without changing the snapshot or Annotation. Reconnect compares sample_id sets, ordered bucket paths and bucket_capacity before connecting. No historical source reference is stored.
+
+Example SG record within Node `4`:
 
 ```json
 {
   "sample_id": "sample-001",
+  "image_paths": ["project:dataset/sample-001.png"],
+  "selected": true,
+  "training_mask_path": "",
+  "split": "train",
+  "split_manual": true,
   "annotation_state": "annotated",
-  "class_id": "",
-  "region_file": "annotations/sample-001.rle",
-  "split": "train"
+  "region_file": "4/annotations/73616d706c652d303031.regions.json"
 }
 ```
 
-Each task uses the applicable fields from this example. Classification omits the region file. Unannotated samples and explicitly all-background SG samples may also omit it; the latter retain `annotation_state: annotated` and empty foreground regions. Annotation state is read from its authoritative field. OD/OCR storage fields follow their typed Core targets.
+The referenced spatial asset contains an array of Regions. Each Region is an array of Core runs `[row, start, end, label]`; columns cover `[start, end)`. Region order and run order are preserved exactly. For example:
 
-Image width and height are validation inputs obtained from the owning Dataset/image information. Loading validates spatial annotation against the bucket image geometry.
+```json
+[[[2, 3, 7, 1], [3, 3, 7, 1]]]
+```
+
+An unfinished empty target and a confirmed pure-background target both use `region_file: ""`. Their stored `annotation_state` distinguishes `Unannotated` from `Annotated`. Recovery reads the explicit target reference; a stale spatial file has no effect on an empty reference.
+
+## Commit and recovery
+
+Import adapters decode external masks into Core Regions before committing Annotation to the receiving TaskNode. Its binding retains resolved `sample_id`, class identity, state and typed target. Source mask paths belong to the temporary import representation. After import, Project Annotation uses the committed target independently of the original mask files.
+
+The SG editor converts its canvas pixels to Core Regions when applying edits. `Set as empty` clears Regions and confirms `Annotated`. These operations update the authoritative TaskNode binding through its service.
+
+Workflow serialization prepares JSON and Region file contents in memory. Region encoding preserves the task target. Project save serializes and validates its module documents before creating directories or writing files. It writes Node assets and module documents before the Project entry. Each file uses QSaveFile replacement. Save As copies Node assets and retains Node and sample IDs.
+
+Preparation errors leave existing Project files unchanged. During the write phase, atomic replacement applies to each file; a later write failure can leave earlier files updated.
+
+Project open restores Node IDs and connections, creates fresh runtime Task IDs, and resolves Region assets under `nodes/<workflow_id>`. Connecting restored Nodes verifies their saved bucket binding before ordinary synchronization. Detached Tasks retain their saved paths and targets without quality reinterpretation until reconnected. Connected Tasks run target validity checks after Project input paths are resolved. Each TaskNode receives its own binding and target values.
+
+`quality_issues` contains runtime diagnostics derived from Dataset binding, current input resources and task target checks. For connected Tasks, Project recovery rebuilds these findings after restoring bindings and resolving paths; Workflow sample records omit this field. Diagnostics carried by the temporary import representation remain within the import flow.
+
+Malformed JSON, invalid references and missing referenced assets report errors through strict loading. Task-specific semantic checks determine target validity. Identity rules are documented in [node_identity.md](node_identity.md); task rules are in [annotation_spec.md](annotation_spec.md).
 
 ## Import representation
 
 The import representation is a temporary adapter boundary that resolves external data into deterministic Studio samples and task targets. It may carry external ids, image paths, category ids and split names for mapping; Project storage retains the resolved task data.
 
-Source format and task type are separate dimensions. Each adapter declares the task target it can produce, such as classification labels, semantic regions, detection boxes or OCR geometry/text.
+Source format and task type are separate dimensions. Each adapter declares the task target it produces and resolves its inputs before commit.
 
-Python converters own rich external-format conversion for LabelMe, COCO, YOLO, MVTec-style layouts and other ecosystem formats. They normalize source data into the Studio import representation. C++ owns the Project boundary, Project persistence and conversion into DeepLearning canonical structures. Small direct C++ codecs require explicit project-owner approval.
+AnnotationExchange handles Studio bundles and iLabelled segmentation packages. The codec registry also reads dense-mask directories with sibling images/ and masks/ folders. Codecs describe external samples and categories. AnnotationBindingMapper resolves them into DatasetConfig, TaskDatasetBinding and Core targets. External converters can produce the same import representation. Project persistence belongs to the receiving TaskNode.
 
 The converter retains source fields that contribute to sample resolution, task targets, class/split mapping or diagnostics.
 
@@ -138,13 +140,13 @@ A generated segmentation class has a stable Project identity and an editable sem
 
 For classification, `-1` is the unknown/unassigned target sentinel. A real class named `unknown` requires an explicit dataset definition. Assigning a real class updates the Project class identity/label and makes the sample `Annotated`.
 
-For a new Task, the source class schema may initialize the Task schema. For an existing Task, class conflicts require explicit mapping before commit; renaming, merging, reordering and equivalence decisions require user confirmation. The Project persists confirmed edits and mappings for subsequent loads.
+Explicit annotation-package import replaces the receiving Task's classes and sample annotations after confirmation. It retains that Task's split_settings and preprocessing. Other Tasks connected to the same DataNode retain their classes and settings. They receive fresh samples from the replacement Dataset.
 
 External split metadata is optional input. Source train/validation assignments map to the current Project split when the correspondence is direct. External test partitions belong to application-level independent evaluation selection. Core `AiMetaData::Split` retains `Unassigned`, `Train` and `Validation`.
 
 ## Validation and commit
 
-Import is a bounded transaction. Parsing and mapping complete before the current Project annotation snapshot is replaced or extended. A failed import preserves the previous snapshot.
+Parsing and mapping complete before the user confirms Dataset replacement. Parse failure and cancellation preserve existing data. After confirmation, the application clears Dataset-dependent references for currently connected Tasks and saves them. It then removes their annotations/ and inference/ directories, installs the replacement Dataset and imports the receiving Task's targets. File cleanup failures report exact paths.
 
 Structural ambiguity rejects the import. Examples include an unknown task target, ambiguous sample correspondence, duplicate sample identity that cannot be resolved, or contradictory class definitions.
 
@@ -154,6 +156,16 @@ Automatic format probing identifies formats with deterministic task semantics an
 
 ## Extension rule
 
-DeepLearning owns canonical task data. SG uses `AiMetaData::regions` and CL uses `class_label`. OD, OCR and other tasks first define their typed geometry/metadata in DeepLearning. DeepLearningQT then imports, persists, edits and visualizes those Core structures directly.
+DeepLearning owns canonical task data. SG uses AiMetaData::regions and CL uses class_label. Task extensions define their typed data and consumers in Core before Qt imports, persists, edits or visualizes them.
 
-The stable contract consists of Project-owned sample binding and task semantics. Supporting another external source means adding an adapter for an already-defined task target.
+The stable contract consists of TaskNode-owned sample binding and Core task semantics. Supporting another external source means adding an adapter for an already-defined task target.
+
+## Dataset lifecycle
+
+Disconnect removes the Dataset edge and sets source_node_id to zero. It retains samples, their Annotation, ordered input paths and assignments. Binding bucket_capacity is retained too. ModelList and Inference remain with the TaskNode.
+
+A detached Task compares a candidate Dataset with this binding snapshot before connection. The sample_id sets, ordered complete image_paths and bucket_capacity must match. Comparison normalizes paths but does not check input quality. Mismatch leaves all retained data unchanged.
+
+DataNode deletion or destructive replacement affects only currently connected Tasks. It clears their samples and Inference while retaining classes, split_settings, preprocessing, other Task configuration and models. Persisted references must disappear successfully before their exact Node annotations/ and inference/ directories are deleted. Cleanup failures report paths. Detached Tasks and external source images/masks remain intact.
+
+The complete lifecycle and result-selection rules are in [inference-modelist-todo-guide.md](inference-modelist-todo-guide.md).

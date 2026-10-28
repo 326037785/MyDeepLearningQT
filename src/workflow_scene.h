@@ -115,10 +115,13 @@ public:
     bool grid_visible() const { return grid_visible_; }
 
     std::function<void()> model_changed;
+    // Called before mutating topology, while all affected edges still exist.
+    std::function<bool(const std::vector<int>&)> before_nodes_removed;
+    std::function<void()> nodes_removed;
     std::function<void()> position_changed;
     std::function<void()> validation_refresh_requested;
-    std::function<void(int)> node_activated;
-    std::function<void(int, const QString&)> node_action_requested;
+    std::function<void(int node_id)> node_activated;
+    std::function<void(int node_id, const QString&)> node_action_requested;
     std::function<void(const QString&)> feedback;
 
     void begin_connection_drag(PortItem* port, const QPointF& scene_position);

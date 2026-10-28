@@ -1,8 +1,10 @@
 #pragma once
 
 #include "workflow_document.h"
+#include "training_run_store.h"
 
 #include <common/model/model_list.h>
+#include <inference/inference_service.h>
 
 #include <QString>
 
@@ -17,9 +19,6 @@ struct ProjectMetadata {
     QString description;
     QString created_at;
     QString modified_at;
-    QString root_directory;
-    QString derived_from_project_id;
-    QString derived_from_project_path;
 };
 
 struct ProjectWorkflow {
@@ -48,23 +47,24 @@ public:
     void set_project_name(const QString& name);
     void set_project_description(const QString& description);
     void mark_active_dirty();
-    void mark_models_dirty();
-    ProjectModel add_model(ProjectModel model);
-    bool remove_model(const QString& id);
-    void clear_models();
-    int allocate_training_run_number();
+    QString node_models_directory(int node_id) const;
+    // Saves cleared references before removing only these connected Tasks' assets.
+    void clear_dataset_dependents(const std::vector<int>& dataset_node_ids);
+    QString prepare_inference_directory(int node_id, const QString& model_id, const QString& weight_id) const;
+    void discard_inference_directory(int node_id, const QString& model_id, const QString& weight_id, const QString& staging) const;
+    void commit_inference_result(int node_id, const QString& model_id, const QString& weight_id,
+                                const jocelin::inference::InferenceReport& report, const QString& staging);
 
+    TrainingRunStore& training_runs() { return training_runs_; }
     const ProjectMetadata& metadata() const { return metadata_; }
     const std::vector<ProjectWorkflow>& workflows() const { return workflows_; }
     std::vector<ProjectWorkflow>& workflows() { return workflows_; }
     const ProjectWorkflow& active_workflow() const;
     ProjectWorkflow& active_workflow();
     size_t active_index() const { return active_index_; }
-    const std::vector<ProjectModel>& models() const { return model_list_.entries(); }
-    const ProjectModel* find_model(const QString& id) const;
-    ProjectModel* find_model(const QString& id);
     bool is_dirty() const;
-    bool has_storage() const { return !metadata_.root_directory.isEmpty(); }
+    bool has_storage() const { return !root_directory_.isEmpty(); }
+    const QString& root_directory() const { return root_directory_; }
     QString project_file() const;
     size_t external_reference_count() const;
 
@@ -73,8 +73,8 @@ private:
 
     ProjectMetadata metadata_;
     std::vector<ProjectWorkflow> workflows_;
-    jocelin::model::ModelList model_list_;
-    int next_training_run_number_ = 1;
+    TrainingRunStore training_runs_;
+    QString root_directory_;
     size_t active_index_ = 0;
     bool metadata_dirty_ = false;
 };

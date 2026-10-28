@@ -1,5 +1,8 @@
 #include "main_window.h"
 #include "task_workspace_pages.h"
+#include "task_workspace.h"
+#include "segmentation_annotation.h"
+#include "project_storage.h"
 #include "node_workspace.h"
 #include <torch/serialize.h>
 #include "workflow_scene.h"
@@ -17,6 +20,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QGraphicsView>
 #include <QImage>
@@ -37,13 +41,14 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 
 namespace {
 
-studio::NodeItem* node(studio::WorkflowScene* scene, int id) {
+studio::NodeItem* node(studio::WorkflowScene* scene, int node_id) {
     for (auto* item : scene->items()) {
         auto* candidate = dynamic_cast<studio::NodeItem*>(item);
-        if (candidate && candidate->data(0).toInt() == id) return candidate;
+        if (candidate && candidate->data(0).toInt() == node_id) return candidate;
     }
     return nullptr;
 }
@@ -61,11 +66,80 @@ bool capture(QWidget& widget, const char* variable) {
     return widget.grab().save(path);
 }
 
+void dataset_lifecycle_ui() {
+    const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
+    QTemporaryDir fixtures;
+    QImage input(8, 6, QImage::Format_RGB888); input.fill(Qt::red);
+    const auto a = fixtures.filePath("a.png"), b = fixtures.filePath("b.png");
+    require(input.save(a) && input.save(b), "cannot create lifecycle UI inputs");
+    studio::MainWindow window;
+    auto* view = window.findChild<QGraphicsView*>("workflowView");
+    auto* scene = dynamic_cast<studio::WorkflowScene*>(view->scene());
+    auto* workspace = window.findChild<studio::NodeWorkspace*>("nodeWorkspace");
+    auto& graph = *scene->model();
+    const int source = graph.add_node(studio::NodeKind::DatasetInput);
+    std::get<studio::DatasetConfig>(graph.node(source).config).items = {{a.toStdString(), {}, true, "sample"}};
+    const int owner = graph.add_task_node({"cls"}), peer = graph.add_task_node({"cls"}), detached = graph.add_task_node({"cls"});
+    for (int id : {owner, peer, detached}) {
+        graph.connect(source, 0, id, 0);
+        auto& task = std::get<studio::TaskNodeConfig>(graph.node(id).config);
+        task.dataset_binding.classes = {{"cat", 1, "cat", "#112233", true, false, true}};
+        task.dataset_binding.samples.front().class_id = "cat";
+        task.dataset_binding.samples.front().annotation_state = "annotated";
+        task.runtime.results.resize(1);
+    }
+    graph.remove_connection({source, 0, detached, 0});
+    scene->rebuild();
+    bool accept = false;
+    int confirmations = 0;
+    QString error;
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, [&] {
+        if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (message->windowTitle() == "Delete / replace Dataset") {
+                ++confirmations;
+                if (!message->text().contains("#" + QString::number(owner)) ||
+                    message->text().contains("#" + QString::number(detached))) error = "confirmation included detached Task";
+                message->button(accept ? QMessageBox::Yes : QMessageBox::Cancel)->click();
+            } else { error = message->text(); message->accept(); }
+        }
+    });
+    dialogs.start(10);
+    studio::DatasetConfig replacement;
+    replacement.items = {{b.toStdString(), {}, true, "new"}};
+    require(!workspace->dataset_replace_requested(source, replacement, 0, nullptr) && confirmations == 1 &&
+        std::get<studio::TaskNodeConfig>(graph.node(owner).config).runtime.results.size() == 1 &&
+        std::get<studio::DatasetConfig>(graph.node(source).config).items.front().path == a.toStdString(),
+        "cancelled replacement changed state");
+    node(scene, source)->setSelected(true);
+    scene->delete_selected_items();
+    require(confirmations == 2 && graph.nodes().count(source) == 1 && graph.connections().size() == 2,
+        "cancelled DataNode deletion changed topology");
+    accept = true;
+    require(workspace->dataset_replace_requested(source, replacement, 0, nullptr) && error.isEmpty(),
+        "confirmed Dataset replacement failed");
+    for (int id : {owner, peer}) {
+        const auto& task = std::get<studio::TaskNodeConfig>(graph.node(id).config);
+        require(task.dataset_binding.samples.front().sample_id == "new" && task.runtime.results.empty() &&
+            task.dataset_binding.samples.front().annotation_state == "unannotated" && task.dataset_binding.classes.front().id == "cat",
+            "replacement failed to clear all connected Tasks or lost classes");
+    }
+    node(scene, source)->setSelected(true);
+    scene->delete_selected_items();
+    require(error.isEmpty() && graph.nodes().count(source) == 0 && graph.connections().empty() &&
+        std::get<studio::TaskNodeConfig>(graph.node(owner).config).dataset_binding.samples.empty() &&
+        std::get<studio::TaskNodeConfig>(graph.node(detached).config).dataset_binding.samples.front().class_id == "cat" &&
+        std::get<studio::TaskNodeConfig>(graph.node(detached).config).runtime.results.size() == 1,
+        "confirmed DataNode deletion damaged detached Task or retained connected annotations");
+    dialogs.stop();
+}
+
 } // namespace
 
 int main(int argc, char** argv) try {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication application(argc, argv);
+    dataset_lifecycle_ui();
     QTemporaryDir temporary;
     if (!temporary.isValid()) return 1;
     QDir root(temporary.path());
@@ -461,7 +535,86 @@ int main(int argc, char** argv) try {
     studio::TaskWorkspaceService route_service(*scene->model(), 2);
     studio::InferenceWorkspace route_workspace;
     route_workspace.set_service(&route_service);
+    route_service.task().model_list.restore({route_model}, 2);
     route_workspace.set_models({route_model});
+    // All three model browsers follow their TaskNode, including same-type Nodes.
+    studio::WorkflowGraph model_graph = *scene->model();
+    const int second_model_node = model_graph.add_task_node({"sg"});
+    model_graph.connect(1, 0, second_model_node, 0);
+    std::get<studio::TaskNodeConfig>(model_graph.node(2).config).model_list.restore({route_model}, 2);
+    auto independent_model = route_model;
+    independent_model.name = "Independent Node model";
+    std::get<studio::TaskNodeConfig>(model_graph.node(second_model_node).config).model_list.restore({independent_model}, 2);
+    studio::TaskWorkspace owned_workspace;
+    for (const int owner : {2, second_model_node}) {
+        owned_workspace.bind(&model_graph, owner);
+        const auto lists = owned_workspace.findChildren<QTreeWidget*>("projectModelBrowserList");
+        if (lists.size() != 4) throw std::runtime_error("Task model browsers are missing");
+        const QString expected = owner == 2 ? "Route model" : "Independent Node model";
+        for (const auto* list : lists)
+            if (list->topLevelItemCount() != 1 || !list->topLevelItem(0)->text(0).contains(expected))
+                throw std::runtime_error("Training/Inference/Results browser used another TaskNode's models");
+    }
+    auto& result_task = std::get<studio::TaskNodeConfig>(model_graph.node(2).config);
+    auto extra_branch = result_task.model_list.entries().front().weights.front();
+    extra_branch.id = "libtorch_alternate";
+    result_task.model_list.entries().front().weights.push_back(extra_branch);
+    extra_branch.id = "no_result";
+    result_task.model_list.entries().front().weights.push_back(extra_branch);
+    auto another_model = result_task.model_list.entries().front();
+    another_model.id = "another_model"; another_model.name = "Another model";
+    result_task.model_list.entries().push_back(another_model);
+    for (const auto& branch : {std::string("libtorch_fp32"), std::string("libtorch_alternate")}) {
+        studio::InferenceResultSet result;
+        result.model_id = "route_model"; result.weight_id = branch;
+        const auto& sample = result_task.dataset_binding.samples.front();
+        jocelin::result::sg::SgResult value;
+        value.image_path = sample.image_paths.front();
+        const QImage original_image(QString::fromStdString(value.image_path));
+        value.image_width = original_image.width(); value.image_height = original_image.height();
+        value.mean_confidence = branch == "libtorch_fp32" ? 0.25 : 0.75;
+        jocelin::result::sg::SgResult::Component component;
+        component.label = 1; component.interest = true;
+        component.region.vRun.emplace_back(1, 1, 3, 1);
+        value.components.push_back(component);
+        result.samples.push_back({sample.sample_id, value});
+        result_task.runtime.results.push_back(result);
+    }
+    owned_workspace.bind(&model_graph, 2);
+    auto* annotation_branch = owned_workspace.findChild<QComboBox*>("annotationWeightBranch");
+    auto* result_branch = owned_workspace.findChild<QComboBox*>("resultsWeightBranch");
+    auto* inference_branch = owned_workspace.findChild<QComboBox*>("inferenceWeightBranch");
+    auto* result_table = owned_workspace.findChild<QTableWidget*>("taskResultsTable");
+    auto* result_state = owned_workspace.findChild<QLabel*>("taskResultsState");
+    auto* infer_canvas = dynamic_cast<studio::MaskCanvas*>(owned_workspace.findChild<QWidget*>("inferenceSegmentationCanvas"));
+    auto* annotation_canvas = dynamic_cast<studio::MaskCanvas*>(owned_workspace.findChild<QWidget*>("segmentationMaskCanvas"));
+    if (!annotation_branch || !result_branch || !inference_branch || !result_table || !result_state || !infer_canvas || !annotation_canvas)
+        throw std::runtime_error("branch result selectors or previews missing");
+    for (const auto& branch : {QString("libtorch_alternate"), QString("libtorch_fp32"), QString("no_result")}) {
+        annotation_branch->setCurrentIndex(annotation_branch->findData(branch));
+        const bool available = branch != "no_result";
+        if (result_branch->currentData().toString() != branch || inference_branch->currentData().toString() != branch || result_table->rowCount() != (available ? 1 : 0) ||
+            infer_canvas->has_prediction_overlay() != available || annotation_canvas->has_prediction_overlay() != available ||
+            (available && (!result_state->text().contains(branch) ||
+                result_table->item(0, 2)->text() != (branch == "libtorch_fp32" ? "0.2500" : "0.7500"))))
+            throw std::runtime_error("branch selection did not synchronize Results/Inference/Annotation or empty state");
+    }
+    inference_branch->setCurrentIndex(inference_branch->findData("libtorch_alternate"));
+    if (result_branch->currentData().toString() != "libtorch_alternate" || result_table->rowCount() != 1)
+        throw std::runtime_error("Inference branch selection did not update Results");
+    auto* annotation_models = owned_workspace.findChild<QWidget*>("annotationProjectModelBrowser");
+    auto* annotation_model_rows = annotation_models ? annotation_models->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
+    if (!annotation_model_rows || annotation_model_rows->topLevelItemCount() != 2)
+        throw std::runtime_error("Annotation has no Node ModelList row selector");
+    annotation_model_rows->setCurrentItem(annotation_model_rows->topLevelItem(1));
+    if (result_table->rowCount() != 0 || infer_canvas->has_prediction_overlay() || annotation_canvas->has_prediction_overlay())
+        throw std::runtime_error("Annotation model row selection did not clear missing results");
+    annotation_model_rows->setCurrentItem(annotation_model_rows->topLevelItem(0));
+    if (result_table->rowCount() != 1 || !annotation_canvas->has_prediction_overlay() || result_table->item(0, 2)->text() != "0.7500")
+        throw std::runtime_error("Annotation model row selection did not restore its exact branch");
+    owned_workspace.bind(&model_graph, second_model_node);
+    if (result_table->rowCount() != 0 || infer_canvas->has_prediction_overlay() || annotation_canvas->has_prediction_overlay())
+        throw std::runtime_error("same-id result leaked into another TaskNode's previews");
     auto* route_device_type =
         route_workspace.findChild<QComboBox*>("inferenceDeviceType");
     auto* route_weight_type =
@@ -618,8 +771,10 @@ int main(int argc, char** argv) try {
         scene->model()->connections().size() != 1)
         return 45;
     studio::ProjectManager import_project;
-    const int import_task_id = import_project.active_workflow().document.graph.add_task_node({"cls"});
-    import_project.active_workflow().document.positions.emplace(import_task_id, QPointF(0, 0));
+    const int import_node_id = import_project.active_workflow().document.graph.add_task_node({"cls"});
+    import_project.active_workflow().document.positions.emplace(import_node_id, QPointF(0, 0));
+    const int independent_node_id = import_project.active_workflow().document.graph.add_task_node({"cls"});
+    import_project.active_workflow().document.positions.emplace(independent_node_id, QPointF(200, 0));
     const QString import_project_root = root.filePath("import-project");
     import_project.save_project(import_project_root);
     studio::MainWindow import_window;
@@ -679,15 +834,17 @@ int main(int argc, char** argv) try {
         specified_target = false;
         dialog_ticks = 0;
         import_dialog_driver.start(10);
-        import_workspace->import_model_requested(import_task_id);
+        import_workspace->import_model_requested(import_node_id);
         import_dialog_driver.stop();
         if (!specified_target || !import_error.isEmpty())
             throw std::runtime_error("target specification/import failed: " + import_error.toStdString());
         studio::ProjectManager reopened;
         reopened.open_project(import_project.project_file());
-        if (reopened.models().size() != (matching ? 1 : 2))
+        if (!studio::TaskWorkspaceService(reopened.active_workflow().document.graph, independent_node_id).models().empty())
+            throw std::runtime_error("model import changed another TaskNode's ModelList");
+        if (studio::TaskWorkspaceService(reopened.active_workflow().document.graph, import_node_id).models().size() != (matching ? 1 : 2))
             throw std::runtime_error("external import did not create an independent model row");
-        const auto& imported_model = reopened.models().back();
+        const auto& imported_model = studio::TaskWorkspaceService(reopened.active_workflow().document.graph, import_node_id).models().back();
         if (imported_model.task != jocelin::config::ToolType::Cls || imported_model.model_index != 2 ||
             imported_model.model_scale != jocelin::config::ModelScale::N ||
             imported_model.training_status != jocelin::model::ModelTrainingStatus::Imported || imported_model.classes.size() != 2 ||
@@ -715,6 +872,112 @@ int main(int argc, char** argv) try {
                 throw std::runtime_error("Qt import did not use Core name/shape matching");
         }
     }
+    // A second Node independently creates model_1; deletion must resolve its owner first.
+    specified_target = false;
+    dialog_ticks = 0;
+    import_dialog_driver.start(10);
+    import_workspace->import_model_requested(independent_node_id);
+    import_dialog_driver.stop();
+    if (!specified_target || !import_error.isEmpty())
+        throw std::runtime_error("independent Node model import failed: " + import_error.toStdString());
+    studio::ProjectManager managed;
+    managed.open_project(import_project.project_file());
+    const auto* independent = studio::TaskWorkspaceService(managed.active_workflow().document.graph, independent_node_id)
+        .find_model("model_1");
+    const auto* original = studio::TaskWorkspaceService(managed.active_workflow().document.graph, import_node_id)
+        .find_model("model_1");
+    if (!independent || !original || independent->asset_directory == original->asset_directory)
+        throw std::runtime_error("same-id models did not get separate Node assets");
+    const QString independent_asset = QString::fromStdString(independent->asset_directory);
+    const QString original_asset = QString::fromStdString(original->asset_directory);
+    const auto original_inference_root = QFileInfo(managed.node_models_directory(import_node_id)).absolutePath() + "/inference";
+    const auto independent_inference_root = QFileInfo(managed.node_models_directory(independent_node_id)).absolutePath() + "/inference";
+    const auto original_inference = original_inference_root + "/model_1/libtorch_fp32";
+    const auto independent_inference = independent_inference_root + "/model_1/libtorch_fp32";
+    if (!QDir().mkpath(original_inference) || !QDir().mkpath(independent_inference))
+        throw std::runtime_error("cannot create model inference cleanup fixtures");
+    studio::ProjectStorage::write_atomic(original_inference + "/marker", "original");
+    studio::ProjectStorage::write_atomic(independent_inference + "/marker", "peer");
+    // Request preparation can fail after a branch is selected; its previous files must survive.
+    QImage old_prediction(6, 4, QImage::Format_RGB888); old_prediction.fill(Qt::green);
+    const auto old_heatmap = original_inference + "/old_heatmap.png";
+    const auto old_input = root.filePath("inference-input.png");
+    if (!old_prediction.save(old_heatmap) || !old_prediction.save(old_input))
+        throw std::runtime_error("cannot prepare previous inference artifacts");
+    auto& failed_task = std::get<studio::TaskNodeConfig>(managed.active_workflow().document.graph.node(import_node_id).config);
+    studio::TaskSampleBinding old_sample; old_sample.sample_id = "old-sample";
+    failed_task.dataset_binding.samples = {old_sample};
+    studio::InferenceResultSet old_result;
+    old_result.model_id = "model_1"; old_result.weight_id = "libtorch_fp32";
+    old_result.result_directory = original_inference.toStdString();
+    jocelin::result::cls::ClsResult old_value;
+    old_value.image_path = old_input.toStdString(); old_value.save_dir = old_result.result_directory;
+    old_value.heatmap_path = old_heatmap.toStdString(); old_value.predicted_class = 1;
+    old_value.confidence = 0.8; old_value.probabilities = {0.8, 0.2};
+    old_result.samples.push_back({"old-sample", old_value});
+    failed_task.runtime.results = {old_result}; failed_task.runtime.inference_status = "completed";
+    managed.save_project();
+    const auto previous_json = studio::ProjectStorage::read(original_inference + "/result.json");
+    const auto previous_heatmap = studio::ProjectStorage::read(old_heatmap);
+    selected_file = import_project.project_file();
+    import_dialog_driver.start(10);
+    import_window.findChild<QAction*>("openProjectAction")->trigger();
+    import_dialog_driver.stop();
+    if (!import_error.isEmpty()) throw std::runtime_error("cannot reopen failure fixture");
+    import_dialog_driver.start(10);
+    import_workspace->infer_requested(import_node_id,
+        {"model_1", "libtorch_fp32", jocelin::config::cpu_device()});
+    import_dialog_driver.stop();
+    if (import_error.isEmpty() || studio::ProjectStorage::read(original_inference + "/result.json") != previous_json ||
+        studio::ProjectStorage::read(old_heatmap) != previous_heatmap)
+        throw std::runtime_error("failed inference request destroyed previous branch files");
+    import_error.clear();
+    managed.open_project(import_project.project_file());
+    if (std::get<studio::TaskNodeConfig>(managed.active_workflow().document.graph.node(import_node_id).config)
+            .runtime.inference_status != "completed" ||
+        !QDir(QFileInfo(original_inference).absolutePath()).entryList(
+            {".libtorch_fp32.pending-*"}, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot).isEmpty())
+        throw std::runtime_error("failed inference changed the persisted result status or leaked pending output");
+    QTimer confirm_model_change;
+    QObject::connect(&confirm_model_change, &QTimer::timeout, [&] {
+        if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (auto* yes = message->button(QMessageBox::Yes)) yes->click();
+            else { import_error = message->text(); message->accept(); }
+        }
+    });
+    confirm_model_change.start(10);
+    import_workspace->delete_models_requested(import_node_id, {"model_1"});
+    confirm_model_change.stop();
+    managed.open_project(import_project.project_file());
+    if (!import_error.isEmpty() || QFileInfo::exists(original_asset) || !QFileInfo::exists(independent_asset) ||
+        QDir(original_inference).exists() || !QDir(independent_inference).exists() ||
+        studio::TaskWorkspaceService(managed.active_workflow().document.graph, import_node_id).models().size() != 1 ||
+        !studio::TaskWorkspaceService(managed.active_workflow().document.graph, independent_node_id).find_model("model_1"))
+        throw std::runtime_error("Node model deletion touched another Node or failed to persist");
+    if (!QDir().mkpath(original_inference_root + "/model_2/libtorch_fp32"))
+        throw std::runtime_error("cannot create clear inference fixture");
+    studio::ProjectStorage::write_atomic(original_inference_root + "/model_2/libtorch_fp32/marker", "clear me");
+    confirm_model_change.start(10);
+    import_workspace->clear_models_requested(import_node_id);
+    confirm_model_change.stop();
+    managed.open_project(import_project.project_file());
+    if (!import_error.isEmpty() ||
+        !studio::TaskWorkspaceService(managed.active_workflow().document.graph, import_node_id).models().empty() ||
+        !studio::TaskWorkspaceService(managed.active_workflow().document.graph, independent_node_id).find_model("model_1") ||
+        !QFileInfo::exists(independent_asset) || QDir(original_inference_root).exists() ||
+        studio::ProjectStorage::read(independent_inference + "/marker") != "peer")
+        throw std::runtime_error("Node model clear touched another Node or failed to persist");
+
+    const int next_node_before_clear = scene->model()->next_node_id();
+    QTimer::singleShot(0, [] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+            if (auto* yes = dialog->button(QMessageBox::Yes)) yes->click();
+    });
+    window.findChild<QAction*>("clearWorkflowAction")->trigger();
+    if (!scene->model()->nodes().empty()) throw std::runtime_error("clear did not remove Nodes");
+    window.findChild<QPushButton*>("addDatasetButton")->click();
+    if (scene->model()->nodes().begin()->first != next_node_before_clear)
+        throw std::runtime_error("clearing the workflow recycled a persistent Node id");
     return 0;
 } catch (...) {
     std::cerr << jocelin::exception::message(std::current_exception()) << '\n';

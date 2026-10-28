@@ -1,4 +1,5 @@
 #include "annotation_codec.h"
+#include "segmentation_annotation_state.h"
 
 #include "task_dataset_binding.h"
 
@@ -279,16 +280,8 @@ AnnotationImportPackage AnnotationBindingMapper::map(
         sample.sample_id = sample_id;
         sample.image_paths = std::move(image_paths);
         sample.selected = true;
-        sample.mask_path = imported.mask_path.isEmpty()
-            ? std::string{}
-            : canonical_path(imported.mask_path).toStdString();
         sample.split = normalized_split(imported.split.toStdString());
-        // Mapping records whether an external target exists. The Task domain
-        // owns pixel-level quality inspection and refines all-zero masks to
-        // background-only without making every codec rescan mask pixels.
-        sample.annotation_state = sample.mask_path.empty()
-            ? "background-only"
-            : "annotated";
+        import_segmentation_annotation(result.binding.classes, sample, imported.mask_path.isEmpty() ? QString{} : canonical_path(imported.mask_path));
         result.binding.samples.push_back(std::move(sample));
     }
     if (result.dataset.items.empty())

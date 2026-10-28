@@ -1,7 +1,11 @@
 #include "task_workspace_service.h"
+#include <QDateTime>
 
 #include "model_spec_catalog.h"
 #include "task_dataset_binding.h"
+#include "classification_annotation_state.h"
+#include "segmentation_annotation_state.h"
+#include "project_storage.h"
 
 #include <common/config/ai_config.h>
 
@@ -10,6 +14,7 @@
 #include <QImage>
 #include <QImageReader>
 #include <QStringList>
+#include <QUuid>
 
 #include <algorithm>
 #include <array>
@@ -55,22 +60,6 @@ std::vector<std::string> structural_issues(const TaskSampleBinding& sample) {
     return result;
 }
 
-bool parent_writable(const QString& path) {
-    QFileInfo parent(QFileInfo(path).absolutePath());
-    while (!parent.exists() && !parent.absoluteFilePath().isEmpty()) {
-        const QString next = parent.absoluteDir().absolutePath();
-        if (next == parent.absoluteFilePath()) break;
-        parent.setFile(next);
-    }
-    return parent.exists() && parent.isWritable();
-}
-
-template <class Record>
-std::string result_identifier(const Record& record) {
-    if (!record.result_name.empty()) return record.result_name;
-    return stable_sample_id({record.image_path});
-}
-
 jocelin::geo::Region training_mask_region(const std::string& path) {
     if (path.empty()) return {};
     const QImage source(QString::fromStdString(path));
@@ -86,17 +75,13 @@ std::string split_stratum(
     const TaskSampleBinding& sample)
 {
     if (task.task == "cls")
-        return sample.class_id.empty() ? "background-only" : "class:" + sample.class_id;
-    if (sample.mask_path.empty()) return "background-only";
-    const QImage source(QString::fromStdString(sample.mask_path));
-    if (source.isNull()) return "invalid-mask";
-    const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
-    const auto counts = jocelin::geo::label_counts_omp({labels.constBits(),
-        labels.height(), labels.width(), static_cast<size_t>(labels.bytesPerLine())});
-    std::vector<int> values;
-    for (int value = 1; value < 256; ++value)
-        if (counts[value] != 0) values.push_back(value);
-    if (values.empty()) return "background-only";
+        return sample.class_id.empty() ? "unannotated" : "class:" + sample.class_id;
+    if (sample.annotation_state != "annotated") return "unannotated";
+    std::set<int> present;
+    for (const auto& region : sample.regions)
+        for (const auto& run : region.vRun) present.insert(run.label);
+    std::vector<int> values(present.begin(), present.end());
+    if (values.empty()) return "empty-target";
     std::string result = "mask:";
     for (const int value : values) result += std::to_string(value) + ",";
     return result;
@@ -140,58 +125,110 @@ std::array<size_t, 3> desired_split_counts(
     return counts;
 }
 
-jocelin::geo::Region segmentation_target_region(
-    const TaskSampleBinding& sample,
-    const std::map<int, int>& foreground_labels)
-{
-    if (sample.image_paths.empty())
-        throw std::runtime_error("segmentation sample contains no source image");
-    QImageReader image_reader(QString::fromStdString(sample.image_paths.front()));
-    image_reader.setDecideFormatFromContent(true);
-    const QSize image_size = image_reader.size();
-    if (!image_size.isValid())
-        throw std::runtime_error("segmentation source image is unreadable: " + sample.sample_id);
-    if (sample.mask_path.empty()) return {};
-
-    QImage source_mask(QString::fromStdString(sample.mask_path));
-    if (source_mask.isNull())
-        throw std::runtime_error("segmentation mask is unreadable: " + sample.sample_id);
-    if (source_mask.size() != image_size)
-        throw std::runtime_error(
-            "segmentation mask dimensions do not match the source image: " +
-            sample.sample_id);
-    source_mask = source_mask.convertToFormat(QImage::Format_Grayscale8);
-
-    try {
-        return jocelin::geo::label_image_to_region_simd_omp({source_mask.constBits(),
-            source_mask.height(), source_mask.width(),
-            static_cast<size_t>(source_mask.bytesPerLine())}, 0, &foreground_labels);
-    } catch (const std::invalid_argument&) {
-        throw std::runtime_error(
-            "segmentation mask contains an undefined class value in sample " + sample.sample_id);
-    }
-}
 
 } // namespace
 
-TaskWorkspaceService::TaskWorkspaceService(WorkflowGraph& graph, int task_node_id)
-    : graph_(&graph), task_node_id_(task_node_id)
+TaskWorkspaceService::TaskWorkspaceService(WorkflowGraph& graph, int node_id, const QString& node_directory)
+    : graph_(&graph), node_id_(node_id), node_directory_(node_directory)
 {
-    if (graph.nodes().count(task_node_id) == 0 ||
-        graph.node(task_node_id).kind != NodeKind::TaskConfig)
+    if (graph.nodes().count(node_id) == 0 ||
+        graph.node(node_id).kind != NodeKind::TaskConfig)
         throw std::runtime_error("TaskWorkspaceService requires a Task node");
+    if (!node_directory_.isEmpty() && (!QFileInfo(node_directory_).isAbsolute() ||
+        QFileInfo(node_directory_).fileName() != QString::number(node_id)))
+        throw std::runtime_error("model persistence requires the owning Node directory");
 }
 
-int TaskWorkspaceService::dataset_node_id() const {
-    return binding().source_dataset_node_id;
+int TaskWorkspaceService::source_node_id() const {
+    return binding().source_node_id;
 }
 
 TaskNodeConfig& TaskWorkspaceService::task() {
-    return std::get<TaskNodeConfig>(graph_->node(task_node_id_).config);
+    return std::get<TaskNodeConfig>(graph_->node(node_id_).config);
 }
 
 const TaskNodeConfig& TaskWorkspaceService::task() const {
-    return std::get<TaskNodeConfig>(graph_->node(task_node_id_).config);
+    return std::get<TaskNodeConfig>(graph_->node(node_id_).config);
+}
+
+const std::vector<jocelin::model::ModelEntry>& TaskWorkspaceService::models() const {
+    return task().model_list.entries();
+}
+
+jocelin::model::ModelEntry* TaskWorkspaceService::find_model(const QString& id) {
+    return task().model_list.find(id.toStdString());
+}
+
+const jocelin::model::ModelEntry* TaskWorkspaceService::find_model(const QString& id) const {
+    return task().model_list.find(id.toStdString());
+}
+
+jocelin::model::ModelEntry TaskWorkspaceService::add_model(jocelin::model::ModelEntry model) {
+    if (model.task != jocelin::config::tool_type_from_string(task().task))
+        throw std::runtime_error("model task does not match the owning TaskNode");
+    if (model.created_at.empty())
+        model.created_at = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
+    return task().model_list.add(std::move(model));
+}
+
+bool TaskWorkspaceService::remove_model(const QString& id) {
+    if (!find_model(id)) return false;
+    if (!node_directory_.isEmpty()) {
+        if (id.contains('/') || id.contains('\\') || id.contains(':') ||
+            ProjectStorage::validated_relative_path(id, "model") != id)
+            throw std::runtime_error("model id must be one directory component");
+        const auto directory = QDir(node_directory_).filePath("inference/" + id);
+        if (QDir(directory).exists() && !QDir(directory).removeRecursively())
+            throw std::runtime_error("cannot remove the model's Node-owned inference directory");
+    }
+    if (!task().model_list.remove(id.toStdString())) return false;
+    if (task().runtime.training_model_id == id.toStdString())
+        task().runtime.training_model_id.clear();
+    auto& results = task().runtime.results;
+    results.erase(std::remove_if(results.begin(), results.end(),
+        [&id](const auto& result) { return result.model_id == id.toStdString(); }), results.end());
+    if (selected_model_id_ == id) select_inference_result({}, {});
+    return true;
+}
+
+void TaskWorkspaceService::clear_models() {
+    if (!node_directory_.isEmpty()) {
+        const auto directory = QDir(node_directory_).filePath("inference");
+        if (QDir(directory).exists() && !QDir(directory).removeRecursively())
+            throw std::runtime_error("cannot clear the TaskNode inference directory");
+    }
+    task().model_list.clear();
+    task().runtime.training_model_id.clear();
+    task().runtime.results.clear();
+    select_inference_result({}, {});
+}
+
+const InferenceResultSet* TaskWorkspaceService::inference_result(const QString& model_id, const QString& weight_id) const {
+    const auto* model = find_model(model_id);
+    if (!model || !jocelin::model::find_weight(*model, weight_id.toStdString())) return nullptr;
+    for (const auto& result : task().runtime.results)
+        if (result.model_id == model_id.toStdString() && result.weight_id == weight_id.toStdString())
+            return &result;
+    return nullptr;
+}
+
+void TaskWorkspaceService::select_inference_result(const QString& model_id, const QString& weight_id) {
+    if (selected_model_id_ == model_id && selected_weight_id_ == weight_id) return;
+    selected_model_id_ = model_id;
+    selected_weight_id_ = weight_id;
+    if (inference_selection_changed) inference_selection_changed();
+}
+
+void TaskWorkspaceService::select_inference_model(const QString& model_id) {
+    const auto* model = find_model(model_id);
+    if (!model) { select_inference_result({}, {}); return; }
+    const auto* weight = jocelin::model::find_weight(*model, selected_weight_id_.toStdString());
+    if (!weight && !model->weights.empty()) weight = &model->weights.front();
+    select_inference_result(model_id, weight ? QString::fromStdString(weight->id) : QString{});
+}
+
+const InferenceResultSet* TaskWorkspaceService::selected_inference_result() const {
+    return inference_result(selected_model_id_, selected_weight_id_);
 }
 
 TaskDatasetBinding& TaskWorkspaceService::binding() {
@@ -203,15 +240,19 @@ const TaskDatasetBinding& TaskWorkspaceService::binding() const {
 }
 
 const DatasetConfig& TaskWorkspaceService::source_dataset() const {
-    const int source_id = dataset_node_id();
-    if (source_id == 0 || graph_->nodes().count(source_id) == 0 ||
-        graph_->node(source_id).kind != NodeKind::DatasetInput)
+    const int source_node_id = this->source_node_id();
+    if (source_node_id == 0 || graph_->nodes().count(source_node_id) == 0 ||
+        graph_->node(source_node_id).kind != NodeKind::DatasetInput)
         throw std::runtime_error("connect a Dataset node to this Task");
-    return std::get<DatasetConfig>(graph_->node(source_id).config);
+    return std::get<DatasetConfig>(graph_->node(source_node_id).config);
 }
 
 bool TaskWorkspaceService::synchronize(std::vector<std::string>* notes) {
-    auto result = synchronize_task_dataset_binding(*graph_, task_node_id_);
+    auto result = synchronize_task_dataset_binding(*graph_, node_id_);
+    if (source_node_id() == 0) {
+        if (notes) *notes = result.notes;
+        return result.changed;
+    }
     const bool has_new_auto_samples = std::any_of(
         binding().samples.begin(), binding().samples.end(),
         [](const TaskSampleBinding& sample) {
@@ -234,33 +275,28 @@ void TaskWorkspaceService::replace_bound_dataset(
     DatasetConfig dataset,
     TaskDatasetBinding imported_binding)
 {
-    const int source_id = dataset_node_id();
-    if (source_id == 0 || graph_->nodes().count(source_id) == 0 ||
-        graph_->node(source_id).kind != NodeKind::DatasetInput)
+    const int source_node_id = this->source_node_id();
+    if (source_node_id == 0 || graph_->nodes().count(source_node_id) == 0 ||
+        graph_->node(source_node_id).kind != NodeKind::DatasetInput)
         throw std::runtime_error("connect a Dataset node to this Task");
-    imported_binding.source_dataset_node_id = source_id;
+    // The persistence owner clears disk references/files before invoking this
+    // in-memory command. All currently connected Tasks receive a fresh binding.
+    for (const auto& edge : graph_->connections())
+        if (edge.from_node_id == source_node_id && graph_->node(edge.to_node_id).kind == NodeKind::TaskConfig)
+            clear_task_dataset_state(std::get<TaskNodeConfig>(graph_->node(edge.to_node_id).config));
     std::get<DatasetConfig>(
-        graph_->node(source_id).config) = std::move(dataset);
-    task().dataset_binding = std::move(imported_binding);
-    const bool needs_automatic_split = std::any_of(
-        binding().samples.begin(), binding().samples.end(),
-        [](const TaskSampleBinding& sample) {
-            return sample.selected && !sample.split_manual &&
-                   sample.split == "unassigned";
-        });
-    if (needs_automatic_split) {
-        const auto settings = binding().split_settings;
-        assign_reproducible_split(
-            settings.train_percent, settings.validation_percent,
-            settings.test_percent, settings.seed);
-    }
-    refresh_quality();
+        graph_->node(source_node_id).config) = std::move(dataset);
+    // Import explicitly supplies new annotations/classes; Task settings survive.
+    binding().classes = std::move(imported_binding.classes);
+    binding().samples = std::move(imported_binding.samples);
+    for (const auto& edge : graph_->connections())
+        if (edge.from_node_id == source_node_id && graph_->node(edge.to_node_id).kind == NodeKind::TaskConfig)
+            TaskWorkspaceService(*graph_, edge.to_node_id).synchronize();
 }
 
 TaskDatasetStats TaskWorkspaceService::dataset_stats() const {
     TaskDatasetStats stats;
-    const auto& source = source_dataset();
-    stats.bucket_capacity = std::max(1, source.bucket_capacity);
+    stats.bucket_capacity = std::max(1, binding().bucket_capacity);
     stats.samples = static_cast<int>(binding().samples.size());
     for (const auto& sample : binding().samples) {
         stats.images += static_cast<int>(sample.image_paths.size());
@@ -273,8 +309,7 @@ TaskDatasetStats TaskWorkspaceService::dataset_stats() const {
         stats.valid += valid ? 1 : 0;
         stats.invalid += valid ? 0 : 1;
         const bool annotated =
-            sample.annotation_state == "annotated" ||
-            sample.annotation_state == "background-only";
+            sample.annotation_state == "annotated";
         stats.annotated += annotated ? 1 : 0;
         stats.unannotated += annotated ? 0 : 1;
         stats.quality_issues += sample.quality_issues.empty() ? 0 : 1;
@@ -304,72 +339,28 @@ TaskSplitStats TaskWorkspaceService::split_stats() const {
 }
 
 void TaskWorkspaceService::refresh_quality() {
-    const auto& active_classes = binding().classes;
-    std::set<int> defined_values;
-    for (const auto& value : active_classes)
-        defined_values.insert(value.mask_value);
-
-    const bool segmentation = task().task == "sg";
+    // Detached bindings retain their last verified task targets until rebind.
+    if (source_node_id() == 0) return;
     for (auto& sample : binding().samples) {
-        auto issues = structural_issues(sample);
-        bool has_foreground = false;
+        sample.quality_issues = structural_issues(sample);
         for (const auto& image_path : sample.image_paths) {
             QImageReader reader(QString::fromStdString(image_path));
             reader.setDecideFormatFromContent(true);
             if (!QFileInfo(QString::fromStdString(image_path)).isFile() || !reader.canRead())
-                add_issue(issues, "source image is missing or unreadable");
+                add_issue(sample.quality_issues, "source image is missing or unreadable");
         }
-
-        if (segmentation) {
-            if (!sample.mask_path.empty()) {
-                const QString mask_path = QString::fromStdString(sample.mask_path);
-                QImage mask(mask_path);
-                if (mask.isNull()) {
-                    add_issue(issues, "mask is unreadable");
-                } else {
-                    const QSize image_size = sample.image_paths.empty()
-                        ? QSize{}
-                        : QImageReader(QString::fromStdString(sample.image_paths.front())).size();
-                    if (image_size.isValid() && mask.size() != image_size)
-                        add_issue(issues, "mask dimensions do not match the sample image");
-                    const QImage labels = mask.convertToFormat(QImage::Format_Grayscale8);
-                    std::set<int> unknown;
-                    for (int y = 0; y < labels.height(); ++y) {
-                        const uchar* scan = labels.constScanLine(y);
-                        for (int x = 0; x < labels.width(); ++x) {
-                            const int value = scan[x];
-                            has_foreground = has_foreground || value != 0;
-                            if (value != 0 && defined_values.count(value) == 0)
-                                unknown.insert(value);
-                        }
-                    }
-                    if (!unknown.empty()) add_issue(issues, "mask contains undefined class values");
-                }
-                const QFileInfo mask_file(mask_path);
-                if ((mask_file.exists() && !mask_file.isWritable()) ||
-                    (!mask_file.exists() && !parent_writable(mask_path)))
-                    add_issue(issues, "annotation file is not writable");
-            }
-        }
-        sample.quality_issues = std::move(issues);
-        if (!sample.quality_issues.empty()) {
-            sample.annotation_state = "needs-review";
-        } else if (segmentation) {
-            if (sample.mask_path.empty()) {
-                // A raw Dataset sample with no target remains unannotated.
-                // Explicit import may deliberately mark an absent target as
-                // background-only, which is preserved as the import policy.
-                if (sample.annotation_state != "background-only")
-                    sample.annotation_state = "unannotated";
-            } else {
-                sample.annotation_state =
-                    has_foreground ? "annotated" : "background-only";
-            }
-        } else {
-            sample.annotation_state =
-                sample.class_id.empty() ? "background-only" : "annotated";
-        }
+        if (task().task == "cls")
+            refresh_classification_annotation(binding().classes, sample);
+        else if (task().task == "sg")
+            refresh_segmentation_annotation(binding().classes, sample);
     }
+}
+
+void TaskWorkspaceService::set_segmentation_sample_empty(const std::string& sample_id) {
+    if (task().task != "sg")
+        throw std::runtime_error("empty targets are not supported by this Task");
+    confirm_empty_segmentation_annotation(require_sample(sample_id));
+    refresh_quality();
 }
 
 TaskSampleBinding& TaskWorkspaceService::require_sample(const std::string& sample_id) {
@@ -517,9 +508,9 @@ void TaskWorkspaceService::assign_reproducible_split(
             binding().samples[automatic[cursor++]].split = names[split_index];
 }
 
-void TaskWorkspaceService::set_mask_path_for_image(
+void TaskWorkspaceService::set_segmentation_mask_for_image(
     const std::string& image_path,
-    const std::string& mask_path)
+    const QImage& mask)
 {
     const QString absolute = QFileInfo(QString::fromStdString(image_path)).absoluteFilePath();
     for (auto& sample : binding().samples) {
@@ -529,8 +520,7 @@ void TaskWorkspaceService::set_mask_path_for_image(
                 return QFileInfo(QString::fromStdString(candidate)).absoluteFilePath() == absolute;
             });
         if (!owns_image) continue;
-        sample.mask_path = QFileInfo(QString::fromStdString(mask_path)).absoluteFilePath().toStdString();
-        sample.annotation_state = "annotated";
+        commit_segmentation_mask(binding().classes, sample, mask);
         refresh_quality();
         return;
     }
@@ -545,7 +535,7 @@ void TaskWorkspaceService::set_class_for_sample(
     if (!schema.active) throw std::runtime_error("cannot assign a retired class");
     auto& sample = require_sample(sample_id);
     sample.class_id = class_id;
-    sample.annotation_state = "annotated";
+    refresh_classification_annotation(binding().classes, sample);
 }
 
 std::string TaskWorkspaceService::add_class(
@@ -558,6 +548,13 @@ std::string TaskWorkspaceService::add_class(
                         return value.active && equal_folded(value.name, name);
                     }))
         throw std::runtime_error("class name already exists");
+    if (task().task == "cls") {
+        const std::string id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+        binding().classes.push_back({id, 0, name,
+            color.empty() ? default_class_color(static_cast<int>(binding().classes.size()) + 1) : color,
+            true, false, true});
+        return id;
+    }
     std::set<int> used;
     std::set<std::string> ids;
     for (const auto& value : binding().classes) {
@@ -595,6 +592,7 @@ void TaskWorkspaceService::retire_class(const std::string& class_id) {
     value.active = false;
     value.visible = false;
     value.locked = true;
+    refresh_quality();
 }
 
 void TaskWorkspaceService::move_class(const std::string& class_id, int direction) {
@@ -624,7 +622,8 @@ void TaskWorkspaceService::set_class_locked(const std::string& class_id, bool lo
 
 jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     const jocelin::config::Device& device,
-    jocelin::config::WeightSource weight_source) const
+    jocelin::config::WeightSource weight_source,
+    const jocelin::model::ModelEntry* resume_model) const
 {
     const auto& config = task();
     const auto tool_type = jocelin::config::tool_type_from_string(config.task);
@@ -635,12 +634,31 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
         throw std::runtime_error("configure a training output directory");
 
     int maximum_mask_value = 0;
-    std::map<int, int> foreground_labels;
-    for (const auto& schema : binding().classes) {
-        maximum_mask_value = std::max(maximum_mask_value, schema.mask_value);
-        foreground_labels.emplace(schema.mask_value, schema.mask_value);
+    std::map<std::string, int> classification_labels;
+    std::vector<std::string> class_names;
+    if (tool_type == jocelin::config::ToolType::Cls) {
+        auto ordered_classes = classification_classes(binding().classes);
+        if (resume_model) {
+            ordered_classes.clear();
+            for (const auto& model_class : resume_model->classes) {
+                const auto* schema = find_annotation_class(binding(), model_class.id);
+                if (!schema || !schema->active)
+                    throw std::runtime_error("paused model class schema does not match the current task");
+                ordered_classes.push_back(schema);
+            }
+            if (ordered_classes.size() != classification_classes(binding().classes).size())
+                throw std::runtime_error("paused model class schema does not match the current task");
+        }
+        for (const auto* schema : ordered_classes) {
+            class_names.push_back(schema->name);
+            classification_labels.emplace(schema->id, static_cast<int>(class_names.size()));
+        }
+    } else {
+        for (const auto& schema : binding().classes) {
+            maximum_mask_value = std::max(maximum_mask_value, schema.mask_value);
+        }
     }
-    if (maximum_mask_value == 0)
+    if (maximum_mask_value == 0 && classification_labels.empty())
         throw std::runtime_error("add at least one annotation class before training");
     if (tool_type == jocelin::config::ToolType::Sg && maximum_mask_value > 255)
         throw std::runtime_error(
@@ -655,9 +673,10 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     std::vector<std::string> malformed;
     for (const auto& sample_binding : binding().samples) {
         if (!sample_binding.selected) continue;
-        if (tool_type == jocelin::config::ToolType::Sg &&
-            sample_binding.annotation_state == "unannotated")
-            continue;
+        auto verified = sample_binding;
+        if (tool_type == jocelin::config::ToolType::Cls)
+            refresh_classification_annotation(binding().classes, verified);
+        if (verified.annotation_state != "annotated") continue;
         const std::string split = normalized_split(sample_binding.split);
         if (split == "unassigned") continue;
         if (!sample_binding.quality_issues.empty()) {
@@ -671,23 +690,14 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             ? jocelin::meta::AiMetaData::Split::Validation
             : jocelin::meta::AiMetaData::Split::Train;
         sample.image_paths = sample_binding.image_paths;
-        if (sample_binding.annotation_state == "background-only")
-            sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::BackgroundOnly;
-        else if (sample_binding.annotation_state == "annotated")
-            sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::Annotated;
+        sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::Annotated;
         auto exclusion = training_mask_region(sample_binding.training_mask_path);
         if (!exclusion.empty()) sample.mask.push_back(std::move(exclusion));
         has_train = has_train || split == "train";
         if (tool_type == jocelin::config::ToolType::Sg) {
-            auto target = segmentation_target_region(sample_binding, foreground_labels);
-            if (!target.empty()) sample.regions.push_back(std::move(target));
+            sample.regions = sample_binding.regions;
         } else if (tool_type == jocelin::config::ToolType::Cls) {
-            const auto* schema = find_annotation_class(binding(), sample_binding.class_id);
-            // Classification represents the same background-only semantics as
-            // an explicit class-zero target. Foreground classes retain their
-            // stable mask_value positions after the background slot.
-            sample.class_label = schema && schema->active
-                ? schema->mask_value + 1 : 1;
+            sample.class_label = classification_labels.at(sample_binding.class_id);
         }
         samples.samples.push_back(std::move(sample));
     }
@@ -769,7 +779,8 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.model_scale = model_scale;
     backend.batch_size = config.training.batch_size;
     backend.bucket_capacity = std::max(1, source_dataset().bucket_capacity);
-    backend.num_classes = maximum_mask_value + 1;
+    backend.num_classes = tool_type == jocelin::config::ToolType::Cls
+        ? static_cast<int>(class_names.size()) : maximum_mask_value + 1;
     backend.num_epochs = config.training.epochs;
     backend.learning_rate = config.training.learning_rate;
     backend.weight_decay = config.training.weight_decay;
@@ -785,17 +796,18 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.device = device;
     backend.augment = config.training.augment;
 
-    std::vector<std::string> class_names(
-        static_cast<size_t>(maximum_mask_value + 1));
-    class_names.front() = "background";
-    for (const auto& schema : binding().classes) {
-        if (schema.mask_value <= 0 || schema.mask_value > maximum_mask_value) continue;
-        class_names[static_cast<size_t>(schema.mask_value)] =
-            schema.active ? schema.name : "[retired] " + schema.name;
+    if (tool_type == jocelin::config::ToolType::Sg) {
+        class_names.resize(static_cast<size_t>(backend.num_classes));
+        class_names.front() = "background";
+        for (const auto& schema : binding().classes) {
+            if (schema.mask_value <= 0 || schema.mask_value > maximum_mask_value) continue;
+            class_names[static_cast<size_t>(schema.mask_value)] =
+                schema.active ? schema.name : "[retired] " + schema.name;
+        }
+        for (size_t index = 0; index < class_names.size(); ++index)
+            if (class_names[index].empty())
+                class_names[index] = "[reserved] " + std::to_string(index);
     }
-    for (size_t index = 0; index < class_names.size(); ++index)
-        if (class_names[index].empty())
-            class_names[index] = "[reserved] " + std::to_string(index);
 
     jocelin::training::TrainingRequest request;
     request.config = backend;
@@ -808,9 +820,10 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
 jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_request(
     const jocelin::config::Device& device,
     const jocelin::model::ModelEntry& model,
-    const jocelin::model::ModelWeight& weight) const
+    const jocelin::model::ModelWeight& weight, const std::string& output_directory) const
 {
     const auto& config = task();
+    const auto& output = output_directory.empty() ? config.inference_output_directory : output_directory;
     if (weight.path.empty()) throw std::runtime_error("select a model weight");
     const auto task_type = jocelin::config::tool_type_from_string(config.task);
     if (model.task != task_type)
@@ -818,28 +831,28 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     const std::string model_scale = jocelin::config::to_string(model.model_scale);
     if (!supports_model_spec(config.task, model.model_index, model_scale))
         throw std::runtime_error("checkpoint model spec is not registered for the selected task");
-    if (config.inference_output_directory.empty())
+    if (output.empty())
         throw std::runtime_error("configure an inference output directory");
 
     const std::set<std::string> requested(
         config.inference_images.begin(), config.inference_images.end());
-    std::map<int, int> foreground_labels;
-    for (const auto& schema : binding().classes)
-        foreground_labels.emplace(schema.mask_value, schema.mask_value);
-
     std::vector<std::string> images;
     std::vector<jocelin::inference::InferenceTarget> targets;
     for (const auto& sample : binding().samples) {
         if (!sample.selected) continue;
         jocelin::inference::InferenceTarget target;
-        target.available = sample.annotation_state == "annotated" ||
-                           sample.annotation_state == "background-only";
+        auto verified = sample;
+        if (task_type == jocelin::config::ToolType::Cls)
+            refresh_classification_annotation(binding().classes, verified);
+        target.available = verified.annotation_state == "annotated";
         if (target.available && task_type == jocelin::config::ToolType::Cls) {
-            const auto* schema = find_annotation_class(binding(), sample.class_id);
-            target.class_label = schema ? schema->mask_value + 1 : 1;
+            const auto found = std::find_if(model.classes.begin(), model.classes.end(),
+                [&](const auto& value) { return value.id == sample.class_id; });
+            target.available = found != model.classes.end();
+            if (target.available)
+                target.class_label = static_cast<int>(std::distance(model.classes.begin(), found)) + 1;
         } else if (target.available && task_type == jocelin::config::ToolType::Sg) {
-            auto region = segmentation_target_region(sample, foreground_labels);
-            if (!region.empty()) target.regions.push_back(std::move(region));
+            target.regions = sample.regions;
         }
         for (const auto& image : sample.image_paths) {
             const auto name = QFileInfo(QString::fromStdString(image)).fileName().toStdString();
@@ -858,7 +871,8 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.model_index = model.model_index;
     backend.model_scale = model.model_scale;
     backend.batch_size = config.inference_batch_size;
-    backend.num_classes = static_cast<int>(model.classes.size()) + 1;
+    backend.num_classes = static_cast<int>(model.classes.size()) +
+        (task_type == jocelin::config::ToolType::Sg ? 1 : 0);
     backend.image_width = model.image_width;
     backend.image_height = model.image_height;
     backend.weight_type = weight.format;
@@ -872,11 +886,11 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     request.available_weights = model.weights;
     request.image_paths = std::move(images);
     request.targets = std::move(targets);
-    request.segmentation_result.save_dir = config.inference_output_directory;
+    request.segmentation_result.save_dir = output;
     request.segmentation_result.save_option =
         jocelin::result::sg::SaveOption::ResultWithHeatmapOverlay;
     request.segmentation_result.save_color_mask = true;
-    request.classification_result.save_dir = config.inference_output_directory;
+    request.classification_result.save_dir = output;
     return request;
 }
 
@@ -902,6 +916,10 @@ void TaskWorkspaceService::record_inference_result(
     runtime.inference_status = error.empty() ? "completed" : "error";
     if (!error.empty()) return;
 
+    const auto* model = task().model_list.find(model_id);
+    const auto* weight = model ? jocelin::model::find_weight(*model, weight_id) : nullptr;
+    if (!weight || weight->format != weight_format)
+        throw std::runtime_error("inference result must reference this TaskNode's model and weight");
     InferenceResultSet set;
     set.model_id = model_id;
     set.weight_id = weight_id;
@@ -909,19 +927,20 @@ void TaskWorkspaceService::record_inference_result(
     set.result_directory = output_directory;
 
     const auto sample_id_for = [this](const std::string& image_path) {
+        const auto path = QFileInfo(QString::fromStdString(image_path)).absoluteFilePath();
         for (const auto& sample : binding().samples) {
-            if (std::find(sample.image_paths.begin(), sample.image_paths.end(), image_path) !=
-                sample.image_paths.end())
+            if (std::any_of(sample.image_paths.begin(), sample.image_paths.end(), [&path](const auto& input) {
+                    return QFileInfo(QString::fromStdString(input)).absoluteFilePath() == path;
+                }))
                 return sample.sample_id;
         }
-        return std::string{};
+        throw std::runtime_error("inference result has no bound source_sample_id");
     };
 
     if (const auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&report)) {
         set.aggregate_metrics = cls->metrics;
         for (const auto& record : cls->samples) {
             ResultReference stored;
-            stored.result_id = result_identifier(record);
             stored.source_sample_id = sample_id_for(record.image_path);
             stored.result = record;
             set.samples.push_back(std::move(stored));
@@ -930,7 +949,6 @@ void TaskWorkspaceService::record_inference_result(
         const auto& sg = std::get<jocelin::result::sg::SgInferenceResult>(report);
         for (const auto& record : sg.samples) {
             ResultReference stored;
-            stored.result_id = result_identifier(record);
             stored.source_sample_id = sample_id_for(record.image_path);
             stored.result = record;
             set.samples.push_back(std::move(stored));
@@ -940,9 +958,9 @@ void TaskWorkspaceService::record_inference_result(
     runtime.results.erase(
         std::remove_if(
             runtime.results.begin(), runtime.results.end(),
-            [&model_id, weight_format](const InferenceResultSet& existing) {
+            [&model_id, &weight_id](const InferenceResultSet& existing) {
                 return existing.model_id == model_id &&
-                    existing.weight_format == jocelin::config::to_string(weight_format);
+                    existing.weight_id == weight_id;
             }),
         runtime.results.end());
     runtime.results.push_back(std::move(set));

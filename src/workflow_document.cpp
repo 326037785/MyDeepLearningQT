@@ -1,11 +1,15 @@
 #include "workflow_document.h"
 
 #include "task_dataset_binding.h"
+#include "task_module_catalog.h"
+#include "project_storage.h"
+#include "segmentation_annotation_storage.h"
 
 #include <common/config/ai_config.h>
 #include <common/config/augment_catalog.h>
 
 #include <QJsonArray>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -283,7 +287,13 @@ jocelin::config::Augment augment_from_json(
     return result;
 }
 
-QJsonObject binding_to_json(const TaskDatasetBinding& binding) {
+QString region_file_name(int node_id, const std::string& sample_id) {
+    return QString::number(node_id) + "/annotations/" +
+        QString::fromLatin1(QString::fromStdString(sample_id).toUtf8().toHex()) + ".regions.json";
+}
+
+QJsonObject binding_to_json(const TaskDatasetBinding& binding, const std::string& task, int node_id,
+    std::vector<std::pair<QString, QByteArray>>& region_assets) {
     QJsonArray classes;
     for (const auto& value : binding.classes) {
         classes.append(QJsonObject{
@@ -297,21 +307,28 @@ QJsonObject binding_to_json(const TaskDatasetBinding& binding) {
     }
     QJsonArray samples;
     for (const auto& value : binding.samples) {
-        samples.append(QJsonObject{
+        QJsonObject sample{
             {"sample_id", QString::fromStdString(value.sample_id)},
             {"image_paths", strings_to_json(value.image_paths)},
             {"selected", value.selected},
-            {"mask_path", QString::fromStdString(value.mask_path)},
             {"training_mask_path", QString::fromStdString(value.training_mask_path)},
-            {"class_id", QString::fromStdString(value.class_id)},
             {"split", QString::fromStdString(value.split)},
             {"split_manual", value.split_manual},
-            {"annotation_state", QString::fromStdString(value.annotation_state)},
-            {"quality_issues", strings_to_json(value.quality_issues)}});
+            {"annotation_state", QString::fromStdString(value.annotation_state)}};
+        if (task == "cls") sample.insert("class_id", QString::fromStdString(value.class_id));
+        else {
+            QString file;
+            if (!value.regions.empty()) {
+                file = region_file_name(node_id, value.sample_id);
+                region_assets.emplace_back(file, encode_segmentation_regions(value.regions));
+            }
+            sample.insert("region_file", file);
+        }
+        samples.append(sample);
     }
     const auto& split = binding.split_settings;
     return {
-        {"source_dataset_node_id", binding.source_dataset_node_id},
+        {"bucket_capacity", binding.bucket_capacity},
         {"preprocessing", QJsonObject{
             {"normalize", binding.preprocessing.normalize},
             {"bgr_to_rgb", binding.preprocessing.bgr_to_rgb}}},
@@ -325,21 +342,16 @@ QJsonObject binding_to_json(const TaskDatasetBinding& binding) {
         {"samples", samples}};
 }
 
-TaskDatasetBinding binding_from_json(const QJsonObject& object) {
+TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::string& task, int node_id, const QString& node_asset_root) {
     const QString context = "Task dataset_binding";
     require_exact_fields(
         object,
-        {"source_dataset_node_id", "preprocessing",
-         "split_settings", "classes", "samples"},
+        {"bucket_capacity", "preprocessing", "split_settings", "classes", "samples"},
         context);
     TaskDatasetBinding binding;
-    binding.source_dataset_node_id =
-        required_integer(
-            object, "source_dataset_node_id", context);
-    if (binding.source_dataset_node_id < 0)
-        invalid_document(
-            context,
-            "source_dataset_node_id must be non-negative");
+    binding.bucket_capacity = required_integer(object, "bucket_capacity", context);
+    if (binding.bucket_capacity < 0)
+        invalid_document(context, "bucket_capacity must be non-negative");
     const auto preprocessing =
         required_object(object, "preprocessing", context);
     require_exact_fields(
@@ -423,14 +435,14 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object) {
         if (annotation_class.id.empty() ||
             annotation_class.name.empty() ||
             annotation_class.color.empty() ||
-            annotation_class.mask_value < 1 ||
-            annotation_class.mask_value > 255)
+            (task == "sg" && (annotation_class.mask_value < 1 ||
+            annotation_class.mask_value > 255)))
             invalid_document(
                 class_context,
                 "identity, name, color, or mask value is invalid");
         if (!class_ids.insert(annotation_class.id).second ||
-            !mask_values.insert(
-                annotation_class.mask_value).second)
+            (task == "sg" && !mask_values.insert(
+                annotation_class.mask_value).second))
             invalid_document(
                 class_context,
                 "class ids and mask values must be unique");
@@ -448,36 +460,34 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object) {
             invalid_document(
                 sample_context, "must be an object");
         const auto value = entry.toObject();
-        require_exact_fields(
-            value,
-            {"sample_id", "image_paths", "selected",
-             "mask_path", "training_mask_path", "class_id", "split",
-             "split_manual", "annotation_state", "quality_issues"},
-            sample_context);
+        auto fields = value;
+        const char* target_field = task == "cls" ? "class_id" : "region_file";
+        if (!fields.contains(target_field)) invalid_document(sample_context, "missing task target");
+        fields.remove(target_field);
+        require_exact_fields(fields, {"sample_id", "image_paths", "selected", "training_mask_path", "split",
+            "split_manual", "annotation_state"}, sample_context);
         TaskSampleBinding sample;
+        sample.image_paths = strings_from_json(required_array(value, "image_paths", sample_context), sample_context, true);
         sample.sample_id =
             required_string(
                 value, "sample_id",
                 sample_context).toStdString();
-        sample.image_paths =
-            strings_from_json(
-                value.value("image_paths"),
-                sample_context + " image_paths", true);
         sample.selected =
             required_bool(
                 value, "selected", sample_context);
-        sample.mask_path =
-            required_string(
-                value, "mask_path",
-                sample_context).toStdString();
         sample.training_mask_path =
             required_string(
                 value, "training_mask_path",
                 sample_context).toStdString();
-        sample.class_id =
-            required_string(
-                value, "class_id",
-                sample_context).toStdString();
+        if (task == "cls") sample.class_id = required_string(value, "class_id", sample_context).toStdString();
+        else {
+            const QString file = required_string(value, "region_file", sample_context);
+            if (!file.isEmpty()) {
+                if (node_asset_root.isEmpty() || file != region_file_name(node_id, sample.sample_id))
+                    invalid_document(sample_context, "region asset must belong to this Node and sample");
+                sample.regions = load_segmentation_regions(QDir(node_asset_root).filePath(file));
+            }
+        }
         sample.split =
             normalized_split(
                 required_string(
@@ -490,18 +500,11 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object) {
                 value, "annotation_state",
                 sample_context).toStdString();
         if (sample.annotation_state != "unannotated" &&
-            sample.annotation_state != "annotated" &&
-            sample.annotation_state != "background-only" &&
-            sample.annotation_state != "needs-review")
+            sample.annotation_state != "annotated")
             invalid_document(
                 sample_context,
-                "annotation_state must be unannotated, background-only, annotated, or needs-review");
-        sample.quality_issues =
-            strings_from_json(
-                value.value("quality_issues"),
-                sample_context + " quality_issues", true);
+                "annotation_state must be unannotated or annotated");
         if (sample.sample_id.empty() ||
-            sample.image_paths.empty() ||
             !sample_ids.insert(sample.sample_id).second)
             invalid_document(
                 sample_context,
@@ -604,7 +607,6 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
                 return data;
             }, value.result);
             samples.append(QJsonObject{
-                {"result_id", QString::fromStdString(value.result_id)},
                 {"source_sample_id", QString::fromStdString(value.source_sample_id)},
                 {"task", std::holds_alternative<jocelin::result::cls::ClsResult>(value.result) ? "cls" : "sg"},
                 {"result", payload}});
@@ -661,21 +663,20 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
         set.weight_format = required_string(
             value, "weight_format", result_context).toStdString();
         if (set.weight_format != "libtorch" && set.weight_format != "onnx" &&
-            set.weight_format != "tensorrt")
+            set.weight_format != "tensorrt" && set.weight_format != "openvino")
             invalid_document(result_context, "unknown weight_format");
         set.result_directory = required_string(
             value, "result_directory", result_context).toStdString();
         set.aggregate_metrics = result_metrics_from_json(
             required_object(value, "aggregate_metrics", result_context),
             result_context + " aggregate_metrics");
-        const std::string key = set.model_id + ":" + set.weight_format;
+        const std::string key = set.model_id + ":" + set.weight_id;
         if (set.model_id.empty() || set.weight_id.empty() ||
             set.result_directory.empty() || !result_keys.insert(key).second)
             invalid_document(
                 result_context,
-                "model/weight-format result identity must be unique and complete");
+                "model/weight result coordinate must be unique and complete");
 
-        std::set<std::string> sample_ids;
         int sample_index = 0;
         for (const auto& sample_entry :
              required_array(value, "samples", result_context)) {
@@ -684,9 +685,8 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
             if (!sample_entry.isObject())
                 invalid_document(sample_context, "must be an object");
             const auto sample = sample_entry.toObject();
-            require_exact_fields(sample, {"result_id", "source_sample_id", "task", "result"}, sample_context);
+            require_exact_fields(sample, {"source_sample_id", "task", "result"}, sample_context);
             ResultReference result;
-            result.result_id = required_string(sample, "result_id", sample_context).toStdString();
             result.source_sample_id = required_string(sample, "source_sample_id", sample_context).toStdString();
             const auto task = required_string(sample, "task", sample_context);
             if (task.toStdString() != task_name)
@@ -799,11 +799,8 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
                     }
                 }
             }, result.result);
-            if (result.result_id.empty() ||
-                !sample_ids.insert(result.result_id).second)
-                invalid_document(
-                    sample_context,
-                    "result_id must be present and unique within a result set");
+            if (result.source_sample_id.empty())
+                invalid_document(sample_context, "source_sample_id must be present");
             set.samples.push_back(std::move(result));
         }
         runtime.results.push_back(std::move(set));
@@ -811,7 +808,8 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
     return runtime;
 }
 
-QJsonObject config_to_json(const Node& node) {
+QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByteArray>>& region_assets,
+    std::vector<std::pair<QString, QByteArray>>& inference_assets) {
     if (node.kind == NodeKind::DatasetInput) {
         const auto& config = std::get<DatasetConfig>(node.config);
         QJsonArray items;
@@ -830,6 +828,17 @@ QJsonObject config_to_json(const Node& node) {
     if (node.kind == NodeKind::TaskConfig) {
         const auto& config = std::get<TaskNodeConfig>(node.config);
         const auto& training = config.training;
+        auto runtime = runtime_to_json(config.runtime);
+        QJsonArray references;
+        for (const auto& entry : runtime.value("results").toArray()) {
+            const auto result = entry.toObject();
+            const auto model_id = result.value("model_id").toString();
+            const auto weight_id = result.value("weight_id").toString();
+            const auto file = inference_result_directory(node.node_id, model_id.toStdString(), weight_id.toStdString()) + "/result.json";
+            inference_assets.emplace_back(file, QJsonDocument(result).toJson(QJsonDocument::Indented));
+            references.append(QJsonObject{{"model_id", model_id}, {"weight_id", weight_id}});
+        }
+        runtime["results"] = references;
         QJsonArray inference_images;
         for (const auto& name : config.inference_images)
             inference_images.append(QString::fromStdString(name));
@@ -845,8 +854,8 @@ QJsonObject config_to_json(const Node& node) {
             {"inference_output_directory", QString::fromStdString(config.inference_output_directory)},
             {"inference_use_all_images", config.inference_use_all_images},
             {"inference_images", inference_images},
-            {"dataset_binding", binding_to_json(config.dataset_binding)},
-            {"runtime", runtime_to_json(config.runtime)},
+            {"dataset_binding", binding_to_json(config.dataset_binding, config.task, node.node_id, region_assets)},
+            {"runtime", runtime},
             {"training", QJsonObject{
                 {"batch_size", training.batch_size},
                 {"epochs", training.epochs},
@@ -863,7 +872,7 @@ QJsonObject config_to_json(const Node& node) {
     throw std::runtime_error("unsupported node kind");
 }
 
-void config_from_json(Node& node, const QJsonObject& object) {
+void config_from_json(Node& node, const QJsonObject& object, const QString& node_asset_root) {
     if (node.kind == NodeKind::DatasetInput) {
         const QString context = "Dataset config";
         require_exact_fields(
@@ -938,6 +947,8 @@ void config_from_json(Node& node, const QJsonObject& object) {
         config.task =
             required_string(
                 object, "task", context).toStdString();
+        const auto* module = find_task_module(config.task);
+        if (!module || !module->available) invalid_document(context, "unsupported Task type");
         config.model_index =
             required_integer(
                 object, "model_index", context);
@@ -1027,11 +1038,29 @@ void config_from_json(Node& node, const QJsonObject& object) {
             binding_from_json(
                 required_object(
                     object, "dataset_binding",
-                    context));
-        config.runtime =
-            runtime_from_json(
-                required_object(
-                    object, "runtime", context), config.task);
+                    context), config.task, node.node_id, node_asset_root);
+        auto runtime = required_object(object, "runtime", context);
+        QJsonArray restored_results;
+        for (const auto& entry : required_array(runtime, "results", context)) {
+            if (!entry.isObject()) invalid_document(context, "invalid inference reference");
+            const auto reference = entry.toObject();
+            require_exact_fields(reference, {"model_id", "weight_id"}, "Inference reference");
+            const auto model_id = required_string(reference, "model_id", context);
+            const auto weight_id = required_string(reference, "weight_id", context);
+            if (node_asset_root.isEmpty()) invalid_document(context, "inference requires its Node asset root");
+            const auto file = inference_result_directory(node.node_id, model_id.toStdString(), weight_id.toStdString()) + "/result.json";
+            QJsonParseError error;
+            const auto document = QJsonDocument::fromJson(ProjectStorage::read(QDir(node_asset_root).filePath(file)), &error);
+            if (error.error != QJsonParseError::NoError || !document.isObject())
+                invalid_document(context, "invalid inference result.json");
+            const auto result = document.object();
+            if (result.value("model_id") != reference.value("model_id") ||
+                result.value("weight_id") != reference.value("weight_id"))
+                invalid_document(context, "inference asset does not match its Node reference");
+            restored_results.append(result);
+        }
+        runtime["results"] = restored_results;
+        config.runtime = runtime_from_json(runtime, config.task);
         node.config = std::move(config);
     } else {
         throw std::runtime_error("unsupported node kind");
@@ -1040,45 +1069,58 @@ void config_from_json(Node& node, const QJsonObject& object) {
 
 } // namespace
 
-QByteArray serialize_workflow(
+QString inference_result_directory(int node_id, const std::string& model_id, const std::string& weight_id) {
+    for (const auto& id : {model_id, weight_id}) {
+        const auto value = QString::fromStdString(id);
+        if (value.contains('/') || value.contains('\\') || value.contains(':') ||
+            ProjectStorage::validated_relative_path(value, "inference identity") != value)
+            throw std::runtime_error("inference model/weight id must be one directory component");
+    }
+    return QString::number(node_id) + "/inference/" + QString::fromStdString(model_id) + "/" + QString::fromStdString(weight_id);
+}
+
+SerializedWorkflow serialize_workflow(
     const WorkflowGraph& graph,
     const std::map<int, QPointF>& positions)
 {
+    SerializedWorkflow serialized;
     QJsonObject root;
     root["format"] = "deep_learning_workflow";
+    root["next_node_id"] = graph.next_node_id();
     QJsonArray nodes;
-    for (const auto& [id, node] : graph.nodes()) {
-        const auto position = positions.find(id);
+    for (const auto& [node_id, node] : graph.nodes()) {
+        const auto position = positions.find(node_id);
         if (position == positions.end())
-            throw std::runtime_error("node position is missing for node " + std::to_string(id));
+            throw std::runtime_error("node position is missing for node " + std::to_string(node_id));
         nodes.append(QJsonObject{
-            {"id", id},
+            {"id", node_id},
             {"kind", static_cast<int>(node.kind)},
             {"x", position->second.x()},
             {"y", position->second.y()},
-            {"config", config_to_json(node)}});
+            {"config", config_to_json(node, serialized.region_assets, serialized.inference_assets)}});
     }
     QJsonArray connections;
     for (const auto& edge : graph.connections()) {
         connections.append(QJsonObject{
-            {"from_node", edge.from_node},
+            {"from_node", edge.from_node_id},
             {"from_port", static_cast<int>(edge.from_port)},
-            {"to_node", edge.to_node},
+            {"to_node", edge.to_node_id},
             {"to_port", static_cast<int>(edge.to_port)}});
     }
     root["nodes"] = nodes;
     root["connections"] = connections;
-    return QJsonDocument(root).toJson(QJsonDocument::Indented);
+    serialized.json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    return serialized;
 }
 
-WorkflowDocument parse_workflow(const QByteArray& data) {
+WorkflowDocument parse_workflow(const QByteArray& data, const QString& node_asset_root) {
     QJsonParseError parseError;
     const auto document = QJsonDocument::fromJson(data, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject())
         throw std::runtime_error("invalid workflow JSON: " + parseError.errorString().toStdString());
     const auto root = document.object();
     require_exact_fields(
-        root, {"format", "nodes", "connections"},
+        root, {"format", "next_node_id", "nodes", "connections"},
         "Workflow document");
     if (required_string(
             root, "format", "Workflow document") !=
@@ -1086,8 +1128,7 @@ WorkflowDocument parse_workflow(const QByteArray& data) {
         throw std::runtime_error("unsupported workflow format");
 
     WorkflowDocument result;
-    std::map<int, int> id_map;
-    std::map<int, int> serialized_binding_sources;
+    std::vector<Node> restored_nodes;
     int node_index = 0;
     for (const auto value :
          required_array(
@@ -1099,35 +1140,28 @@ WorkflowDocument parse_workflow(const QByteArray& data) {
         require_exact_fields(
             object, {"id", "kind", "x", "y", "config"},
             context);
-        const int old_id =
+        const int node_id =
             required_integer(object, "id", context);
         const int kind_value =
             required_integer(object, "kind", context);
-        if (old_id < 1 || id_map.count(old_id) != 0 ||
+        if (node_id < 1 ||
             kind_value < static_cast<int>(NodeKind::DatasetInput) ||
             kind_value > static_cast<int>(NodeKind::TaskConfig))
             throw std::runtime_error("invalid node id or kind");
         const auto config_object =
             required_object(object, "config", context);
         const auto kind = static_cast<NodeKind>(kind_value);
-        const int new_id = kind == NodeKind::TaskConfig
-            ? result.graph.add_task_node({
-                  required_string(config_object, "task", "Task config").toStdString()})
-            : result.graph.add_node(kind);
-        config_from_json(result.graph.node(new_id), config_object);
-        if (static_cast<NodeKind>(kind_value) ==
-            NodeKind::TaskConfig)
-            serialized_binding_sources.emplace(
-                new_id,
-                std::get<TaskNodeConfig>(
-                    result.graph.node(new_id).config)
-                    .dataset_binding.source_dataset_node_id);
-        id_map.emplace(old_id, new_id);
-        result.positions[new_id] = QPointF(
+        Node restored;
+        restored.node_id = node_id;
+        restored.kind = kind;
+        config_from_json(restored, config_object, node_asset_root);
+        restored_nodes.push_back(std::move(restored));
+        result.positions[node_id] = QPointF(
             required_number(object, "x", context),
             required_number(object, "y", context));
     }
-    std::set<int> connected_tasks;
+    result.graph.restore_nodes(std::move(restored_nodes),
+        required_integer(root, "next_node_id", "Workflow document"));
     int connection_index = 0;
     for (const auto value :
          required_array(
@@ -1143,42 +1177,23 @@ WorkflowDocument parse_workflow(const QByteArray& data) {
             {"from_node", "from_port",
              "to_node", "to_port"},
             context);
-        const int from_node =
+        const int from_node_id =
             required_integer(
                 object, "from_node", context);
         const int from_port =
             required_integer(
                 object, "from_port", context);
-        const int to_node =
+        const int to_node_id =
             required_integer(
                 object, "to_node", context);
         const int to_port =
             required_integer(
                 object, "to_port", context);
-        if (id_map.count(from_node) == 0 || id_map.count(to_node) == 0 || from_port < 0 || to_port < 0)
+        if (result.graph.nodes().count(from_node_id) == 0 || result.graph.nodes().count(to_node_id) == 0 || from_port < 0 || to_port < 0)
             throw std::runtime_error("connection references an invalid node or port");
-        const int mapped_task = id_map.at(to_node);
-        const auto binding_source =
-            serialized_binding_sources.find(mapped_task);
-        if (binding_source ==
-                serialized_binding_sources.end() ||
-            binding_source->second != from_node)
-            invalid_document(
-                context,
-                "Task dataset_binding does not match its Dataset connection");
         result.graph.connect(
-            id_map.at(from_node), static_cast<size_t>(from_port),
-            id_map.at(to_node), static_cast<size_t>(to_port));
-        connected_tasks.insert(mapped_task);
-    }
-    for (const auto& [task_id, source_id] :
-         serialized_binding_sources) {
-        const bool connected =
-            connected_tasks.count(task_id) != 0;
-        if ((source_id == 0) != !connected)
-            invalid_document(
-                "Task dataset_binding",
-                "source_dataset_node_id does not match the workflow connection");
+            from_node_id, static_cast<size_t>(from_port),
+            to_node_id, static_cast<size_t>(to_port));
     }
     return result;
 }

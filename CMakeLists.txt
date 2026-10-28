@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 project(DeepLearningStudio LANGUAGES CXX)
 
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/build" STUDIO_REQUIRED_BUILD_DIRECTORY)
+set(STUDIO_REQUIRED_BUILD_DIRECTORY "${CMAKE_SOURCE_DIR}/build" CACHE PATH
+    "Single CMake build directory for this Studio checkout")
+file(TO_CMAKE_PATH "${STUDIO_REQUIRED_BUILD_DIRECTORY}" STUDIO_REQUIRED_BUILD_DIRECTORY)
 if(NOT CMAKE_BINARY_DIR STREQUAL STUDIO_REQUIRED_BUILD_DIRECTORY)
     message(FATAL_ERROR
         "DeepLearningStudio must be configured in ${STUDIO_REQUIRED_BUILD_DIRECTORY}")
@@ -15,27 +17,31 @@ option(BUILD_TESTING "Build DeepLearningStudio test targets" ON)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.build-artifacts/lib/$<CONFIG>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.build-artifacts/lib/$<CONFIG>")
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /bigobj /FS)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
+# Optional runtime hints for older OpenCV/LibTorch installations.
 set(VTK_DIR "C:/CLib/vtkQt/lib/cmake/vtk-9.2" CACHE PATH
-    "Directory containing the Qt-enabled VTK package configuration")
+    "Optional VTK package location used to infer its runtime directory")
 set(TBB_DIR "C:/CLib/TBB/lib/cmake/tbb" CACHE PATH
-    "Directory containing the oneTBB package configuration")
+    "Optional oneTBB package location used to infer its runtime directory")
 set(libuv_DIR "C:/CLib/libuv/lib/cmake/libuv" CACHE PATH
-    "Directory containing the libuv package configuration")
+    "Optional libuv package location used to infer its runtime directory")
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Widgets Concurrent Svg)
-find_package(TBB CONFIG REQUIRED COMPONENTS tbb)
-find_package(libuv 1.52.1 CONFIG REQUIRED)
-find_package(VTK 9.2 REQUIRED COMPONENTS
-    CommonCore
-    CommonDataModel
-    InteractionStyle
-    RenderingCore
-    RenderingOpenGL2
-    RenderingQt
-    GUISupportQt)
+# Older OpenCV exports can name imported VTK/TBB targets as DLL dependencies.
+if(EXISTS "${TBB_DIR}/TBBConfig.cmake" OR EXISTS "${TBB_DIR}/tbb-config.cmake")
+    find_package(TBB QUIET CONFIG COMPONENTS tbb)
+endif()
+if(EXISTS "${libuv_DIR}/libuvConfig.cmake" OR EXISTS "${libuv_DIR}/libuv-config.cmake")
+    find_package(libuv QUIET CONFIG)
+endif()
+if(EXISTS "${VTK_DIR}/vtk-config.cmake" OR EXISTS "${VTK_DIR}/VTKConfig.cmake")
+    find_package(VTK QUIET COMPONENTS
+        CommonCore CommonDataModel InteractionStyle RenderingCore RenderingOpenGL2
+        RenderingQt GUISupportQt)
+endif()
 find_package(DeepLearning CONFIG REQUIRED)
 
 get_filename_component(LIBTORCH_INSTALL_PREFIX "${Torch_DIR}/../../.." ABSOLUTE)
@@ -53,19 +59,31 @@ get_filename_component(LIBUV_INSTALL_PREFIX "${libuv_DIR}/../../.." ABSOLUTE)
 set(LIBUV_RUNTIME_DIR "${LIBUV_INSTALL_PREFIX}/bin" CACHE PATH
     "Directory containing libuv runtime DLLs")
 
-if(WIN32 AND NOT EXISTS "${VTK_RUNTIME_DIR}/vtkCommonCore-9.2.dll")
-    message(FATAL_ERROR
-        "VTK_RUNTIME_DIR does not contain the expected VTK 9.2 DLLs: ${VTK_RUNTIME_DIR}")
-endif()
-if(WIN32 AND NOT EXISTS "${TBB_RUNTIME_DIR}/tbb12.dll")
-    message(FATAL_ERROR "TBB_RUNTIME_DIR does not contain tbb12.dll: ${TBB_RUNTIME_DIR}")
-endif()
-if(WIN32 AND NOT EXISTS "${LIBUV_RUNTIME_DIR}/uv.dll")
-    message(FATAL_ERROR "LIBUV_RUNTIME_DIR does not contain uv.dll: ${LIBUV_RUNTIME_DIR}")
-endif()
 if(WIN32 AND NOT EXISTS "${LIBIOMP5_RUNTIME_DLL}")
     message(FATAL_ERROR "LibTorch Intel OpenMP runtime does not exist: ${LIBIOMP5_RUNTIME_DLL}")
 endif()
+
+# Include DLLs loaded internally by Torch/OpenCV, beyond CMake's target graph.
+file(GLOB STUDIO_TORCH_RUNTIME_DLLS CONFIGURE_DEPENDS "${LIBTORCH_RUNTIME_DIR}/*.dll")
+file(GLOB STUDIO_OPTIONAL_RUNTIME_DLLS CONFIGURE_DEPENDS
+    "${VTK_RUNTIME_DIR}/*.dll"
+    "${TBB_RUNTIME_DIR}/*.dll"
+    "${LIBUV_RUNTIME_DIR}/*.dll")
+foreach(opencv_target IN LISTS OpenCV_LIBRARIES)
+    if(TARGET ${opencv_target})
+        get_target_property(opencv_configurations ${opencv_target} IMPORTED_CONFIGURATIONS)
+        foreach(opencv_configuration IN LISTS opencv_configurations)
+            string(TOUPPER "${opencv_configuration}" opencv_configuration)
+            get_target_property(opencv_runtime ${opencv_target} "IMPORTED_LOCATION_${opencv_configuration}")
+            if(opencv_runtime AND opencv_runtime MATCHES "\\.dll$")
+                get_filename_component(opencv_runtime_directory "${opencv_runtime}" DIRECTORY)
+                file(GLOB opencv_runtime_dlls CONFIGURE_DEPENDS "${opencv_runtime_directory}/*.dll")
+                list(APPEND STUDIO_OPTIONAL_RUNTIME_DLLS ${opencv_runtime_dlls})
+            endif()
+        endforeach()
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES STUDIO_OPTIONAL_RUNTIME_DLLS)
 
 file(GLOB STUDIO_INTERNAL_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -78,16 +96,14 @@ target_link_libraries(DeepLearningStudioLib PUBLIC
     DeepLearning::Core
     Qt5::Widgets
     Qt5::Concurrent
-    Qt5::Svg
-    TBB::tbb
-    libuv::uv
-    ${VTK_LIBRARIES})
-target_compile_definitions(DeepLearningStudioLib PUBLIC QT_NO_KEYWORDS)
+    Qt5::Svg)
+target_compile_definitions(DeepLearningStudioLib PUBLIC QT_NO_KEYWORDS NOMINMAX)
 
 add_executable(DeepLearningStudio WIN32
     resources/studio.qrc
     src/main.cpp)
 target_link_libraries(DeepLearningStudio PRIVATE DeepLearningStudioLib)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT DeepLearningStudio)
 
 if(MSVC)
     set_property(TARGET DeepLearningStudio PROPERTY VS_DEBUGGER_ENVIRONMENT
@@ -101,6 +117,11 @@ function(studio_copy_runtime target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_RUNTIME_DLLS:${target}>
+            ${STUDIO_OPTIONAL_RUNTIME_DLLS}
+            $<TARGET_FILE_DIR:${target}>
+        # Prefer the CUDA/cuDNN DLLs bundled with the selected LibTorch SDK.
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${STUDIO_TORCH_RUNTIME_DLLS}
             "${LIBIOMP5_RUNTIME_DLL}"
             $<TARGET_FILE_DIR:${target}>
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -115,7 +136,8 @@ function(studio_copy_runtime target)
             "${Qt5_DIR}/../../../plugins/imageformats/qtiff.dll"
             "${Qt5_DIR}/../../../plugins/imageformats/qwebp.dll"
             $<TARGET_FILE_DIR:${target}>/imageformats
-        COMMAND_EXPAND_LISTS)
+        COMMAND_EXPAND_LISTS
+        VERBATIM)
 endfunction()
 
 studio_copy_runtime(DeepLearningStudio)

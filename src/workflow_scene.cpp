@@ -389,12 +389,12 @@ void WorkflowScene::rebuild() {
         return;
     }
     int index = 0;
-    for (const auto& [id, unused] : graph_->nodes()) {
-        if (positions_->count(id) == 0) (*positions_)[id] = QPointF(-300 + (index % 3) * 360, -180 + (index / 3) * 230);
-        auto* item = new NodeItem(graph_, id);
+    for (const auto& [node_id, unused] : graph_->nodes()) {
+        if (positions_->count(node_id) == 0) (*positions_)[node_id] = QPointF(-300 + (index % 3) * 360, -180 + (index / 3) * 230);
+        auto* item = new NodeItem(graph_, node_id);
         addItem(item);
-        item->setPos(positions_->at(id));
-        node_items_[id] = item;
+        item->setPos(positions_->at(node_id));
+        node_items_[node_id] = item;
         ++index;
     }
     sync_connections();
@@ -406,8 +406,8 @@ void WorkflowScene::sync_connections() {
     connection_items_.clear();
     if (!graph_) return;
     for (const auto& edge : graph_->connections()) {
-        auto* source = node_items_.at(edge.from_node)->port(PortDirection::Output, edge.from_port);
-        auto* target = node_items_.at(edge.to_node)->port(PortDirection::Input, edge.to_port);
+        auto* source = node_items_.at(edge.from_node_id)->port(PortDirection::Output, edge.from_port);
+        auto* target = node_items_.at(edge.to_node_id)->port(PortDirection::Input, edge.to_port);
         auto* item = new ConnectionItem(edge, source, target);
         addItem(item);
         connection_items_.push_back(item);
@@ -415,10 +415,10 @@ void WorkflowScene::sync_connections() {
 }
 
 void WorkflowScene::refresh_validation(const std::vector<ValidationIssue>& issues) {
-    for (const auto& [id, item] : node_items_) {
+    for (const auto& [node_id, item] : node_items_) {
         std::vector<ValidationIssue> node_issues;
-        std::copy_if(issues.begin(), issues.end(), std::back_inserter(node_issues), [id](const ValidationIssue& issue) {
-            return issue.node_id == id;
+        std::copy_if(issues.begin(), issues.end(), std::back_inserter(node_issues), [node_id](const ValidationIssue& issue) {
+            return issue.node_id == node_id;
         });
         item->set_validation(node_issues);
     }
@@ -445,10 +445,12 @@ bool WorkflowScene::delete_selected_items() {
         if (auto* node = dynamic_cast<NodeItem*>(item)) nodes.push_back(node->data(0).toInt());
     }
     if (edges.empty() && nodes.empty()) return false;
+    if (!nodes.empty() && before_nodes_removed && !before_nodes_removed(nodes)) return true;
     for (const auto& edge : edges) graph_->remove_connection(edge);
-    for (const int id : nodes) { graph_->remove_node(id); positions_->erase(id); }
+    for (const int node_id : nodes) { graph_->remove_node(node_id); positions_->erase(node_id); }
     rebuild();
     if (model_changed) model_changed();
+    if (!nodes.empty() && nodes_removed) nodes_removed();
     return true;
 }
 
@@ -485,8 +487,8 @@ PortItem* WorkflowScene::port_at(const QPointF& scene_position) const {
 PortItem* WorkflowScene::nearby_input_port(const QPointF& scene_position) const {
     PortItem* nearest = nullptr;
     qreal best_distance = 32.0;
-    for (const auto& [id, node] : node_items_) {
-        const auto& inputs = WorkflowGraph::input_ports(graph_->node(id).kind);
+    for (const auto& [node_id, node] : node_items_) {
+        const auto& inputs = WorkflowGraph::input_ports(graph_->node(node_id).kind);
         for (size_t index = 0; index < inputs.size(); ++index) {
             auto* port = node->port(PortDirection::Input, index);
             const qreal distance = QLineF(scene_position, port->scenePos()).length();
@@ -512,9 +514,9 @@ void WorkflowScene::reject_drag(const QString& message, PortItem* target) {
         if (drag_path_) { delete drag_path_; drag_path_ = nullptr; }
         if (drag_start_) drag_start_->set_rejected(false);
         drag_start_ = nullptr;
-        for (const auto& [id, node] : node_items_) {
-            const auto& inputs = WorkflowGraph::input_ports(graph_->node(id).kind);
-            const auto& outputs = WorkflowGraph::output_ports(graph_->node(id).kind);
+        for (const auto& [node_id, node] : node_items_) {
+            const auto& inputs = WorkflowGraph::input_ports(graph_->node(node_id).kind);
+            const auto& outputs = WorkflowGraph::output_ports(graph_->node(node_id).kind);
             for (size_t i = 0; i < inputs.size(); ++i) node->port(PortDirection::Input, i)->set_rejected(false);
             for (size_t i = 0; i < outputs.size(); ++i) node->port(PortDirection::Output, i)->set_rejected(false);
         }
@@ -562,7 +564,7 @@ void WorkflowScene::request_node_action(int node_id, const QString& action) {
 void WorkflowScene::update_connections_for_node(int node_id) {
     for (auto* item : connection_items_) {
         const auto& edge = item->connection();
-        if (edge.from_node == node_id || edge.to_node == node_id) item->update_path();
+        if (edge.from_node_id == node_id || edge.to_node_id == node_id) item->update_path();
     }
 }
 

@@ -1,4 +1,8 @@
 #include "workflow_document.h"
+#include "project_storage.h"
+#include <QDir>
+#include <QFileInfo>
+#include <QTemporaryDir>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11,23 +15,23 @@
 int main() {
     studio::WorkflowGraph empty;
     const auto empty_decoded = studio::parse_workflow(
-        studio::serialize_workflow(empty, {}));
+        studio::serialize_workflow(empty, {}).json);
     if (!empty_decoded.graph.nodes().empty() ||
         !empty_decoded.graph.connections().empty())
         return 1;
 
     studio::WorkflowGraph graph;
-    const int dataset = graph.add_node(studio::NodeKind::DatasetInput);
-    const int task_id = graph.add_task_node({"cls"});
+    const int source_node_id = graph.add_node(studio::NodeKind::DatasetInput);
+    const int node_id = graph.add_task_node({"cls"});
     auto& dataset_config =
-        std::get<studio::DatasetConfig>(graph.node(dataset).config);
+        std::get<studio::DatasetConfig>(graph.node(source_node_id).config);
     dataset_config.directory = "dataset";
     dataset_config.items = {
         {"dataset/input.png", {}, true, "sample-input"},
         {"dataset/broken.png", "decode failed", false, "sample-broken"}};
-    graph.connect(dataset, 0, task_id, 0);
+    graph.connect(source_node_id, 0, node_id, 0);
 
-    auto& task = std::get<studio::TaskNodeConfig>(graph.node(task_id).config);
+    auto& task = std::get<studio::TaskNodeConfig>(graph.node(node_id).config);
     task.model_index = 2;
     task.model_scale = "n";
     task.device = {
@@ -51,12 +55,12 @@ int main() {
         {"class-road", 1, "road", "#112233", true, false, true},
         {"class-car", 2, "car", "#445566", false, true, true}};
     auto& sample = task.dataset_binding.samples.front();
-    sample.mask_path = "annotations/input.png";
     sample.training_mask_path = "masks/exclusion.png";
     sample.class_id = "class-road";
     sample.split = "validation";
     sample.split_manual = true;
     sample.annotation_state = "annotated";
+    sample.quality_issues = {"stale diagnostic"};
     task.dataset_binding.preprocessing.normalize = false;
     task.dataset_binding.split_settings = {65, 25, 10, 7, "stratified"};
     task.runtime.training_model_id = "model_1";
@@ -69,7 +73,6 @@ int main() {
     result_set.aggregate_metrics = {true, 0.8, 0.75, 0.77};
     result_set.aggregate_metrics.accuracy = 0.85;
     studio::ResultReference result;
-    result.result_id = "result-input";
     result.source_sample_id = "sample-input";
     jocelin::result::cls::ClsResult classification;
     classification.image_path = "dataset/input.png";
@@ -84,20 +87,61 @@ int main() {
     task.runtime.results.push_back(std::move(result_set));
 
     const std::map<int, QPointF> positions{
-        {dataset, {10.5, 20.25}},
-        {task_id, {330, 40}}};
-    const auto encoded = studio::serialize_workflow(graph, positions);
-    const auto decoded = studio::parse_workflow(encoded);
+        {source_node_id, {10.5, 20.25}},
+        {node_id, {330, 40}}};
+    QTemporaryDir assets;
+    const auto serialized = studio::serialize_workflow(graph, positions);
+    const auto write_assets = [](const auto& serialized, const QString& root) {
+        for (const auto& [path, data] : serialized.inference_assets) {
+            const auto file = QDir(root).filePath(path);
+            QDir().mkpath(QFileInfo(file).absolutePath());
+            studio::ProjectStorage::write_atomic(file, data);
+        }
+    };
+    write_assets(serialized, assets.path());
+    const auto encoded = serialized.json;
+    if (encoded.contains("quality_issues")) return 55;
+    const auto decoded = studio::parse_workflow(encoded, assets.path());
     if (decoded.graph.nodes().size() != 2 ||
         decoded.graph.connections().size() != 1 ||
-        decoded.positions.at(dataset) != QPointF(10.5, 20.25))
+        decoded.positions.at(source_node_id) != QPointF(10.5, 20.25))
         return 2;
 
     const auto& decoded_dataset =
-        std::get<studio::DatasetConfig>(decoded.graph.node(dataset).config);
+        std::get<studio::DatasetConfig>(decoded.graph.node(source_node_id).config);
     const auto& decoded_task =
-        std::get<studio::TaskNodeConfig>(decoded.graph.node(task_id).config);
+        std::get<studio::TaskNodeConfig>(decoded.graph.node(node_id).config);
     const auto& decoded_sample = decoded_task.dataset_binding.samples.front();
+    if (!decoded_sample.quality_issues.empty()) return 56;
+    if (task.runtime.task_id.empty() || decoded_task.runtime.task_id == task.runtime.task_id) return 50;
+    // Persistent Node ids survive gaps; runtime Task ids are recreated on load.
+    studio::WorkflowGraph identity_graph;
+    const int removed_node_id = identity_graph.add_node(studio::NodeKind::DatasetInput);
+    const int original_node_id = identity_graph.add_task_node({"cls"});
+    identity_graph.remove_node(removed_node_id);
+    const auto task_id = std::get<studio::TaskNodeConfig>(identity_graph.node(original_node_id).config).runtime.task_id;
+    const int other_node_id = identity_graph.add_task_node({"cls"});
+    if (task_id == std::get<studio::TaskNodeConfig>(identity_graph.node(other_node_id).config).runtime.task_id) return 51;
+    const int deleted_node_id = identity_graph.add_task_node({"cls"});
+    identity_graph.remove_node(deleted_node_id);
+    const auto identity_roundtrip = studio::parse_workflow(studio::serialize_workflow(
+        identity_graph, {{original_node_id, {0, 0}}, {other_node_id, {100, 0}}}).json);
+    if (identity_roundtrip.graph.nodes().begin()->first != original_node_id ||
+        std::get<studio::TaskNodeConfig>(identity_roundtrip.graph.nodes().begin()->second.config).runtime.task_id == task_id)
+        return 52;
+    auto continued_graph = identity_roundtrip.graph;
+    if (continued_graph.add_task_node({"cls"}) <= deleted_node_id) return 53;
+    // Reordering serialized nodes must preserve persistent ids, ports, positions and bindings.
+    auto reordered_document = QJsonDocument::fromJson(encoded).object();
+    const auto serialized_nodes = reordered_document.value("nodes").toArray();
+    reordered_document["nodes"] = QJsonArray{serialized_nodes[1], serialized_nodes[0]};
+    const auto reordered = studio::parse_workflow(QJsonDocument(reordered_document).toJson(), assets.path());
+    if (reordered.graph.node(node_id).node_id != node_id || reordered.graph.node(source_node_id).node_id != source_node_id ||
+        reordered.graph.connections().front().from_node_id != source_node_id ||
+        reordered.graph.connections().front().to_node_id != node_id ||
+        reordered.positions.at(node_id) != positions.at(node_id) ||
+        std::get<studio::TaskNodeConfig>(reordered.graph.node(node_id).config).dataset_binding.source_node_id != source_node_id)
+        return 54;
     if (decoded_dataset.directory != "dataset" ||
         decoded_dataset.items.size() != 2 ||
         decoded_dataset.items[0].sample_id != "sample-input" ||
@@ -121,6 +165,8 @@ int main() {
         decoded_task.inference_batch_size != 3 ||
         decoded_task.inference_use_all_images ||
         decoded_task.dataset_binding.classes.size() != 2 ||
+        decoded_task.dataset_binding.bucket_capacity != 1 ||
+        decoded_sample.image_paths != std::vector<std::string>{"dataset/input.png"} ||
         decoded_sample.split != "validation" || !decoded_sample.split_manual ||
         decoded_sample.training_mask_path != "masks/exclusion.png" ||
         decoded_task.dataset_binding.split_settings.train_percent != 65 ||
@@ -137,7 +183,7 @@ int main() {
         std::get<jocelin::result::cls::ClsResult>(decoded_task.runtime.results.front().samples.front().result).interest)
         return 3;
 
-    auto& sg_task = std::get<studio::TaskNodeConfig>(graph.node(task_id).config);
+    auto& sg_task = std::get<studio::TaskNodeConfig>(graph.node(node_id).config);
     sg_task.task = "sg";
     sg_task.model_index = 0;
     sg_task.model_scale = "s";
@@ -169,10 +215,12 @@ int main() {
     segmentation.predicted_area = 2;
     segmentation.mean_confidence = 0.9;
     sg_task.runtime.results.front().samples.front().result = segmentation;
-    const auto sg_encoded = studio::serialize_workflow(graph, positions);
-    const auto sg_decoded = studio::parse_workflow(sg_encoded);
+    QTemporaryDir sg_assets;
+    const auto sg_serialized = studio::serialize_workflow(graph, positions);
+    write_assets(sg_serialized, sg_assets.path());
+    const auto sg_decoded = studio::parse_workflow(sg_serialized.json, sg_assets.path());
     const auto& restored = std::get<jocelin::result::sg::SgResult>(
-        std::get<studio::TaskNodeConfig>(sg_decoded.graph.node(task_id).config)
+        std::get<studio::TaskNodeConfig>(sg_decoded.graph.node(node_id).config)
             .runtime.results.front().samples.front().result);
     if (restored.components.size() != 2 || restored.components[1].interest ||
         !restored.components[1].confidence_pass || restored.components[1].area_pass ||
@@ -183,9 +231,9 @@ int main() {
         cv::norm(restored.render_interest_mask(), segmentation.render_interest_mask(), cv::NORM_INF) != 0)
         return 8;
 
-    const auto rejects = [](const QJsonObject& value) {
+    const auto rejects = [&assets](const QJsonObject& value) {
         try {
-            (void)studio::parse_workflow(QJsonDocument(value).toJson());
+            (void)studio::parse_workflow(QJsonDocument(value).toJson(), assets.path());
         } catch (const std::runtime_error&) {
             return true;
         }

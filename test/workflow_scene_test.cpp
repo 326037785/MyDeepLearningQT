@@ -10,12 +10,12 @@ namespace {
 
 studio::NodeItem* find_node(
     studio::WorkflowScene& scene,
-    int id)
+    int node_id)
 {
     for (auto* item : scene.items()) {
         auto* node =
             dynamic_cast<studio::NodeItem*>(item);
-        if (node && node->data(0).toInt() == id)
+        if (node && node->data(0).toInt() == node_id)
             return node;
     }
     return nullptr;
@@ -62,15 +62,15 @@ int main(int argc, char** argv) {
         !graph.connections().empty())
         return 1;
 
-    const int dataset =
+    const int source_node_id =
         graph.add_node(studio::NodeKind::DatasetInput);
-    const int task = graph.add_task_node({"sg"});
+    const int node_id = graph.add_task_node({"sg"});
     positions = {
-        {dataset, {-300, -40}},
-        {task, {80, -40}}};
+        {source_node_id, {-300, -40}},
+        {node_id, {80, -40}}};
     scene.rebuild();
-    auto* dataset_node = find_node(scene, dataset);
-    auto* task_node = find_node(scene, task);
+    auto* dataset_node = find_node(scene, source_node_id);
+    auto* task_node = find_node(scene, node_id);
     if (!dataset_node || !task_node ||
         !graph.connections().empty())
         return 2;
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     const QPainterPath old_path = edge->path();
     dataset_node->setPos(-360, -120);
     if (edge->path() == old_path ||
-        positions.at(dataset) != QPointF(-360, -120))
+        positions.at(source_node_id) != QPointF(-360, -120))
         return 8;
     if (edge->path().pointAtPercent(0) !=
         source->scenePos())
@@ -120,8 +120,8 @@ int main(int argc, char** argv) {
         !graph.connections().empty())
         return 10;
 
-    dataset_node = find_node(scene, dataset);
-    task_node = find_node(scene, task);
+    dataset_node = find_node(scene, source_node_id);
+    task_node = find_node(scene, node_id);
     scene.begin_connection_drag(
         dataset_node->port(
             studio::PortDirection::Output, 0),
@@ -136,9 +136,9 @@ int main(int argc, char** argv) {
             ->scenePos());
     dataset_node->setSelected(true);
     if (!scene.delete_selected_items() ||
-        graph.nodes().count(dataset) != 0 ||
+        graph.nodes().count(source_node_id) != 0 ||
         !graph.connections().empty() ||
-        positions.count(dataset) != 0)
+        positions.count(source_node_id) != 0)
         return 11;
     return 0;
 }

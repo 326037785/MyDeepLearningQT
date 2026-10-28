@@ -7,9 +7,12 @@
 #include "model_presentation.h"
 #include "sample_presentation.h"
 #include "segmentation_annotation.h"
+#include "segmentation_annotation_state.h"
 #include "task_dataset_binding.h"
+#include "task_workspace_service.h"
 
 #include <QApplication>
+#include <QAbstractButton>
 #include <QAction>
 #include <QCheckBox>
 #include <QDialog>
@@ -29,11 +32,13 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
 
+#include <algorithm>
 #include <fstream>
 #include <cmath>
 
@@ -142,16 +147,6 @@ int main(int argc, char** argv) {
     if (!prediction_mask.save(directory.filePath("results/segment_mask.png")) ||
         !prediction_color.save(directory.filePath("results/segment_color_mask.png")) ||
         !second.save(directory.filePath("results/segment_heatmap.png"))) return 10;
-    {
-        const QString heatmap_path = QDir::fromNativeSeparators(
-            directory.filePath("results/segment_heatmap.png"));
-        std::ofstream metadata(directory.filePath("results/segment_meta.json").toStdString());
-        metadata << "{\n"
-                 << "  \"predicted_class\": 2,\n"
-                 << "  \"confidence\": 0.91,\n"
-                 << "  \"heatmap_path\": \"" << heatmap_path.toStdString() << "\"\n"
-                 << "}\n";
-    }
     const studio::TaskSampleBinding presentation_sample{
         "presentation-sample",
         {directory.filePath("images/segment.png").toStdString(),
@@ -174,8 +169,8 @@ int main(int argc, char** argv) {
     annotation_sample.image_paths = {
         directory.filePath("images/segment.png").toStdString()};
     annotation_sample.selected = true;
-    annotation_sample.mask_path =
-        directory.filePath("masks/segment.png").toStdString();
+    studio::import_segmentation_annotation({{"foreground", 1, "foreground", "#1F8A9E", true, false, true}},
+        annotation_sample, directory.filePath("masks/segment.png"));
     annotation_sample.split = "train";
     annotation_sample.annotation_state = "annotated";
     studio::SegmentationAnnotationWidget annotation;
@@ -186,7 +181,20 @@ int main(int argc, char** argv) {
         {studio::AnnotationClass{
             "foreground", 1, "foreground", "#1F8A9E",
             true, false, true}});
-    annotation.set_inference_directory(directory.filePath("results"));
+    studio::InferenceResultSet segmentation_results;
+    jocelin::result::sg::SgResult prediction;
+    prediction.image_path = annotation_sample.image_paths.front();
+    prediction.result_name = "segment";
+    prediction.save_dir = directory.filePath("results").toStdString();
+    prediction.image_width = first.width();
+    prediction.image_height = first.height();
+    jocelin::result::sg::SgResult::Component predicted_region;
+    predicted_region.label = 1;
+    predicted_region.interest = true;
+    for (int row = 4; row < 20; ++row) predicted_region.region.vRun.emplace_back(row, 5, 30, 1);
+    prediction.components.push_back(predicted_region);
+    segmentation_results.samples.push_back({annotation_sample.sample_id, prediction});
+    annotation.set_inference_result(&segmentation_results);
     annotation.show();
     QApplication::processEvents();
     auto* canvas = annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
@@ -291,11 +299,11 @@ int main(int argc, char** argv) {
             "invalid-sample",
             {directory.filePath("images/segment.png").toStdString()},
             true,
-            empty_mask_path.toStdString(),
+            {},
             {},
             {},
             "train",
-            "background-only",
+            "annotated",
             {}}},
         {studio::AnnotationClass{
             "foreground", 1, "foreground", "#1F8A9E",
@@ -306,7 +314,7 @@ int main(int argc, char** argv) {
     auto* background_quality = background_annotation.findChild<QLabel*>("annotationQualitySummary");
     if (!background_list || background_list->count() != 1 ||
         !background_list->item(0)->text().contains(QStringLiteral("✓")) ||
-        !background_list->item(0)->toolTip().contains("Annotation: Background only") ||
+        !background_list->item(0)->toolTip().contains("Annotation: Annotated") ||
         !background_quality || background_quality->isVisible()) return 88;
 
     studio::SegmentationAnnotationWidget no_class_annotation;
@@ -345,7 +353,16 @@ int main(int argc, char** argv) {
     if (!no_class_capture.isEmpty() && !no_class_annotation.grab().save(no_class_capture)) return 20;
     std::vector<studio::AnnotationClass> emitted_classes;
     QString saved_image;
-    QString saved_mask;
+    QImage saved_mask;
+    bool saved_empty = false;
+    studio::WorkflowGraph empty_graph;
+    const int source_node_id = empty_graph.add_node(studio::NodeKind::DatasetInput);
+    const int node_id = empty_graph.add_task_node({"sg"});
+    auto& empty_dataset = std::get<studio::DatasetConfig>(empty_graph.node(source_node_id).config);
+    empty_dataset.items = {{directory.filePath("late-import/connected-after-import.jpg").toStdString(), {}, true, "late-sample"}};
+    empty_graph.connect(source_node_id, 0, node_id, 0);
+    studio::TaskWorkspaceService empty_service(empty_graph, node_id);
+    empty_service.synchronize();
     no_class_annotation.class_add_requested =
         [&](const QString& name) {
             const int mask_value =
@@ -356,12 +373,15 @@ int main(int argc, char** argv) {
                 name.toStdString(),
                 studio::default_class_color(mask_value),
                 true, false, true});
+            empty_service.binding().classes = emitted_classes;
             no_class_annotation.set_class_schema(
                 emitted_classes);
         };
-    no_class_annotation.mask_saved = [&](const QString& image, const QString& mask_path) {
+    no_class_annotation.mask_saved = [&](const QString& image, const QImage& mask) {
         saved_image = image;
-        saved_mask = mask_path;
+        saved_mask = mask.copy();
+        empty_service.set_segmentation_mask_for_image(image.toStdString(), mask);
+        no_class_annotation.refresh_samples(empty_service.binding().samples, {});
     };
     QTimer::singleShot(0, [] {
         accept_input_dialog("vehicle");
@@ -403,12 +423,75 @@ int main(int argc, char** argv) {
     if (!no_class_canvas->is_dirty() || !save_mask) return 24;
     save_mask->click();
     QApplication::processEvents();
-    if (saved_image.isEmpty() || saved_mask.isEmpty() || !QFileInfo(saved_mask).isFile()) return 25;
+    if (saved_image.isEmpty() || saved_mask.isNull()) return 25;
     auto* saved_samples =
         no_class_annotation.findChild<QListWidget*>("annotationImageList");
     if (!saved_samples || saved_samples->count() != 1 ||
         !saved_samples->item(0)->text().contains("Annotated"))
         return 85;
+
+    int empty_requests = 0;
+    bool view_unchanged_on_request = false;
+    no_class_annotation.samples_empty_requested = [&](const std::vector<std::string>& ids) {
+        ++empty_requests;
+        view_unchanged_on_request = no_class_canvas->is_dirty();
+        saved_empty = ids == std::vector<std::string>{"late-sample"};
+        for (const auto& id : ids) empty_service.set_segmentation_sample_empty(id);
+        no_class_annotation.refresh_samples(empty_service.binding().samples, ids);
+    };
+    const QImage foreground_before_empty = saved_mask.copy();
+    const QDir mask_directory(directory.filePath("late-import"));
+    const auto files_before_empty = mask_directory.entryList(QDir::Files);
+    bool empty_action_found = false;
+    auto invoke_empty = [&](QMessageBox::StandardButton answer) {
+        QTimer::singleShot(0, [&] {
+            auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            auto* action = menu ? menu->findChild<QAction*>("annotationSetAsEmptyAction") : nullptr;
+            if (!action) { if (menu) menu->close(); return; }
+            empty_action_found = action->isEnabled();
+            for (auto* entry : menu->actions())
+                if (entry->text() == "Set as annotated" || entry->text() == "Set as unannotated")
+                    empty_action_found = false;
+            QTimer::singleShot(0, [answer] {
+                if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+                    if (auto* button = dialog->button(answer)) button->click();
+            });
+            action->trigger();
+            menu->close();
+        });
+        QMetaObject::invokeMethod(saved_samples, "customContextMenuRequested", Qt::DirectConnection,
+            Q_ARG(QPoint, saved_samples->visualItemRect(saved_samples->item(0)).center()));
+    };
+    invoke_empty(QMessageBox::No);
+    if (!empty_action_found || empty_requests != 0 || saved_empty || saved_mask != foreground_before_empty) return 90;
+    QMouseEvent pending_press(QEvent::MouseButtonPress, paint_point, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(no_class_canvas, &pending_press);
+    QMouseEvent pending_release(QEvent::MouseButtonRelease, paint_point, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(no_class_canvas, &pending_release);
+    if (!no_class_canvas->is_dirty()) return 97;
+    invoke_empty(QMessageBox::Yes);
+    // Confirmation clears the domain target and canvas, preserving the former resource on disk.
+    if (!saved_empty || empty_requests != 1 || !view_unchanged_on_request ||
+        !empty_service.binding().samples.front().regions.empty() ||
+        empty_service.binding().samples.front().annotation_state != "annotated" ||
+        saved_mask != foreground_before_empty ||
+        mask_directory.entryList(QDir::Files) != files_before_empty ||
+        !saved_samples->item(0)->text().contains("Annotated") || no_class_canvas->is_dirty()) return 91;
+    save_mask->click();
+    if (saved_mask != foreground_before_empty ||
+        !saved_samples->item(0)->text().contains("Annotated")) return 92;
+    // Revisiting the sample must not rediscover its old file as the current target.
+    no_class_annotation.set_task_dataset(directory.filePath("late-import"),
+        empty_service.binding().samples, emitted_classes);
+    // Inspect the canvas through its existing export API, inside the temporary test fixture.
+    const QString canvas_capture = directory.filePath("empty-canvas.png");
+    QString canvas_error;
+    if (no_class_canvas->is_dirty() || !no_class_canvas->save(canvas_capture, &canvas_error)) return 93;
+    const QImage empty_canvas = QImage(canvas_capture).convertToFormat(QImage::Format_Grayscale8);
+    if (empty_canvas.isNull()) return 95;
+    for (int row = 0; row < empty_canvas.height(); ++row)
+        if (std::any_of(empty_canvas.constScanLine(row),
+            empty_canvas.constScanLine(row) + empty_canvas.width(), [](uchar value) { return value != 0; })) return 96;
 
     QImage portrait(60, 100, QImage::Format_RGB888);
     portrait.fill(QColor("#355E76"));
@@ -447,7 +530,14 @@ int main(int argc, char** argv) {
              true, {}, {}, "dog", "unassigned", "annotated", {}}},
         {"cat", "dog"},
         {-1, 1});
-    classification.set_inference_directory(directory.filePath("results"));
+    studio::InferenceResultSet classification_results;
+    jocelin::result::cls::ClsResult class_prediction;
+    class_prediction.image_path = directory.filePath("images/segment.png").toStdString();
+    class_prediction.predicted_class = 2;
+    class_prediction.confidence = 0.91;
+    class_prediction.heatmap_path = directory.filePath("results/segment_heatmap.png").toStdString();
+    classification_results.samples.push_back({"classification-sample-1", class_prediction});
+    classification.set_inference_result(&classification_results, {"dog", "cat"});
     QString assigned_image;
     int assigned_class = -1;
     classification.class_assigned = [&](const QString& image, int class_index) {
@@ -473,7 +563,7 @@ int main(int argc, char** argv) {
         !prediction_button->isEnabled() || !heatmap_button->isEnabled()) return 33;
     prediction_button->click();
     QApplication::processEvents();
-    if (!prediction_button->isChecked() || !review_state->text().contains("dog") ||
+    if (!prediction_button->isChecked() || !review_state->text().contains("cat") ||
         !review_state->text().contains("91.0%")) return 67;
     heatmap_button->click();
     QApplication::processEvents();
@@ -498,6 +588,20 @@ int main(int argc, char** argv) {
         !classification_context->text().contains("img_00001.png") ||
         QFileInfo(classification_item->data(Qt::UserRole).toString()).absoluteFilePath() !=
             QFileInfo(directory.filePath("images/segment.png")).absoluteFilePath()) return 37;
+    bool classification_empty_disabled = false;
+    QTimer::singleShot(0, [&] {
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        auto* empty = menu ? menu->findChild<QAction*>("annotationSetAsEmptyAction") : nullptr;
+        classification_empty_disabled = empty && !empty->isEnabled();
+        if (menu)
+            for (auto* entry : menu->actions())
+                if (entry->text() == "Set as annotated" || entry->text() == "Set as unannotated")
+                    classification_empty_disabled = false;
+        if (menu) menu->close();
+    });
+    QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
+        Q_ARG(QPoint, classification_images->visualItemRect(classification_images->item(0)).center()));
+    if (!classification_empty_disabled) return 94;
     classification_images->setCurrentRow(0);
     QTimer::singleShot(0, [] {
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <common/config/augment.h>
+#include <common/geometry/run.h>
 #include <common/config/runtime_route.h>
+#include <common/model/model_list.h>
 #include <Result/cls/cls_result.h>
 #include <Result/sg/sg_result.h>
 
@@ -67,7 +69,7 @@ struct TaskSampleBinding {
     std::string sample_id;
     std::vector<std::string> image_paths;
     bool selected = true;
-    std::string mask_path;
+    std::vector<jocelin::geo::Region> regions;
     // Optional task-agnostic training exclusion mask. Non-zero pixels are
     // hidden from the network input and excluded from dense supervision.
     std::string training_mask_path;
@@ -76,6 +78,7 @@ struct TaskSampleBinding {
     std::string class_id;
     std::string split = "unassigned";
     std::string annotation_state = "unannotated";
+    // Runtime diagnostics derived from Dataset binding and task checks.
     std::vector<std::string> quality_issues;
     // Automatic assignments can be recalculated when split settings change.
     // Manual assignments are preserved until the user explicitly restores
@@ -97,11 +100,14 @@ struct TaskPreprocessingSettings {
 };
 
 struct TaskDatasetBinding {
-    int source_dataset_node_id = 0;
+    int source_node_id = 0;
     std::vector<TaskSampleBinding> samples;
     std::vector<AnnotationClass> classes;
     DatasetSplitSettings split_settings;
     TaskPreprocessingSettings preprocessing;
+    // Last verified bucket configuration; source_node_id remains edge-derived.
+    // Zero denotes a fresh binding, including an empty Dataset before first sync.
+    int bucket_capacity = 0;
 };
 
 struct TrainingSettings {
@@ -120,7 +126,6 @@ struct TrainingSettings {
 };
 
 struct ResultReference {
-    std::string result_id;
     std::string source_sample_id;
     std::variant<jocelin::result::cls::ClsResult, jocelin::result::sg::SgResult> result;
 };
@@ -135,7 +140,9 @@ struct InferenceResultSet {
 };
 
 struct TaskRuntimeState {
-    // The task only points at the ModelList row it currently controls.
+    TaskRuntimeState();
+    std::string task_id;
+    // Points at a row in the owning TaskNode's ModelList.
     // Training state, progress, and checkpoint ownership live on that row.
     std::string training_model_id;
     std::string inference_status = "idle";
@@ -153,6 +160,7 @@ struct TaskNodeConfig {
     bool inference_use_all_images = true;
     std::vector<std::string> inference_images;
     TaskDatasetBinding dataset_binding;
+    jocelin::model::ModelList model_list;
     TaskRuntimeState runtime;
 };
 
@@ -171,21 +179,21 @@ struct TaskConfigValue {
 using RuntimeValue = std::variant<DatasetValue, TaskConfigValue>;
 
 struct Node {
-    int id = 0;
+    int node_id = 0;
     NodeKind kind = NodeKind::DatasetInput;
     NodeStatus status = NodeStatus::Idle;
     NodeConfig config = DatasetConfig{};
 };
 
 struct Connection {
-    int from_node = 0;
+    int from_node_id = 0;
     size_t from_port = 0;
-    int to_node = 0;
+    int to_node_id = 0;
     size_t to_port = 0;
 
     bool operator==(const Connection& other) const {
-        return from_node == other.from_node && from_port == other.from_port &&
-               to_node == other.to_node && to_port == other.to_port;
+        return from_node_id == other.from_node_id && from_port == other.from_port &&
+               to_node_id == other.to_node_id && to_port == other.to_port;
     }
 };
 
@@ -205,17 +213,19 @@ public:
 
     int add_node(NodeKind kind);
     int add_task_node(const CreateTaskNodeRequest& request);
-    void remove_node(int id);
-    void connect(int from_node, size_t from_port, int to_node, size_t to_port);
+    void restore_nodes(std::vector<Node> nodes, int next_node_id);
+    int next_node_id() const { return next_node_id_; }
+    void remove_node(int node_id);
+    void connect(int from_node_id, size_t from_port, int to_node_id, size_t to_port);
     void remove_connection(const Connection& connection);
-    Node& node(int id);
-    const Node& node(int id) const;
+    Node& node(int node_id);
+    const Node& node(int node_id) const;
     const std::map<int, Node>& nodes() const { return nodes_; }
     const std::vector<Connection>& connections() const { return connections_; }
     std::vector<int> topological_order() const;
     std::vector<ValidationIssue> validate_for_execution() const;
     std::map<int, RuntimeValue> execute(const Runner& runner);
-    void set_status(int id, NodeStatus status);
+    void set_status(int node_id, NodeStatus status);
 
     static std::string name(NodeKind kind);
     static std::string data_type_name(DataType type);
@@ -225,7 +235,7 @@ public:
 private:
     std::vector<ValidationIssue> validate_structure() const;
 
-    int next_id_ = 1;
+    int next_node_id_ = 1;
     std::map<int, Node> nodes_;
     std::vector<Connection> connections_;
 };

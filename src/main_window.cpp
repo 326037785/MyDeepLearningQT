@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "classification_annotation_state.h"
 #include "model_spec_catalog.h"
 
 #include "new_project_dialog.h"
@@ -13,6 +14,7 @@
 #include "properties_editor.h"
 #include "sample_presentation.h"
 #include "task_workspace_service.h"
+#include "task_dataset_binding.h"
 #include "task_workspace_pages.h"
 #include "workflow_scene.h"
 #include "ui_theme.h"
@@ -79,6 +81,13 @@
 namespace studio {
 
 namespace {
+
+void clear_workflow_nodes(WorkflowDocument& document) {
+    while (!document.graph.nodes().empty())
+        document.graph.remove_node(document.graph.nodes().begin()->first);
+    document.positions.clear();
+}
+
 
 void write_json_file(const QString& path, const QJsonObject& object) {
     QFile file(path);
@@ -380,6 +389,29 @@ MainWindow::MainWindow() {
     bindActiveWorkflow();
 
     scene_->model_changed = [this] { markWorkflowChanged(); };
+    scene_->before_nodes_removed = [this](const std::vector<int>& nodes) {
+        std::vector<int> sources;
+        for (int id : nodes)
+            if (graph().node(id).kind == NodeKind::DatasetInput) sources.push_back(id);
+        if (sources.empty()) return true;
+        if (!confirmDatasetChange(sources)) return false;
+        try {
+            project_.clear_dataset_dependents(sources);
+            return true;
+        } catch (const std::exception& error) {
+            QMessageBox::warning(this, tr("Cannot delete Dataset"), QString::fromUtf8(error.what()));
+            refreshProjectUi();
+            return false;
+        }
+    };
+    scene_->nodes_removed = [this] {
+        try {
+            if (project_.has_storage()) project_.save_project();
+        } catch (const std::exception& error) {
+            QMessageBox::warning(this, tr("Cannot save Workflow"), QString::fromUtf8(error.what()));
+        }
+        refreshProjectUi();
+    };
     scene_->position_changed = [this] {
         project_.mark_active_dirty();
         refreshProjectUi();
@@ -400,12 +432,12 @@ MainWindow::MainWindow() {
     };
     connect(scene_, &QGraphicsScene::selectionChanged, this, [this] { showProperties(); });
     training_job_.progress = [this](const jocelin::train::TrainingProgress& progress) {
-        if (auto* model = project_.find_model(active_training_model_id_)) {
+        if (auto* model = TaskWorkspaceService(graph(), active_training_node_id_).find_model(active_training_model_id_)) {
             model->completed_epochs = progress.completed_epochs;
             model->training_loss = progress.loss;
             model->metric_name = progress.validation_metric_name;
             model->metric = progress.validation_metric;
-            project_.mark_models_dirty();
+            project_.mark_active_dirty();
         }
         if (active_training_node_id_ != 0 &&
             graph().nodes().count(active_training_node_id_) != 0)
@@ -425,7 +457,7 @@ MainWindow::MainWindow() {
     };
     training_job_.completed = [this](const jocelin::training::TrainingResult& result, const QString& error) {
         setEditingEnabled(true);
-        auto* model = project_.find_model(active_training_model_id_);
+        auto* model = TaskWorkspaceService(graph(), active_training_node_id_).find_model(active_training_model_id_);
         if (model) {
             model->completed_epochs = result.completed_epochs;
             model->best_epoch = result.best_epoch;
@@ -478,7 +510,7 @@ MainWindow::MainWindow() {
                  model->training_status == jocelin::model::ModelTrainingStatus::Completed) &&
                 !jocelin::model::find_training_weight(*model))
                 model->training_status = jocelin::model::ModelTrainingStatus::Failed;
-            project_.mark_models_dirty();
+            project_.mark_active_dirty();
         }
         node_workspace_->set_runtime_busy(false);
         if (active_training_node_id_ != 0 &&
@@ -591,8 +623,6 @@ MainWindow::MainWindow() {
             .arg(display_name));
     };
     inference_job_.completed = [this](const InferenceOutcome& outcome) {
-        setEditingEnabled(true);
-        node_workspace_->set_runtime_busy(false);
         if (outcome.fallback.occurred) {
             const QString message = tr(
                 "Inference route fallback: requested %1 on %2, effective %3 on %4. %5")
@@ -610,87 +640,34 @@ MainWindow::MainWindow() {
             warning->setAttribute(Qt::WA_DeleteOnClose);
             warning->open();
         }
-        if (active_inference_node_id_ != 0 &&
-            graph().nodes().count(active_inference_node_id_) != 0) {
-            TaskWorkspaceService service(graph(), active_inference_node_id_);
-            service.record_inference_result(
-                outcome.report,
-                active_inference_model_id_.toStdString(),
-                active_inference_weight_id_.toStdString(),
-                active_inference_weight_format_,
-                active_inference_output_.toStdString(),
-                outcome.error.toStdString());
-            node_workspace_->finish_inference(
-                active_inference_node_id_, outcome.error);
-            project_.mark_active_dirty();
-        }
-        if (outcome.error.isEmpty()) {
-            if (!active_inference_output_.isEmpty()) {
-                const auto metrics_json = [](bool available, double precision, double recall, double f1) {
-                    return QJsonObject{
-                        {"available", available},
-                        {"precision", precision},
-                        {"recall", recall},
-                        {"f1", f1}};
-                };
-                QJsonArray samples;
-                QJsonObject task_metrics = metrics_json(false, 0.0, 0.0, 0.0);
-                if (const auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&outcome.report)) {
-                    task_metrics = metrics_json(
-                        cls->metrics.available, cls->metrics.precision,
-                        cls->metrics.recall, cls->metrics.f1);
-                    if (cls->metrics.available) task_metrics.insert("accuracy", cls->metrics.accuracy);
-                    for (const auto& record : cls->samples) {
-                        QJsonArray probabilities;
-                        for (double value : record.probabilities) probabilities.append(value);
-                        samples.append(QJsonObject{
-                            {"image_path", QString::fromStdString(record.image_path)},
-                            {"result_name", QString::fromStdString(record.result_name)},
-                            {"predicted_class", record.predicted_class},
-                            {"confidence", record.confidence},
-                            {"confidence_threshold", record.confidence_threshold},
-                            {"confidence_pass", record.confidence_pass},
-                            {"interest", record.interest},
-                            {"probabilities", probabilities},
-                            {"heatmap_path", QString::fromStdString(record.heatmap_path)},
-                            {"metadata_path", QString::fromStdString(record.metadata_path)}});
-                    }
-                } else {
-                    const auto& sg = std::get<jocelin::result::sg::SgInferenceResult>(outcome.report);
-                    for (const auto& record : sg.samples) {
-                        auto sample_metrics = metrics_json(
-                            record.metrics.available, record.metrics.precision,
-                            record.metrics.recall, record.metrics.f1);
-                        if (record.metrics.available) sample_metrics.insert("mean_iou", record.metrics.mean_iou);
-                        samples.append(QJsonObject{
-                            {"image_path", QString::fromStdString(record.image_path)},
-                            {"result_name", QString::fromStdString(record.result_name)},
-                            {"mean_confidence", record.mean_confidence},
-                            {"predicted_area", static_cast<double>(record.predicted_area)},
-                            {"metrics", sample_metrics},
-                            {"mask_path", QString::fromStdString(record.mask_path)},
-                            {"visualization_path", QString::fromStdString(record.visualization_path)},
-                            {"metadata_path", QString::fromStdString(record.metadata_path)}});
-                    }
-                }
-                write_json_file(QDir(active_inference_output_).filePath("result.json"), {
-                    {"format", "deep_learning_inference_result"},
-                    {"model_id", active_inference_model_id_},
-                    {"weight_id", active_inference_weight_id_},
-                    {"weight_format", QString::fromStdString(
-                        jocelin::config::to_string(active_inference_weight_format_))},
-                    {"image_count", active_inference_image_count_},
-                    {"metrics", task_metrics},
-                    {"samples", samples},
-                    {"completed_at", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-                    {"status", "completed"}
-                });
+        QString error = outcome.error;
+        if (error.isEmpty()) {
+            try {
+                project_.commit_inference_result(active_inference_node_id_, active_inference_model_id_,
+                    active_inference_weight_id_, outcome.report, active_inference_staging_);
+            } catch (const std::exception& failure) {
+                error = QString::fromUtf8(failure.what());
             }
+        }
+        if (!error.isEmpty() && graph().nodes().count(active_inference_node_id_)) {
+            TaskWorkspaceService(graph(), active_inference_node_id_).task().runtime.inference_status = active_inference_previous_status_;
+            project_.active_workflow().dirty = false;
+        }
+        try {
+            project_.discard_inference_directory(active_inference_node_id_, active_inference_model_id_,
+                active_inference_weight_id_, active_inference_staging_);
+        } catch (const std::exception& failure) {
+            log_->appendPlainText(QString::fromUtf8(failure.what()));
+        }
+        node_workspace_->finish_inference(active_inference_node_id_, error);
+        setEditingEnabled(true);
+        node_workspace_->set_runtime_busy(false);
+        if (error.isEmpty()) {
             result_->setPlainText(outcome.summary); output_tabs_->setCurrentWidget(result_);
             statusBar()->showMessage(tr("Inference completed"));
         }
         else {
-            log_->appendPlainText(tr("Inference failed: %1").arg(outcome.error));
+            log_->appendPlainText(tr("Inference failed: %1").arg(error));
             setRuntimeStatus(tr("Error"), "error");
             output_tabs_->setCurrentWidget(log_);
             output_dock_->show();
@@ -698,8 +675,8 @@ MainWindow::MainWindow() {
         active_inference_node_id_ = 0;
         active_inference_model_id_.clear();
         active_inference_weight_id_.clear();
-        active_inference_output_.clear();
-        active_inference_image_count_ = 0;
+        active_inference_staging_.clear();
+        active_inference_previous_status_.clear();
         refreshValidation();
         refreshProjectUi();
     };
@@ -994,11 +971,14 @@ void MainWindow::buildUi() {
     };
     node_workspace_->back_requested = [this] { showWorkflowWorkspace(); };
     node_workspace_->changed = [this] { markWorkflowChanged(); };
+    node_workspace_->dataset_replace_requested = [this](int source, DatasetConfig dataset, int owner, const TaskDatasetBinding* imported) {
+        return replaceDataset(source, std::move(dataset), owner, imported);
+    };
     node_workspace_->training_launch_requested =
-        [this](int id, const TrainingLaunchRequest& launch) {
-            startTraining(id, launch);
+        [this](int node_id, const TrainingLaunchRequest& launch) {
+            startTraining(node_id, launch);
         };
-    node_workspace_->import_model_requested = [this](int task_node_id) {
+    node_workspace_->import_model_requested = [this](int node_id) {
         if (!project_.has_storage()) {
             QMessageBox::information(
                 this, tr("Save Project first"),
@@ -1109,7 +1089,7 @@ void MainWindow::buildUi() {
                 });
             if (libtorch == import_weights.end())
                 throw std::runtime_error("import currently requires a LibTorch weight branch");
-            TaskWorkspaceService task_service(graph(), task_node_id);
+            TaskWorkspaceService task_service(graph(), node_id);
             const auto& task = task_service.task();
             jocelin::config::AiConfig config;
             config.tool_type = jocelin::config::tool_type_from_string(task.task);
@@ -1124,13 +1104,21 @@ void MainWindow::buildUi() {
                 classes.push_back({value.value("id").toString().toStdString(),
                     value.value("name").toString().toStdString(), value.value("mask_value").toInt()});
             }
-            if (classes.empty())
-                for (const auto& value : task_service.binding().classes)
-                    classes.push_back({value.id, value.name, value.mask_value});
-            config.num_classes = 1;
-            for (const auto& value : classes)
-                config.num_classes = std::max(config.num_classes,
-                    value.mask_value + (config.tool_type == jocelin::config::ToolType::Sg ? 1 : 0));
+            if (classes.empty()) {
+                if (config.tool_type == jocelin::config::ToolType::Cls) {
+                    for (const auto* value : classification_classes(task_service.binding().classes))
+                        classes.push_back({value->id, value->name, 0});
+                } else {
+                    for (const auto& value : task_service.binding().classes)
+                        classes.push_back({value.id, value.name, value.mask_value});
+                }
+            }
+            config.num_classes = static_cast<int>(classes.size());
+            if (config.tool_type == jocelin::config::ToolType::Sg) {
+                config.num_classes = 1;
+                for (const auto& value : classes)
+                    config.num_classes = std::max(config.num_classes, value.mask_value + 1);
+            }
             std::optional<jocelin::checkpoint::CheckpointMetadata> metadata;
             try {
                 metadata = jocelin::checkpoint::inspect_checkpoint(libtorch->source_path.toStdString());
@@ -1206,8 +1194,8 @@ void MainWindow::buildUi() {
             if (!supports_model_spec(imported_task, config.model_index, jocelin::config::to_string(config.model_scale)))
                 throw std::runtime_error("imported model spec is not registered for this task");
             const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmsszzz");
-            const QString asset_directory = QDir(project_.metadata().root_directory)
-                .filePath("models/imported/" + stamp);
+            const QString asset_directory = QDir(project_.node_models_directory(node_id))
+                .filePath("imported/" + stamp);
             if (!QDir().mkpath(asset_directory))
                 throw std::runtime_error("cannot create imported model directory");
 
@@ -1230,8 +1218,10 @@ void MainWindow::buildUi() {
             const int last_class = config.tool_type == jocelin::config::ToolType::Cls
                 ? config.num_classes : config.num_classes - 1;
             for (int label = 1; label <= last_class; ++label) {
-                const auto found = std::find_if(classes.begin(), classes.end(),
-                    [label](const auto& value) { return value.mask_value == label; });
+                const auto found = config.tool_type == jocelin::config::ToolType::Cls
+                    ? (label <= static_cast<int>(classes.size()) ? classes.begin() + label - 1 : classes.end())
+                    : std::find_if(classes.begin(), classes.end(),
+                        [label](const auto& value) { return value.mask_value == label; });
                 model.classes.push_back(found != classes.end() ? *found : jocelin::model::ModelClass{
                     "imported_" + std::to_string(label), "Class " + std::to_string(label), label});
             }
@@ -1276,12 +1266,13 @@ void MainWindow::buildUi() {
                 imported.target_architecture = weight.target_architecture;
                 model.weights.push_back(std::move(imported));
             }
-            const auto added = project_.add_model(std::move(model));
+            const auto added = task_service.add_model(std::move(model));
             import_added = true;
+            project_.mark_active_dirty();
             project_.save_project();
             node_workspace_->refresh_models();
             statusBar()->showMessage(
-                tr("%1 imported into Project Model List").arg(QString::fromStdString(added.name)), 5000);
+                tr("%1 imported into Task Model List").arg(QString::fromStdString(added.name)), 5000);
         } catch (const std::exception& error) {
             if (!import_added && !imported_asset_directory.isEmpty())
                 QDir(imported_asset_directory).removeRecursively();
@@ -1289,11 +1280,12 @@ void MainWindow::buildUi() {
                 this, tr("Cannot import model"), QString::fromUtf8(error.what()));
         }
     };
-    node_workspace_->export_model_requested = [this](int, const QString& model_id) {
-        const auto* model = project_.find_model(model_id);
+    node_workspace_->export_model_requested = [this](int node_id, const QString& model_id) {
+        TaskWorkspaceService service(graph(), node_id);
+        const auto* model = service.find_model(model_id);
         if (!model) return;
         const QString parent = QFileDialog::getExistingDirectory(
-            this, tr("Export Project model"), project_.metadata().root_directory);
+            this, tr("Export Task model"), project_.root_directory());
         if (parent.isEmpty()) return;
         try {
             const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss");
@@ -1359,15 +1351,16 @@ void MainWindow::buildUi() {
                 this, tr("Cannot export model"), QString::fromUtf8(error.what()));
         }
     };
-    node_workspace_->delete_models_requested = [this](int, const QStringList& model_ids) {
+    node_workspace_->delete_models_requested = [this](int node_id, const QStringList& model_ids) {
         if (!project_.has_storage() || model_ids.isEmpty()) return;
 
-        const QString models_root = QDir(project_.metadata().root_directory).filePath("models");
+        TaskWorkspaceService service(graph(), node_id, QFileInfo(project_.node_models_directory(node_id)).absolutePath());
+        const QString models_root = project_.node_models_directory(node_id);
         QStringList valid_model_ids;
         QStringList model_names;
         QStringList model_directories;
         for (const auto& model_id : model_ids) {
-            const auto* model = project_.find_model(model_id);
+            const auto* model = service.find_model(model_id);
             if (!model) continue;
 
             const QString model_directory = QString::fromStdString(model->asset_directory);
@@ -1375,7 +1368,7 @@ void MainWindow::buildUi() {
             if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
                 QMessageBox::warning(
                     this, tr("Cannot delete models"),
-                    tr("A selected model is not stored inside this Project's models directory:\n%1")
+                    tr("A selected model is not stored inside this TaskNode's models directory:\n%1")
                         .arg(model_directory));
                 return;
             }
@@ -1401,8 +1394,9 @@ void MainWindow::buildUi() {
                 return;
             }
         }
-        for (const auto& model_id : valid_model_ids) project_.remove_model(model_id);
         try {
+            for (const auto& model_id : valid_model_ids) service.remove_model(model_id);
+            project_.mark_active_dirty();
             project_.save_project();
             node_workspace_->refresh_models();
             statusBar()->showMessage(
@@ -1413,19 +1407,21 @@ void MainWindow::buildUi() {
                 this, tr("Cannot save model deletion"), QString::fromUtf8(error.what()));
         }
     };
-    node_workspace_->clear_models_requested = [this](int) {
-        if (!project_.has_storage() || project_.models().empty()) return;
+    node_workspace_->clear_models_requested = [this](int node_id) {
+        if (!project_.has_storage()) return;
+        TaskWorkspaceService service(graph(), node_id, QFileInfo(project_.node_models_directory(node_id)).absolutePath());
+        if (service.models().empty()) return;
 
-        const QString models_root = QDir(project_.metadata().root_directory).filePath("models");
+        const QString models_root = project_.node_models_directory(node_id);
         QStringList model_directories;
-        model_directories.reserve(static_cast<int>(project_.models().size()));
-        for (const auto& model : project_.models()) {
+        model_directories.reserve(static_cast<int>(service.models().size()));
+        for (const auto& model : service.models()) {
             const QString model_directory = QString::fromStdString(model.asset_directory);
             const QString relative = QDir(models_root).relativeFilePath(model_directory);
             if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
                 QMessageBox::warning(
                     this, tr("Cannot clear models"),
-                    tr("A model is not stored inside this Project's models directory:\n%1")
+                    tr("A model is not stored inside this TaskNode's models directory:\n%1")
                         .arg(model_directory));
                 return;
             }
@@ -1433,9 +1429,9 @@ void MainWindow::buildUi() {
         }
 
         if (QMessageBox::question(
-                this, tr("Clear Project models"),
-                tr("Permanently delete all %1 Project models?\n\nAll model asset directories will be deleted and cannot be recovered.")
-                    .arg(project_.models().size()),
+                this, tr("Clear Task models"),
+                tr("Permanently delete all %1 Task models?\n\nAll model asset directories will be deleted and cannot be recovered.")
+                    .arg(service.models().size()),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
             return;
 
@@ -1447,11 +1443,12 @@ void MainWindow::buildUi() {
                 return;
             }
         }
-        project_.clear_models();
         try {
+            service.clear_models();
+            project_.mark_active_dirty();
             project_.save_project();
             node_workspace_->refresh_models();
-            statusBar()->showMessage(tr("Project ModelList cleared"), 5000);
+            statusBar()->showMessage(tr("Task ModelList cleared"), 5000);
         } catch (const std::exception& error) {
             node_workspace_->refresh_models();
             QMessageBox::warning(
@@ -1459,8 +1456,8 @@ void MainWindow::buildUi() {
         }
     };
     node_workspace_->infer_requested = [this](
-        int id, const InferenceLaunchRequest& request) {
-        startInference(id, request);
+        int node_id, const InferenceLaunchRequest& request) {
+        startInference(node_id, request);
     };
     node_workspace_->stop_requested = [this] { training_job_.request_stop(); };
     node_workspace_->pause_requested = [this] { training_job_.request_pause(); };
@@ -1468,7 +1465,7 @@ void MainWindow::buildUi() {
         output_dock_->show();
         if (!run_id.isEmpty() && project_.has_storage()) {
             const QString path =
-                QDir(project_.metadata().root_directory)
+                QDir(project_.root_directory())
                     .filePath("runs/" + run_id + "/training.log");
             QFile file(path);
             if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -1487,7 +1484,7 @@ void MainWindow::buildUi() {
         }
         output_dock_->raise();
     };
-    node_workspace_->node_requested = [this](int id) { openNodeWorkspace(id); };
+    node_workspace_->node_requested = [this](int node_id) { openNodeWorkspace(node_id); };
     node_workspace_->status = [this](const QString& message) { statusBar()->showMessage(message, 6000); };
 
     project_dock_ = new QDockWidget(tr("Project"), this);
@@ -1753,10 +1750,10 @@ void MainWindow::showWorkflowWorkspace() {
     });
 }
 
-QString MainWindow::connectedDatasetDirectory(int task_node_id) {
+QString MainWindow::connectedDatasetDirectory(int node_id) {
     for (const auto& edge : graph().connections()) {
-        if (edge.to_node != task_node_id || edge.to_port != 0) continue;
-        const auto& source = graph().node(edge.from_node);
+        if (edge.to_node_id != node_id || edge.to_port != 0) continue;
+        const auto& source = graph().node(edge.from_node_id);
         if (source.kind != NodeKind::DatasetInput) continue;
         return QString::fromStdString(std::get<DatasetConfig>(source.config).directory);
     }
@@ -1767,17 +1764,7 @@ void MainWindow::openNodeWorkspace(int node_id) {
     if (graph().nodes().count(node_id) == 0) return;
     const QString dataset = graph().node(node_id).kind == NodeKind::TaskConfig
         ? connectedDatasetDirectory(node_id) : QString{};
-    const QString annotation_directory =
-        graph().node(node_id).kind == NodeKind::TaskConfig &&
-        project_.has_storage()
-        ? QDir(project_.metadata().root_directory).filePath(
-              QStringLiteral("annotations/%1/task_%2/masks")
-                  .arg(project_.active_workflow().id)
-                  .arg(node_id))
-        : QString{};
-    node_workspace_->edit_node(
-        &graph(), node_id, dataset, &project_.models(),
-        annotation_directory);
+    node_workspace_->edit_node(&graph(), node_id, dataset);
     setMinimumSize(760, 480);
     workspace_stack_->setCurrentWidget(node_workspace_);
     toolbar_->show();
@@ -1786,14 +1773,14 @@ void MainWindow::openNodeWorkspace(int node_id) {
 }
 
 void MainWindow::startTraining(
-    int task_node_id, const TrainingLaunchRequest& launch)
+    int node_id, const TrainingLaunchRequest& launch)
 {
     bool created_model_row = false;
     bool resumed_model_row = false;
     try {
-        if (graph().nodes().count(task_node_id) == 0 || graph().node(task_node_id).kind != NodeKind::TaskConfig)
+        if (graph().nodes().count(node_id) == 0 || graph().node(node_id).kind != NodeKind::TaskConfig)
             throw std::runtime_error("training must start from a Task Config node");
-        TaskWorkspaceService service(graph(), task_node_id);
+        TaskWorkspaceService service(graph(), node_id);
         service.synchronize();
         auto& task = service.task();
         const auto tool_type = jocelin::config::tool_type_from_string(task.task);
@@ -1807,19 +1794,19 @@ void MainWindow::startTraining(
         const ProjectModel* resume_model = nullptr;
         const jocelin::model::ModelWeight* parent_training_weight = nullptr;
         if (launch.mode == "inherit" || launch.mode == "transfer") {
-            parent = project_.find_model(launch.model_id);
+            parent = service.find_model(launch.model_id);
             if (!parent)
                 throw std::runtime_error(
-                    "selected Project model no longer exists");
+                    "selected Task model no longer exists");
             if (parent->training_status != jocelin::model::ModelTrainingStatus::Completed &&
                 parent->training_status != jocelin::model::ModelTrainingStatus::Imported)
                 throw std::runtime_error(
-                    "selected Project model training is not complete");
+                    "selected Task model training is not complete");
             parent_training_weight = jocelin::model::find_training_weight(*parent);
             if (!parent_training_weight ||
                 !QFileInfo::exists(QString::fromStdString(parent_training_weight->path)))
                 throw std::runtime_error(
-                    "selected Project model has no available LibTorch training weight");
+                    "selected Task model has no available LibTorch training weight");
             if (launch.mode == "inherit") {
                 if (parent->task != tool_type ||
                     parent->model_index != task.model_index ||
@@ -1837,7 +1824,7 @@ void MainWindow::startTraining(
         }
         jocelin::checkpoint::CheckpointMetadata resume_metadata;
         if (launch.mode == "resume") {
-            resume_model = project_.find_model(launch.model_id);
+            resume_model = service.find_model(launch.model_id);
             if (!resume_model ||
                 resume_model->training_status != jocelin::model::ModelTrainingStatus::Paused)
                 throw std::runtime_error("selected ModelList row is not paused");
@@ -1866,14 +1853,12 @@ void MainWindow::startTraining(
                 throw std::runtime_error(
                     "save the project or configure a model output directory before training");
             task.training.output_directory =
-                QDir(project_.metadata().root_directory)
-                    .filePath("models")
-                    .toStdString();
+                project_.node_models_directory(node_id).toStdString();
         }
         if (!QDir().mkpath(QString::fromStdString(task.training.output_directory)))
             throw std::runtime_error("cannot create the training output directory");
 
-        const int run_number = project_.allocate_training_run_number();
+        const int run_number = project_.training_runs().allocate();
         const QString run_id =
             QString("train-%1").arg(run_number, 4, 10, QChar('0'));
         const QString run_directory_name =
@@ -1903,7 +1888,8 @@ void MainWindow::startTraining(
         else if (parent_training_weight)
             weight_source.path = parent_training_weight->path;
         auto request = service.build_training_request(
-            device.device, std::move(weight_source));
+            device.device, std::move(weight_source),
+            launch.mode == "resume" ? resume_model : nullptr);
         if (launch.mode == "resume" &&
             resume_metadata.num_classes !=
                 static_cast<int>(request.class_names.size()))
@@ -1918,9 +1904,9 @@ void MainWindow::startTraining(
             : QString{};
 
         if (launch.mode == "resume") {
-            auto* row = project_.find_model(launch.model_id);
+            auto* row = service.find_model(launch.model_id);
             row->training_status = jocelin::model::ModelTrainingStatus::Running;
-            project_.mark_models_dirty();
+            project_.mark_active_dirty();
             active_training_model_id_ = launch.model_id;
             resumed_model_row = true;
         } else {
@@ -1931,15 +1917,19 @@ void MainWindow::startTraining(
             model.task = tool_type;
             model.model_index = task.model_index;
             model.model_scale = model_scale;
-            for (const auto& value : service.binding().classes) {
-                if (!value.active) continue;
-                model.classes.push_back({value.id, value.name, value.mask_value});
+            if (tool_type == jocelin::config::ToolType::Cls) {
+                for (const auto* value : classification_classes(service.binding().classes))
+                    model.classes.push_back({value->id, value->name, 0});
+            } else {
+                for (const auto& value : service.binding().classes) {
+                    if (!value.active) continue;
+                    model.classes.push_back({value.id, value.name, value.mask_value});
+                }
+                std::sort(model.classes.begin(), model.classes.end(),
+                    [](const auto& left, const auto& right) {
+                        return left.mask_value < right.mask_value;
+                    });
             }
-            std::sort(
-                model.classes.begin(), model.classes.end(),
-                [](const auto& left, const auto& right) {
-                    return left.mask_value < right.mask_value;
-                });
             model.image_width = task.training.image_width;
             model.image_height = task.training.image_height;
             model.asset_directory = run_directory.toStdString();
@@ -1950,12 +1940,12 @@ void MainWindow::startTraining(
                     : jocelin::model::ModelCreationMode::NewTraining;
             model.training_status = jocelin::model::ModelTrainingStatus::Running;
             model.parent_model_id = parent ? parent->id : std::string{};
-            const auto added = project_.add_model(std::move(model));
+            const auto added = service.add_model(std::move(model));
             active_training_model_id_ = QString::fromStdString(added.id);
             created_model_row = true;
         }
         service.record_training_started(active_training_model_id_.toStdString());
-        active_training_node_id_ = task_node_id;
+        active_training_node_id_ = node_id;
         active_training_source_mode_ = launch.mode;
         active_training_parent_model_id_ = parent_model_id;
         active_training_source_weight_id_ = parent_weight_id;
@@ -1970,7 +1960,7 @@ void MainWindow::startTraining(
         if (project_.has_storage()) project_.save_project();
         setEditingEnabled(false);
         node_workspace_->setEnabled(true);
-        node_workspace_->training_started(task_node_id);
+        node_workspace_->training_started(node_id);
         node_workspace_->set_runtime_busy(true);
         const QString start_message =
             tr("Training %1 started on %2 路 source %3")
@@ -1983,16 +1973,16 @@ void MainWindow::startTraining(
     } catch (const std::exception& error) {
         if (!training_job_.is_running()) {
             if (created_model_row && !active_training_model_id_.isEmpty()) {
-                project_.remove_model(active_training_model_id_);
-                if (graph().nodes().count(task_node_id) != 0) {
-                    TaskWorkspaceService service(graph(), task_node_id);
+                TaskWorkspaceService(graph(), node_id).remove_model(active_training_model_id_);
+                if (graph().nodes().count(node_id) != 0) {
+                    TaskWorkspaceService service(graph(), node_id);
                     service.task().runtime.training_model_id.clear();
                     project_.mark_active_dirty();
                 }
             } else if (resumed_model_row) {
-                if (auto* row = project_.find_model(active_training_model_id_)) {
+                if (auto* row = TaskWorkspaceService(graph(), node_id).find_model(active_training_model_id_)) {
                     row->training_status = jocelin::model::ModelTrainingStatus::Paused;
-                    project_.mark_models_dirty();
+                    project_.mark_active_dirty();
                 }
             }
             active_training_node_id_ = 0;
@@ -2013,58 +2003,49 @@ void MainWindow::startTraining(
 }
 
 void MainWindow::startInference(
-    int task_node_id,
+    int node_id,
     const InferenceLaunchRequest& launch)
 {
     try {
-        if (graph().nodes().count(task_node_id) == 0 || graph().node(task_node_id).kind != NodeKind::TaskConfig)
+        if (graph().nodes().count(node_id) == 0 || graph().node(node_id).kind != NodeKind::TaskConfig)
             throw std::runtime_error("inference must start from a Task Config node");
         if (launch.model_id.isEmpty())
-            throw std::runtime_error("select a Project model before starting inference");
+            throw std::runtime_error("select a Task model before starting inference");
         if (launch.weight_id.isEmpty())
             throw std::runtime_error("select an inference weight before starting inference");
 
-        TaskWorkspaceService service(graph(), task_node_id);
+        TaskWorkspaceService service(graph(), node_id);
         service.synchronize();
+        if (!project_.has_storage()) throw std::runtime_error("save the project before inference");
+        project_.save_project();
         auto& task = service.task();
         const auto tool_type = jocelin::config::tool_type_from_string(task.task);
         const QString model_id = launch.model_id;
-        const auto* model = project_.find_model(model_id);
+        const auto* model = service.find_model(model_id);
         if (!model)
-            throw std::runtime_error("selected Project model no longer exists");
+            throw std::runtime_error("selected Task model no longer exists");
         if (model->task != tool_type)
-            throw std::runtime_error("selected Project model belongs to a different task repository");
+            throw std::runtime_error("selected Task model belongs to a different task repository");
 
         const auto* inference_weight = jocelin::model::find_weight(
             *model, launch.weight_id.toStdString());
         if (!inference_weight)
             throw std::runtime_error("selected inference weight no longer exists");
-        if (!project_.has_storage())
-            throw std::runtime_error("save the project before inference");
-        const QString weight_format = QString::fromStdString(
-            jocelin::config::to_string(inference_weight->format));
-        const QString output = QDir(project_.metadata().root_directory).filePath(
-            "results/" + model_id + "/" + weight_format);
-        QDir output_directory(output);
-        if (output_directory.exists() && !output_directory.removeRecursively())
-            throw std::runtime_error("cannot replace the existing inference result directory");
-        if (!QDir().mkpath(output))
-            throw std::runtime_error("cannot create the inference result directory");
-        task.inference_output_directory = output.toStdString();
-        task.device = launch.device;
+        active_inference_previous_status_ = task.runtime.inference_status;
+        active_inference_node_id_ = node_id;
+        active_inference_model_id_ = model_id;
+        active_inference_weight_id_ = launch.weight_id;
+        active_inference_staging_ = project_.prepare_inference_directory(node_id, model_id, launch.weight_id);
         auto request = service.build_inference_request(
-            launch.device, *model, *inference_weight);
+            launch.device, *model, *inference_weight, active_inference_staging_.toStdString());
         service.record_inference_started();
         setEditingEnabled(false);
         node_workspace_->setEnabled(true);
-        active_inference_node_id_ = task_node_id;
+        active_inference_node_id_ = node_id;
         active_inference_model_id_ = model_id;
         active_inference_weight_id_ = QString::fromStdString(inference_weight->id);
-        active_inference_weight_format_ = inference_weight->format;
-        active_inference_output_ = output;
-        active_inference_image_count_ = static_cast<int>(request.image_paths.size());
         project_.mark_active_dirty();
-        node_workspace_->inference_started(task_node_id);
+        node_workspace_->inference_started(node_id);
         node_workspace_->set_runtime_busy(true);
         log_->appendPlainText(
             tr("Inference started with %1 on %2")
@@ -2073,11 +2054,20 @@ void MainWindow::startInference(
         inference_job_.start(request);
     } catch (const std::exception& error) {
         if (!inference_job_.is_running()) {
+            if (!active_inference_staging_.isEmpty()) {
+                try {
+                    project_.discard_inference_directory(node_id, active_inference_model_id_, active_inference_weight_id_, active_inference_staging_);
+                } catch (const std::exception& cleanup_error) {
+                    log_->appendPlainText(QString::fromUtf8(cleanup_error.what()));
+                }
+                TaskWorkspaceService(graph(), node_id).task().runtime.inference_status = active_inference_previous_status_;
+                project_.active_workflow().dirty = false;
+            }
             active_inference_node_id_ = 0;
             active_inference_model_id_.clear();
-        active_inference_weight_id_.clear();
-            active_inference_output_.clear();
-            active_inference_image_count_ = 0;
+            active_inference_weight_id_.clear();
+            active_inference_staging_.clear();
+            active_inference_previous_status_.clear();
             setEditingEnabled(true);
             node_workspace_->set_runtime_busy(false);
         }
@@ -2091,7 +2081,7 @@ void MainWindow::refreshProjectUi() {
     const QSignalBlocker workflow_block(workflow_tabs_);
     project_name_->setText(project_.metadata().name);
     project_description_->setText(project_.metadata().description);
-    const QString root = project_.has_storage() ? project_.metadata().root_directory : tr("Not saved");
+    const QString root = project_.has_storage() ? project_.root_directory() : tr("Not saved");
     project_root_->setText(QFontMetrics(project_root_->font()).elidedText(root, Qt::ElideMiddle, 190));
     project_root_->setToolTip(root);
     while (workflow_tabs_->count() > 0) workflow_tabs_->removeTab(0);
@@ -2163,7 +2153,7 @@ bool MainWindow::confirmProjectTransition() {
 }
 
 bool MainWindow::saveProject() {
-    QString root = project_.metadata().root_directory;
+    QString root = project_.root_directory();
     if (root.isEmpty()) return saveProjectAs();
     try {
         project_.save_project(root);
@@ -2180,7 +2170,7 @@ bool MainWindow::saveProject() {
 
 bool MainWindow::saveProjectAs() {
     SaveProjectAsDialog dialog(
-        project_.metadata().name, project_.metadata().root_directory, this);
+        project_.metadata().name, project_.root_directory(), this);
     if (dialog.exec() != QDialog::Accepted) return false;
     const size_t external_count = project_.external_reference_count();
     if (external_count > 0) {
@@ -2221,11 +2211,11 @@ void MainWindow::newProjectFromTemplate(const QString& template_task) {
         if (!desc.isEmpty()) project_.set_project_description(desc);
         if (!template_task.isEmpty()) {
             auto& template_graph = graph();
-            const int dataset = template_graph.add_node(NodeKind::DatasetInput);
-            const int task = template_graph.add_task_node({template_task.toStdString()});
-            template_graph.connect(dataset, 0, task, 0);
-            positions()[dataset] = QPointF(-300, -40);
-            positions()[task] = QPointF(80, -40);
+            const int source_node_id = template_graph.add_node(NodeKind::DatasetInput);
+            const int node_id = template_graph.add_task_node({template_task.toStdString()});
+            template_graph.connect(source_node_id, 0, node_id, 0);
+            positions()[source_node_id] = QPointF(-300, -40);
+            positions()[node_id] = QPointF(80, -40);
             project_.mark_active_dirty();
         }
         project_.save_project(location);
@@ -2306,15 +2296,15 @@ void MainWindow::addNode(NodeKind kind) {
     }
     const int kind_index = static_cast<int>(std::count_if(graph().nodes().begin(), graph().nodes().end(),
         [kind](const auto& item) { return item.second.kind == kind; }));
-    const int id = kind == NodeKind::TaskConfig
+    const int node_id = kind == NodeKind::TaskConfig
         ? graph().add_task_node({task_module.toStdString()})
         : graph().add_node(kind);
     const auto& descriptor = node_descriptor(kind);
-    positions()[id] = descriptor.initial_position + QPointF(0, kind_index * descriptor.vertical_step);
+    positions()[node_id] = descriptor.initial_position + QPointF(0, kind_index * descriptor.vertical_step);
     scene_->rebuild();
     QGraphicsItem* added_item = nullptr;
     for (auto* item : scene_->items()) {
-        if (item->data(0).toInt() == id) {
+        if (item->data(0).toInt() == node_id) {
             item->setSelected(true);
             added_item = item;
             break;
@@ -2328,7 +2318,7 @@ void MainWindow::clearWorkflow() {
     if (!graph().nodes().empty() &&
         QMessageBox::question(this, tr("Clear workflow"), tr("Remove all nodes from the active workflow?")) != QMessageBox::Yes) return;
     unbindWorkflowViews();
-    project_.active_workflow().document = WorkflowDocument{};
+    clear_workflow_nodes(project_.active_workflow().document);
     project_.mark_active_dirty();
     bindActiveWorkflow();
 }
@@ -2337,13 +2327,13 @@ void MainWindow::loadExampleWorkflow() {
     if (!graph().nodes().empty() &&
         QMessageBox::question(this, tr("Load example"), tr("Replace the active workflow with the example?")) != QMessageBox::Yes) return;
     unbindWorkflowViews();
-    project_.active_workflow().document = WorkflowDocument{};
+    clear_workflow_nodes(project_.active_workflow().document);
     auto& active_graph = graph();
-    const int dataset = active_graph.add_node(NodeKind::DatasetInput);
-    const int task = active_graph.add_task_node({"cls"});
-    active_graph.connect(dataset, 0, task, 0);
-    positions()[dataset] = QPointF(-300, -40);
-    positions()[task] = QPointF(80, -40);
+    const int source_node_id = active_graph.add_node(NodeKind::DatasetInput);
+    const int node_id = active_graph.add_task_node({"cls"});
+    active_graph.connect(source_node_id, 0, node_id, 0);
+    positions()[source_node_id] = QPointF(-300, -40);
+    positions()[node_id] = QPointF(80, -40);
     project_.mark_active_dirty();
     bindActiveWorkflow();
     statusBar()->showMessage(tr("Example loaded; resource paths remain intentionally unconfigured"));
@@ -2353,10 +2343,67 @@ void MainWindow::deleteSelected() {
     if (!scene_->delete_selected_items()) statusBar()->showMessage(tr("Select a node or connection to delete"), 4000);
 }
 
+bool MainWindow::confirmDatasetChange(const std::vector<int>& sources, bool importing_annotations) {
+    QStringList owners;
+    for (const auto& edge : graph().connections())
+        if (std::find(sources.begin(), sources.end(), edge.from_node_id) != sources.end() &&
+            graph().node(edge.to_node_id).kind == NodeKind::TaskConfig)
+            owners.append("#" + QString::number(edge.to_node_id));
+    const auto detail = owners.empty() ? tr("No Tasks are currently connected.") :
+        tr("Clear Annotation, sample selection/splits, training-mask associations and all Inference results for connected Tasks: %1.")
+            .arg(owners.join(", "));
+    return QMessageBox::question(this, tr("Delete / replace Dataset"),
+        detail + "\n\n" + tr("Task settings, classes, ModelList and weights are retained. Detached Tasks are unaffected.") +
+        (importing_annotations ? "\n\n" + tr("The annotation package explicitly supplies the receiving Task's new classes and annotations.") : QString{}) +
+        "\n\n" + tr("Continue?"), QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+}
+
+bool MainWindow::replaceDataset(int source, DatasetConfig dataset, int annotation_owner, const TaskDatasetBinding* imported) {
+    const auto& current = std::get<DatasetConfig>(graph().node(source).config);
+    const bool same_inventory = current.bucket_capacity == dataset.bucket_capacity &&
+        current.items.size() == dataset.items.size() &&
+        std::equal(current.items.begin(), current.items.end(), dataset.items.begin(), [](const auto& a, const auto& b) {
+            return a.path == b.path && a.sample_id == b.sample_id && a.valid == b.valid;
+        });
+    if (!imported && same_inventory) {
+        std::get<DatasetConfig>(graph().node(source).config) = std::move(dataset);
+        return true;
+    }
+    bool destructive = imported || !current.items.empty();
+    for (const auto& edge : graph().connections())
+        if (edge.from_node_id == source && graph().node(edge.to_node_id).kind == NodeKind::TaskConfig) {
+            const auto& task = std::get<TaskNodeConfig>(graph().node(edge.to_node_id).config);
+            destructive = destructive || !task.dataset_binding.samples.empty() || !task.runtime.results.empty();
+        }
+    if (destructive && !confirmDatasetChange({source}, imported != nullptr)) return false;
+    try {
+        project_.clear_dataset_dependents({source});
+        if (imported) {
+            TaskWorkspaceService(graph(), annotation_owner).replace_bound_dataset(std::move(dataset), *imported);
+        } else {
+            std::get<DatasetConfig>(graph().node(source).config) = std::move(dataset);
+            for (const auto& edge : graph().connections())
+                if (edge.from_node_id == source && graph().node(edge.to_node_id).kind == NodeKind::TaskConfig)
+                    TaskWorkspaceService(graph(), edge.to_node_id).synchronize();
+        }
+        project_.mark_active_dirty();
+        if (project_.has_storage()) project_.save_project();
+        refreshProjectUi();
+        return true;
+    } catch (const std::exception& error) {
+        QMessageBox::warning(this, tr("Cannot replace Dataset"), QString::fromUtf8(error.what()));
+        // Let the requesting page finish its callback before rebuilding it.
+        QTimer::singleShot(0, this, [this, source, annotation_owner] {
+            openNodeWorkspace(annotation_owner ? annotation_owner : source);
+        });
+        return false;
+    }
+}
+
 void MainWindow::showProperties() {
-    const int id = scene_->selected_node_id();
-    if (id != 0 && graph().nodes().count(id) != 0) {
-        property_editor_->edit_node(&graph(), id, [this] { markWorkflowChanged(); });
+    const int node_id = scene_->selected_node_id();
+    if (node_id != 0 && graph().nodes().count(node_id) != 0) {
+        property_editor_->edit_node(&graph(), node_id, [this] { markWorkflowChanged(); });
     } else {
         property_editor_->show_workflow(project_.metadata().name, project_.active_workflow().name,
                                         graph().nodes().size(), graph().connections().size());
@@ -2382,9 +2429,9 @@ void MainWindow::refreshValidation(bool report_to_log) {
 
 void MainWindow::markWorkflowChanged() {
     project_.mark_active_dirty();
-    for (const auto& [id, unused] : graph().nodes()) {
-        graph().set_status(id, NodeStatus::Idle);
-        scene_->refresh_node(id);
+    for (const auto& [node_id, unused] : graph().nodes()) {
+        graph().set_status(node_id, NodeStatus::Idle);
+        scene_->refresh_node(node_id);
     }
     refreshValidation();
     refreshProjectUi();
@@ -2394,6 +2441,7 @@ void MainWindow::markWorkflowChanged() {
 void MainWindow::setEditingEnabled(bool enabled) {
     for (auto* action : editing_actions_) action->setEnabled(enabled);
     project_dock_->setEnabled(enabled);
+    workflow_tabs_->setEnabled(enabled);
     library_dock_->setEnabled(enabled);
     property_dock_->setEnabled(enabled);
     node_workspace_->setEnabled(enabled);

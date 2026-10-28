@@ -1,4 +1,5 @@
 #include "annotation_exchange.h"
+#include "segmentation_annotation_state.h"
 #include "annotation_codec.h"
 
 #include "task_dataset_binding.h"
@@ -393,10 +394,6 @@ AnnotationImportResult import_native(const QString& manifest) {
         const QString mask =
             required_string(
                 value, "mask_path", "Annotation sample");
-        if (!mask.isEmpty())
-            sample.mask_path =
-                QFileInfo(base.absoluteFilePath(mask))
-                    .absoluteFilePath().toStdString();
         sample.class_id =
             required_string(
                 value, "class_id",
@@ -416,9 +413,7 @@ AnnotationImportResult import_native(const QString& manifest) {
                 value, "annotation_state",
                 "Annotation sample").toStdString();
         if (sample.annotation_state != "unannotated" &&
-            sample.annotation_state != "background-only" &&
-            sample.annotation_state != "annotated" &&
-            sample.annotation_state != "needs-review")
+            sample.annotation_state != "annotated")
             throw std::runtime_error(
                 "annotation sample state is invalid");
         for (const auto& issue :
@@ -455,11 +450,14 @@ AnnotationImportResult import_native(const QString& manifest) {
                     "image referenced by annotation bundle does not exist";
             result.dataset.items.push_back(std::move(item));
         }
-        if (!sample.mask_path.empty() &&
-            !QFileInfo(QString::fromStdString(sample.mask_path)).isFile())
-            result.warnings.push_back(
-                "Missing mask for sample " +
-                QString::fromStdString(sample.sample_id));
+        if (!mask.isEmpty()) {
+            const auto requested_state = sample.annotation_state;
+            const QString resource = base.absoluteFilePath(mask);
+            import_segmentation_annotation(result.binding.classes, sample, resource);
+            if (requested_state == "unannotated") sample.annotation_state = "unannotated";
+            if (!QFileInfo(resource).isFile())
+                result.warnings.push_back("Missing mask for sample " + QString::fromStdString(sample.sample_id));
+        }
         result.binding.samples.push_back(std::move(sample));
     }
     if (result.binding.samples.empty())
@@ -522,13 +520,8 @@ AnnotationImportResult import_ilabelled(const QString& label_map_path) {
         sample.split = "unassigned";
         const QString mask =
             masks.filePath(image.completeBaseName() + ".png");
-        if (QFileInfo(mask).isFile()) {
-            sample.mask_path =
-                QFileInfo(mask).absoluteFilePath().toStdString();
-            sample.annotation_state = "annotated";
-        } else {
-            sample.annotation_state = "background-only";
-        }
+        import_segmentation_annotation(result.binding.classes, sample,
+            QFileInfo(mask).isFile() ? mask : QString{});
         result.binding.samples.push_back(std::move(sample));
     }
     if (result.dataset.items.empty())
@@ -579,24 +572,11 @@ QString export_bundle(
                 : QString::fromStdString(sample.sample_id) + ".png";
         const QString mask_name =
             unique_destination(masks, preferred_mask, used_masks);
-        const bool has_mask =
-            !sample.mask_path.empty() &&
-            QFileInfo(QString::fromStdString(sample.mask_path)).isFile();
-        if (has_mask) {
-            copy_file(
-                QString::fromStdString(sample.mask_path),
-                masks.filePath(mask_name));
-        } else if (ilabelled) {
-            const QImage source(
-                QString::fromStdString(sample.image_paths.front()));
-            if (source.isNull())
-                throw std::runtime_error(
-                    "cannot create background-only mask for an unreadable image");
-            QImage background(source.size(), QImage::Format_Grayscale8);
-            background.fill(0);
-            if (!background.save(masks.filePath(mask_name), "PNG"))
-                throw std::runtime_error(
-                    "cannot export background-only mask");
+        const bool has_mask = !sample.regions.empty();
+        if (has_mask || (ilabelled && sample.annotation_state == "annotated")) {
+            const auto mask = segmentation_annotation_image(sample);
+            if (mask.isNull() || !mask.save(masks.filePath(mask_name), "PNG"))
+                throw std::runtime_error("cannot export segmentation target");
         }
         exported_any = true;
 
@@ -666,9 +646,9 @@ AnnotationImportStats AnnotationExchange::import_stats(
     AnnotationImportStats result;
     for (const auto& sample : imported.binding.samples) {
         result.image_count += static_cast<int>(sample.image_paths.size());
-        if (!sample.mask_path.empty()) ++result.mask_count;
-        if (sample.annotation_state == "background-only")
-            ++result.background_only_count;
+        if (!sample.regions.empty()) ++result.mask_count;
+        if (sample.annotation_state == "unannotated")
+            ++result.unannotated_count;
         if (!sample.quality_issues.empty()) ++result.review_count;
     }
     if (result.image_count == 0)

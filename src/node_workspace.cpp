@@ -77,15 +77,11 @@ NodeWorkspace::NodeWorkspace(QWidget* parent) : QWidget(parent) {
 void NodeWorkspace::edit_node(
     WorkflowGraph* graph,
     int node_id,
-    const QString& dataset_directory,
-    const std::vector<ProjectModel>* models,
-    const QString& annotation_directory)
+    const QString& dataset_directory)
 {
     graph_ = graph;
     node_id_ = node_id;
     dataset_directory_ = dataset_directory;
-    annotation_directory_ = annotation_directory;
-    project_models_ = models;
     rebuild();
 }
 
@@ -93,8 +89,6 @@ void NodeWorkspace::clear_node() {
     graph_ = nullptr;
     node_id_ = 0;
     dataset_directory_.clear();
-    annotation_directory_.clear();
-    project_models_ = nullptr;
     rebuild();
 }
 
@@ -243,7 +237,7 @@ QWidget* NodeWorkspace::dataset_page() {
     layout->addWidget(group);
 
     auto* next = new QLabel(
-        tr("Connect this Dataset to one Task, then open the Task to inspect "
+        tr("Connect this Dataset to one or more Tasks, then open a Task to inspect "
            "samples, annotate, split, train, infer, and review results."),
         page);
     next->setProperty("muted", true);
@@ -256,10 +250,10 @@ QWidget* NodeWorkspace::dataset_page() {
             std::get<DatasetConfig>(graph_->node(node_id_).config);
         DatasetImportDialog dialog(dataset, page);
         if (dialog.exec() != QDialog::Accepted) return;
-        dataset = dialog.result();
+        if (!dataset_replace_requested ||
+            !dataset_replace_requested(node_id_, dialog.result(), 0, nullptr)) return;
         dataset_directory_ =
             QString::fromStdString(dataset.directory);
-        synchronize_task_bindings_for_dataset(*graph_, node_id_);
         if (changed) changed();
         QMetaObject::invokeMethod(
             this,
@@ -282,13 +276,16 @@ QWidget* NodeWorkspace::task_page() {
     task_workspace_->changed = [this] {
         if (changed) changed();
     };
-    task_workspace_->dataset_requested = [this](int id) {
-        if (node_requested) node_requested(id);
+    task_workspace_->dataset_requested = [this](int node_id) {
+        if (node_requested) node_requested(node_id);
+    };
+    task_workspace_->dataset_replace_requested = [this](int source, DatasetConfig dataset, int owner, const TaskDatasetBinding* imported) {
+        return dataset_replace_requested && dataset_replace_requested(source, std::move(dataset), owner, imported);
     };
     task_workspace_->train_requested =
-        [this](int id, const TrainingLaunchRequest& request) {
+        [this](int node_id, const TrainingLaunchRequest& request) {
             if (training_launch_requested)
-                training_launch_requested(id, request);
+                training_launch_requested(node_id, request);
         };
     task_workspace_->stop_training_requested = [this] {
         if (stop_requested) stop_requested();
@@ -297,8 +294,8 @@ QWidget* NodeWorkspace::task_page() {
         if (pause_requested) pause_requested();
     };
     task_workspace_->infer_requested =
-        [this](int id, const InferenceLaunchRequest& request) {
-            if (infer_requested) infer_requested(id, request);
+        [this](int node_id, const InferenceLaunchRequest& request) {
+            if (infer_requested) infer_requested(node_id, request);
         };
     task_workspace_->status = [this](const QString& message) {
         if (status) status(message);
@@ -306,20 +303,20 @@ QWidget* NodeWorkspace::task_page() {
     task_workspace_->run_details_requested = [this](const QString& run_id) {
         if (run_details_requested) run_details_requested(run_id);
     };
-    task_workspace_->import_model_requested = [this](int id) {
-        if (import_model_requested) import_model_requested(id);
+    task_workspace_->import_model_requested = [this](int node_id) {
+        if (import_model_requested) import_model_requested(node_id);
     };
-    task_workspace_->export_model_requested = [this](int id, const QString& model_id) {
-        if (export_model_requested) export_model_requested(id, model_id);
+    task_workspace_->export_model_requested = [this](int node_id, const QString& model_id) {
+        if (export_model_requested) export_model_requested(node_id, model_id);
     };
-    task_workspace_->delete_models_requested = [this](int id, const QStringList& model_ids) {
-        if (delete_models_requested) delete_models_requested(id, model_ids);
+    task_workspace_->delete_models_requested = [this](int node_id, const QStringList& model_ids) {
+        if (delete_models_requested) delete_models_requested(node_id, model_ids);
     };
-    task_workspace_->clear_models_requested = [this](int id) {
-        if (clear_models_requested) clear_models_requested(id);
+    task_workspace_->clear_models_requested = [this](int node_id) {
+        if (clear_models_requested) clear_models_requested(node_id);
     };
     task_workspace_->bind(
-        graph_, node_id_, project_models_, annotation_directory_);
+        graph_, node_id_);
     task_workspace_->set_runtime_busy(runtime_busy_);
     return task_workspace_;
 }

@@ -1,4 +1,5 @@
 #include "annotation_exchange.h"
+#include "segmentation_annotation_state.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -30,7 +31,7 @@ int main(int argc, char** argv) {
                        imported.binding.samples.begin(),
                        imported.binding.samples.end(),
                        [](const studio::TaskSampleBinding& sample) {
-                           return !sample.mask_path.empty();
+                           return !sample.regions.empty();
                        })
                 << '\n';
             return 0;
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
     studio::TaskSampleBinding annotated;
     annotated.sample_id = "sample-input";
     annotated.image_paths = {image_path.toStdString()};
-    annotated.mask_path = mask_path.toStdString();
+    studio::import_segmentation_annotation(binding.classes, annotated, mask_path);
     annotated.split = "validation";
     annotated.annotation_state = "annotated";
     binding.samples.push_back(std::move(annotated));
@@ -77,7 +78,7 @@ int main(int argc, char** argv) {
     background.sample_id = "sample-background";
     background.image_paths = {background_image_path.toStdString()};
     background.split = "train";
-    background.annotation_state = "background-only";
+    background.annotation_state = "annotated";
     binding.samples.push_back(std::move(background));
 
     const QString native_dir =
@@ -101,11 +102,10 @@ int main(int argc, char** argv) {
         native.binding.split_settings.seed != 1234 ||
         native.binding.samples.front().split !=
             "validation" ||
-        !QFileInfo(QString::fromStdString(
-            native.binding.samples.front().mask_path)).isFile() ||
+        native.binding.samples.front().regions.empty() ||
         native.binding.samples[1].annotation_state !=
-            "background-only" ||
-        !native.binding.samples[1].mask_path.empty())
+            "annotated" ||
+        !native.binding.samples[1].regions.empty())
         return 3;
 
     QFile native_file(native_manifest);
@@ -152,8 +152,10 @@ int main(int argc, char** argv) {
         ilabelled.binding.classes.size() != 1 ||
         ilabelled.binding.classes.front().mask_value != 1 ||
         ilabelled.binding.samples.size() != 2 ||
-        ilabelled.binding.samples.front().mask_path.empty() ||
-        ilabelled.binding.samples[1].mask_path.empty())
+        std::count_if(ilabelled.binding.samples.begin(), ilabelled.binding.samples.end(),
+            [](const auto& sample) { return !sample.regions.empty() && sample.annotation_state == "annotated"; }) != 1 ||
+        std::count_if(ilabelled.binding.samples.begin(), ilabelled.binding.samples.end(),
+            [](const auto& sample) { return sample.regions.empty() && sample.annotation_state == "annotated"; }) != 1)
         return 7;
 
     const QString nested = temporary.filePath(
@@ -208,16 +210,16 @@ int main(int argc, char** argv) {
     const auto background_only = std::find_if(
         dense.binding.samples.begin(), dense.binding.samples.end(),
         [](const studio::TaskSampleBinding& sample) {
-            return sample.mask_path.empty();
+            return sample.regions.empty();
         });
     if (background_only == dense.binding.samples.end() ||
-        background_only->annotation_state != "background-only")
+        background_only->annotation_state != "unannotated")
         return 13;
     const auto dense_stats =
         studio::AnnotationExchange::import_stats(dense);
     if (dense_stats.image_count != 2 ||
         dense_stats.mask_count != 1 ||
-        dense_stats.background_only_count != 1 ||
+        dense_stats.unannotated_count != 1 ||
         dense_stats.class_count != 4 ||
         dense_stats.review_count != 0)
         return 14;

@@ -46,6 +46,8 @@ public:
     explicit MaskCanvas(QWidget* parent = nullptr);
 
     bool load(const QString& image_path, const QString& mask_path, QString* error);
+    const QImage& mask_image() const { return mask_; }
+    void mark_saved();
     void clear();
     bool save(const QString& mask_path, QString* error);
     void set_brush_size(int size) { brush_size_ = size; }
@@ -171,13 +173,14 @@ public:
 
     void set_task_dataset(const QString& directory,
                           const std::vector<TaskSampleBinding>& samples,
-                          const std::vector<AnnotationClass>& classes,
-                          const QString& annotation_directory = {});
+                          const std::vector<AnnotationClass>& classes);
+    void refresh_samples(const std::vector<TaskSampleBinding>& samples,
+                         const std::vector<std::string>& reload_sample_ids);
     void set_class_schema(const std::vector<AnnotationClass>& classes);
-    void set_inference_directory(const QString& directory);
+    void set_inference_result(const InferenceResultSet* result);
     void refresh_inference_layers();
     std::function<void(const QString&)> status;
-    std::function<void(const QString&, const QString&)> mask_saved;
+    std::function<void(const QString&, const QImage&)> mask_saved;
     std::function<void(const QString&)> class_add_requested;
     std::function<void(const QString&, const QString&)> class_rename_requested;
     std::function<void(const QString&)> class_retire_requested;
@@ -186,6 +189,7 @@ public:
     std::function<void(const QString&, bool)> class_lock_changed;
     std::function<void(const std::vector<std::string>&, const std::string&)>
         sample_split_requested;
+    std::function<void(const std::vector<std::string>&)> samples_empty_requested;
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -194,7 +198,8 @@ private:
     bool confirm_transition();
     void reload_dataset();
     void load_index(int index);
-    void save_current();
+    bool save_current();
+    void set_selected_empty(const std::vector<std::string>& ids);
     void update_layer_controls();
     void update_class_state();
     void rebuild_class_list();
@@ -206,20 +211,17 @@ private:
     void refresh_sample_status();
     int prompt_for_class();
     int add_or_select_class(const QString& name);
-    QString mask_path_for_image(const QString& image_path) const;
     void apply_responsive_layout(bool force = false);
     void set_side_panel_width(int index, bool shown, int preferred_width);
 
     QString dataset_directory_;
-    QString annotation_directory_;
     QStringList imported_image_paths_;
-    QHash<QString, QString> configured_mask_paths_;
     std::vector<AnnotationClass> configured_classes_;
     std::vector<TaskSampleBinding> sample_bindings_;
     QStringList sample_ids_;
     QList<QStringList> sample_image_sets_;
     QStringList display_names_;
-    QString inference_directory_;
+    std::vector<ResultReference> inference_results_;
     QStringList image_files_;
     int current_index_ = -1;
     SampleBrowser* images_ = nullptr;

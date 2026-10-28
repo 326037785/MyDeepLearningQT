@@ -4,12 +4,12 @@ DeepLearning Studio is the Qt 5 desktop frontend for `DeepLearning::Core`. The
 application organizes one concrete vision workflow:
 
 1. create or open a project;
-2. connect one `Dataset` node to one `Task` node;
+2. connect a `DataNode` to one or more `TaskNode` branches;
 3. open the Task workspace;
 4. select data, annotate, split, train, infer, and inspect results.
 
-The frontend links the packaged backend library. It does not compile backend
-sources and does not invoke the CLI.
+The frontend imports the exported backend library from its existing build or an
+explicit installation. It does not compile backend sources or invoke the CLI.
 
 ## Domain boundary
 
@@ -24,84 +24,98 @@ sources and does not invoke the CLI.
 - task/index/scale model specification;
 - training and inference settings;
 - `TaskDatasetBinding` sample selection, class schema, annotations, split,
-  quality findings, and preprocessing;
+  preprocessing and derived runtime quality findings;
 - result references and active/paused/completed run state.
 
 Completed and imported models, their lineage, and LibTorch/ONNX/OpenVINO/TensorRT
-weight branches are owned by Core `ModelList`. A Task only stores the id of the
-ModelList row it controls; pause/resume checkpoint ownership stays on that row
+weight branches are held by each TaskNode's own Core `ModelList`. Training and
+Inference use that Node's list. Its active training id references a row within the
+same list; pause/resume checkpoint ownership stays on that row
 instead of becoming a second inventory or user-facing raw checkpoint catalog.
 
 There is one current project structure. Loading is strict: unsupported or
 malformed structures are rejected instead of guessed, converted, or routed
 through alternate representations.
 
+## Binding and result ownership
+
+Each TaskNode owns its Annotation, Core ModelList and Inference results. Within
+that Node, model_id + weight_id locates one latest result. Annotation, Inference
+and Results share the current Model/Weight selection.
+
+Disconnect retains the Task's sample/bucket binding and assets. Reconnect compares
+sample ids, ordered complete image paths and bucket capacity before adding an
+edge. Confirmed DataNode deletion/replacement clears samples and Inference only
+for currently connected Tasks. Task settings, classes, ModelList and weights
+remain. References save successfully before Node files are removed.
+
+The usage rules are in [ModelList and Inference guide](docs/inference-modelist-todo-guide.md).
+Project and persistence definitions are in [project_spec.md](docs/project_spec.md).
+AI bridge entry points are in [.ai-bridge/project-context.md](.ai-bridge/project-context.md).
+
 ## Build
 
-**Build rules:** The only supported Core CMake build is `C:\CppProj\DeepLearning\build`, published to `C:\CppProj\DeepLearning\build\package`; the only Studio CMake build is this repository's `build`. Do not create alternative `out`, `build-*`, nested build trees, duplicate solutions, or another Core/Studio project without the project owner's explicit instruction. Rebuild and install Core to its existing package before rebuilding Studio; do not point Studio at a Core build-tree library or stale package.
+Use Visual Studio 2022, Qt 5.15, C++17 and Release | x64. Each checkout has one
+approved Studio build directory. It defaults to `build`; override
+`STUDIO_REQUIRED_BUILD_DIRECTORY` in a local preset to use another approved
+location. The GPU checkout uses `MyDeepLearningQT` inside the repository, with
+`DeepLearningStudio.sln` as its Visual Studio entrypoint.
 
-The supported local toolchain is Visual Studio 2022, Qt 5.15, CMake, and the
-Release configuration.
+Core must be built first. Set `DeepLearning_DIR` to the existing Core build
+directory containing its exported `DeepLearningConfig.cmake`. Studio links that
+library and inherits its dependencies through `DeepLearning::Core`. Studio uses
+that Core build directly. An explicitly selected Core installation is supported
+through its `lib/cmake/DeepLearning` directory.
+
+Keep local Qt, Torch, OpenCV and CUDA paths in an untracked
+`CMakeUserPresets.json`. Ignore the local preset and entire build directory through
+`.git/info/exclude`. With the GPU machine's local presets configured:
 
 ```powershell
-cmake -S C:\CppProj\DeepLearningQT -B C:\CppProj\DeepLearningQT\build `
-  -G "Visual Studio 17 2022" -A x64 `
-  -DQt5_DIR=C:\Qt\5.15.2\msvc2019_64\lib\cmake\Qt5 `
-  -DVTK_DIR=C:\CLib\vtkQt\lib\cmake\vtk-9.2 `
-  -DTBB_DIR=C:\CLib\TBB\lib\cmake\tbb `
-  -Dlibuv_DIR=C:\CLib\libuv\lib\cmake\libuv `
-  "-DCMAKE_PREFIX_PATH=C:\CppProj\DeepLearning\build\package;C:\CLib\libtorchCpu\libtorch" `
-  -DOpenCV_DIR=C:\CLib\opencv\install\x64\vc17\lib
-
-cmake --build C:\CppProj\DeepLearningQT\build `
-  --config Release --target DeepLearningStudio
-& C:\CppProj\DeepLearningQT\scripts\verify_release_clean.ps1
+cmake --preset gpu-vs2022
+cmake --build --preset gpu-vs2022-release
+ctest --preset gpu-vs2022-release
+& .\scripts\verify_release_clean.ps1 -ReleaseDirectory .\MyDeepLearningQT\Release
 ```
 
-The product executable and deployed runtime files are written to:
+For manual configuration, use `cmake -S . -B <approved-build-directory>` and set
+`STUDIO_REQUIRED_BUILD_DIRECTORY`, `Qt5_DIR`, `DeepLearning_DIR`, `Torch_DIR` and
+`OpenCV_DIR` for the selected environment. Do not replace shared defaults with
+the paths from a specific workstation.
 
-```text
-C:\CppProj\DeepLearningQT\build\Release
-```
-
-Static libraries are isolated under `build\.build-artifacts`. Test executables
-never share the product directory.
+The product executable and deployed runtime files live under `<build>/Release`.
+Static libraries stay under `<build>/.build-artifacts`; test executables and their
+runtime files stay under `<build>/.test-artifacts/Release`. Test programs and
+`Qt5Test.dll` must not enter the product directory.
 
 ## Tests
 
-Tests are part of the normal development build. Test executables are isolated
-from the product output:
-
-```powershell
-cmake --build C:\CppProj\DeepLearningQT\build --config Release
-ctest --test-dir C:\CppProj\DeepLearningQT\build `
-  -C Release --output-on-failure
-```
-
-Test executables are written to:
-
-```text
-C:\CppProj\DeepLearningQT\build\.test-artifacts\Release
-```
-
-Obsolete or duplicate tests should be removed from the source tree and CMake;
-they are not hidden by disabling all test targets.
+The existing test targets are part of the normal development build. Run them
+through the local test preset, or `ctest --test-dir <build> -C Release
+--output-on-failure`. Keep test executables separate from product output.
 
 ## Runtime dependencies
 
-- The Qt-enabled VTK install is required by the selected OpenCV build. CMake
-  derives `VTK_RUNTIME_DIR` from `VTK_DIR` and keeps that runtime dependency
-  available to the product and debugger environment.
-- oneTBB is required by the selected OpenCV build, and libuv is required by the
-  selected LibTorch build. They remain explicit dependencies even though Studio
-  code does not call them directly.
-- The validated libuv package is the official `v1.52.1` Release install.
-- The selected LibTorch package requires `libiomp5md.dll`; CMake validates and
-  deploys it explicitly.
-- SVG icons are compiled into the executable through Qt resources and rendered
-  with QtSvg, so the UI does not depend on an external icon theme.
+- Core's exported targets select the matching LibTorch, OpenCV, ONNX Runtime and
+  MSVC OpenMP dependencies. Do not maintain a second Core link-library list here.
+- Deploy the selected LibTorch SDK's runtime DLLs, including its CUDA/cuDNN,
+  `uv.dll` when present, and required `libiomp5md.dll`. These bundled DLLs take
+  precedence over a different CUDA Toolkit runtime during deployment.
+- Deploy the selected OpenCV runtime DLLs, including its video I/O plugin, and
+  Qt's platform and image-format plugins alongside the product.
+- VTK, oneTBB and libuv SDK packages are not direct Studio dependencies. Older
+  distributions may still need their DLLs: `VTK_RUNTIME_DIR`, `TBB_RUNTIME_DIR`
+  and `LIBUV_RUNTIME_DIR` remain optional deployment hints. Their package
+  location variables can still supply those defaults. When those configuration
+  files exist, CMake also loads their imported target descriptions for older
+  OpenCV exports that name those dependencies.
+- SVG icons are compiled into Qt resources and rendered through QtSvg.
 
 ## Documentation
+
+- `docs/node_identity.md`: persistent Node identity, runtime Task identity, sample identity and ownership.
+- `docs/annotation_spec.md`: Node-wise Annotation persistence and task-wise target rules.
+- `docs/annotation-import-and-storage.md`: import boundaries, Node assets and recovery.
 
 - `docs/project-overview.md`: elementary Qt/backend ownership and module boundaries.
 - `docs/ai_metadata.md`: Qt consumption rules for `DeepLearning` sample metadata.

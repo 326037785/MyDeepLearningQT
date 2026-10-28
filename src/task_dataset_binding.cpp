@@ -1,5 +1,8 @@
 #include "task_dataset_binding.h"
 
+#include <QDir>
+#include <QFileInfo>
+
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -115,36 +118,87 @@ const AnnotationClass* find_annotation_class_by_mask(
     return found == binding.classes.end() ? nullptr : &*found;
 }
 
+void validate_task_dataset_rebind(const TaskDatasetBinding& binding,
+                                  const DatasetConfig& dataset)
+{
+    if (binding.bucket_capacity == 0 && binding.samples.empty()) return;
+    if (binding.bucket_capacity != dataset.bucket_capacity)
+        throw std::runtime_error("Dataset rebind mismatch: bucket_capacity differs");
+    const auto raw_samples = group_raw_samples(dataset);
+    if (raw_samples.size() != binding.samples.size())
+        throw std::runtime_error("Dataset rebind mismatch: sample_id sets differ");
+    std::map<std::string, const TaskSampleBinding*> saved;
+    for (const auto& sample : binding.samples)
+        if (!saved.emplace(sample.sample_id, &sample).second)
+            throw std::runtime_error("Dataset rebind mismatch: duplicate saved sample_id");
+    const auto path = [](const std::string& value) {
+        const auto stored = QString::fromStdString(value);
+        // Workflow restoration compares already-portable Project paths before
+        // ProjectManager resolves them. Interactive rebind uses runtime paths.
+        auto normalized = stored.startsWith("project:")
+            ? "project:" + QDir::cleanPath(stored.mid(8))
+            : QDir::cleanPath(QFileInfo(stored).absoluteFilePath());
+#ifdef Q_OS_WIN
+        normalized = normalized.toCaseFolded();
+#endif
+        return normalized;
+    };
+    for (const auto& raw : raw_samples) {
+        const auto found = saved.find(raw.id);
+        if (found == saved.end())
+            throw std::runtime_error("Dataset rebind mismatch: sample_id sets differ");
+        const auto& images = found->second->image_paths;
+        if (images.size() != raw.items.size())
+            throw std::runtime_error("Dataset rebind mismatch: bucket image count differs for " + raw.id);
+        for (size_t index = 0; index < images.size(); ++index)
+            if (path(images[index]) != path(raw.items[index]->path))
+                throw std::runtime_error("Dataset rebind mismatch: ordered image_paths differ for " + raw.id);
+    }
+}
+
+void clear_task_dataset_state(TaskNodeConfig& task) {
+    task.dataset_binding.samples.clear();
+    task.dataset_binding.bucket_capacity = 0;
+    task.runtime.results.clear();
+    task.runtime.inference_status = "idle";
+    task.inference_output_directory.clear();
+    task.inference_images.clear();
+}
+
 BindingSyncResult synchronize_task_dataset_binding(
     WorkflowGraph& graph,
-    int task_node_id)
+    int node_id)
 {
-    if (graph.nodes().count(task_node_id) == 0 ||
-        graph.node(task_node_id).kind != NodeKind::TaskConfig)
+    if (graph.nodes().count(node_id) == 0 ||
+        graph.node(node_id).kind != NodeKind::TaskConfig)
         throw std::runtime_error("TaskDatasetBinding requires a Task node");
 
-    int dataset_node_id = 0;
+    int source_node_id = 0;
     for (const auto& edge : graph.connections()) {
-        if (edge.to_node != task_node_id || edge.to_port != 0) continue;
-        if (graph.node(edge.from_node).kind != NodeKind::DatasetInput) continue;
-        if (dataset_node_id != 0)
+        if (edge.to_node_id != node_id || edge.to_port != 0) continue;
+        if (graph.node(edge.from_node_id).kind != NodeKind::DatasetInput) continue;
+        if (source_node_id != 0)
             throw std::runtime_error("a Task can bind only one Dataset");
-        dataset_node_id = edge.from_node;
+        source_node_id = edge.from_node_id;
     }
 
-    auto& task = std::get<TaskNodeConfig>(graph.node(task_node_id).config);
+    auto& task = std::get<TaskNodeConfig>(graph.node(node_id).config);
     auto& binding = task.dataset_binding;
     BindingSyncResult outcome;
-    if (binding.source_dataset_node_id != dataset_node_id) {
-        binding.source_dataset_node_id = dataset_node_id;
+    if (binding.source_node_id != source_node_id) {
+        binding.source_node_id = source_node_id;
         outcome.changed = true;
     }
-    if (dataset_node_id == 0) {
+    if (source_node_id == 0) {
         outcome.notes.push_back("Task has no connected Dataset");
         return outcome;
     }
 
-    const auto& dataset = std::get<DatasetConfig>(graph.node(dataset_node_id).config);
+    const auto& dataset = std::get<DatasetConfig>(graph.node(source_node_id).config);
+    if (binding.bucket_capacity != dataset.bucket_capacity) {
+        binding.bucket_capacity = dataset.bucket_capacity;
+        outcome.changed = true;
+    }
     std::map<std::string, TaskSampleBinding> existing;
     std::vector<std::string> existing_order;
     for (auto& sample : binding.samples) {
@@ -184,10 +238,6 @@ BindingSyncResult synchronize_task_dataset_binding(
         std::vector<std::string> generated_issues;
         if (raw.items.size() != static_cast<size_t>(std::max(1, dataset.bucket_capacity)))
             generated_issues.push_back("sample does not contain the configured bucket image count");
-        if (!sample.mask_path.empty() || !sample.class_id.empty())
-            sample.annotation_state = "annotated";
-        else
-            sample.annotation_state = "unannotated";
         if (sample.quality_issues != generated_issues) {
             sample.quality_issues = std::move(generated_issues);
             outcome.changed = true;
@@ -220,22 +270,22 @@ BindingSyncResult synchronize_task_dataset_binding(
 
 bool synchronize_task_bindings_for_dataset(
     WorkflowGraph& graph,
-    int dataset_node_id)
+    int node_id)
 {
-    if (graph.nodes().count(dataset_node_id) == 0 ||
-        graph.node(dataset_node_id).kind != NodeKind::DatasetInput)
+    if (graph.nodes().count(node_id) == 0 ||
+        graph.node(node_id).kind != NodeKind::DatasetInput)
         throw std::runtime_error(
             "binding refresh requires a Dataset node");
     bool changed = false;
-    std::vector<int> task_ids;
+    std::vector<int> node_ids;
     for (const auto& edge : graph.connections()) {
-        if (edge.from_node != dataset_node_id) continue;
-        if (graph.node(edge.to_node).kind == NodeKind::TaskConfig)
-            task_ids.push_back(edge.to_node);
+        if (edge.from_node_id != node_id) continue;
+        if (graph.node(edge.to_node_id).kind == NodeKind::TaskConfig)
+            node_ids.push_back(edge.to_node_id);
     }
-    for (const int task_id : task_ids)
+    for (const int target_node_id : node_ids)
         changed =
-            synchronize_task_dataset_binding(graph, task_id).changed ||
+            synchronize_task_dataset_binding(graph, target_node_id).changed ||
             changed;
     return changed;
 }

@@ -11,6 +11,7 @@
 #include <memory>
 
 class QLabel;
+class QComboBox;
 class QPushButton;
 class QStackedWidget;
 
@@ -23,6 +24,7 @@ class InferenceWorkspace;
 class ResultsWorkspace;
 class SegmentationAnnotationWidget;
 class TrainingWorkspace;
+class ProjectModelBrowser;
 struct TrainingLaunchRequest;
 struct InferenceLaunchRequest;
 
@@ -31,9 +33,7 @@ public:
     enum class Step { Data = 0, Annotation, Split, Training, Inference, Results };
 
     explicit TaskWorkspace(QWidget* parent = nullptr);
-    void bind(WorkflowGraph* graph, int task_node_id,
-              const std::vector<ProjectModel>* models = nullptr,
-              const QString& annotation_directory = {});
+    void bind(WorkflowGraph* graph, int node_id);
     void refresh_models();
     void clear();
     void refresh();
@@ -52,29 +52,29 @@ public:
 
     std::function<void()> back_requested;
     std::function<void()> changed;
-    std::function<void(int)> dataset_requested;
-    std::function<void(int, const TrainingLaunchRequest&)> train_requested;
+    std::function<bool(int, DatasetConfig, int, const TaskDatasetBinding*)> dataset_replace_requested;
+    std::function<void(int node_id)> dataset_requested;
+    std::function<void(int node_id, const TrainingLaunchRequest&)> train_requested;
     std::function<void()> stop_training_requested;
     std::function<void()> pause_training_requested;
     std::function<void(const QString&)> run_details_requested;
-    std::function<void(int)> import_model_requested;
-    std::function<void(int, const QString&)> export_model_requested;
-    std::function<void(int, const QStringList&)> delete_models_requested;
-    std::function<void(int)> clear_models_requested;
-    std::function<void(int, const InferenceLaunchRequest&)> infer_requested;
+    std::function<void(int node_id)> import_model_requested;
+    std::function<void(int node_id, const QString&)> export_model_requested;
+    std::function<void(int node_id, const QStringList&)> delete_models_requested;
+    std::function<void(int node_id)> clear_models_requested;
+    std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
     std::function<void(const QString&)> status;
 
 private:
     QWidget* build_annotation_page();
     void refresh_annotation();
+    void refresh_inference_result();
     void refresh_step_availability();
     void domain_changed();
 
     WorkflowGraph* graph_ = nullptr;
-    int task_node_id_ = 0;
+    int node_id_ = 0;
     std::unique_ptr<TaskWorkspaceService> service_;
-    const std::vector<ProjectModel>* project_models_ = nullptr;
-    QString annotation_directory_;
     QLabel* identity_ = nullptr;
     QLabel* context_ = nullptr;
     QStackedWidget* pages_ = nullptr;
@@ -85,6 +85,8 @@ private:
     TrainingWorkspace* training_ = nullptr;
     InferenceWorkspace* inference_ = nullptr;
     ResultsWorkspace* results_ = nullptr;
+    ProjectModelBrowser* annotation_models_ = nullptr;
+    QComboBox* annotation_weight_branch_ = nullptr;
     std::array<QPushButton*, 6> step_buttons_{};
     Step active_step_ = Step::Data;
     bool runtime_busy_ = false;

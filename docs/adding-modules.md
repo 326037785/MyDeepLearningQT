@@ -1,486 +1,67 @@
-# Adding Modules to DeepLearning Studio
-
-This guide is the step-by-step companion to [project-overview.md](project-overview.md)
-and [ai_metadata.md](ai_metadata.md). It explains the Qt extension points in
-dependency order: which file to touch first, what becomes available
-automatically, and what still needs an explicit branch.
-
-The backend counterpart is `DeepLearning/docs/adding-modules.md`. The rule is
-absolute: **a task starts in `DeepLearning`, never in Qt**. Qt consumes the
-installed `DeepLearning::Core` package and adds presentation on top.
-
-## 1. Dependency order (the only allowed direction)
-
-```text
-DeepLearning::Core package (installed, contains task/training/inference APIs)
-             |
-Layer 0  src/workflow.h                       (project domain data)
-             |
-Layer 1  src/task_module_catalog.h            (which task ids exist)
-         src/model_spec_catalog.h             (which model specs are offered)
-         src/model_presentation.h             (display names for scales)
-             |
-Layer 2  src/workflow.cpp                     (validation)
-         src/workflow_document.cpp            (persistence, strict schema)
-             |
-Layer 3  src/task_dataset_binding.h/.cpp      (Dataset <-> Task sync)
-         src/task_workspace_service.h/.cpp    (domain service, backend conversion)
-             |
-Layer 4  annotation editors + codecs
-         src/segmentation_annotation.*, src/classification_annotation.*,
-         src/annotation_region_edit_service.*, src/annotation_exchange.*
-             |
-Layer 5  src/task_workspace_pages.cpp         (training / inference / results UI)
-             |
-Layer 6  src/task_workspace.cpp               (compose pages + editors)
-         src/main_window.cpp                  (bind workflows, templates, jobs)
-             |
-Layer 7  test/* + CMakeLists.txt              (explicit test registration)
-```
-
-Rules that follow from the diagram:
-
-- `workflow.h` and `workflow_document.cpp` may never reference a backend task
-  class. They store the current exact schema only; no migration branches.
-- Only `task_workspace_service.cpp` converts Qt data into
-  `jocelin::meta::AiMetaData` / `TrainingRequest` / `InferenceRequest`.
-  Widgets never build backend requests themselves.
-- Qt may keep presentation state (canvas tool state, viewport transform, drag
-  handles, widget selection). It must not keep a second source of truth for
-  sample data, splits, classes, or results.
-- Strict parsing stays strict. New fields must be added to every exact-field
-  list in `workflow_document.cpp`; do not add optional/legacy fallbacks.
-- New `src/*.cpp` and `src/*.h` files are picked up automatically by
-  `file(GLOB ... CONFIGURE_DEPENDS)` in `CMakeLists.txt`. New **tests** are
-  not: they need explicit `studio_add_test(...)` registration.
-
-## 2. Extension point map
-
-| You want to change | File | What happens automatically |
-| --- | --- | --- |
-| Model variants offered by a task | `src/model_spec_catalog.h` | Node creation, workflow validation, training/inference combos |
-| Available task modules | `src/task_module_catalog.h` | Module dialog, node title, properties editor, scene summary |
-| Which task ids are legal | `src/workflow.cpp` `validate_for_execution()` | Node readiness, run buttons |
-| Domain fields per task/sample | `src/workflow.h` + `workflow_document.cpp` | Nothing: serialization and readers must be updated by hand |
-| Backend conversion | `src/task_workspace_service.cpp` | Training/inference requests, stats, results |
-| Annotation editing | `src/task_workspace.cpp` `refresh_annotation()` + editor widget | Editor visibility |
-| Training/inference/result presentation | `src/task_workspace_pages.cpp` | Page refresh, columns, canvases |
-| File import/export formats | `src/annotation_exchange.h/.cpp` | Import/export menus |
-
-Fast way to find every current dispatch point:
-
-```powershell
-rg -n '"sg"|"cls"|ToolType::|task\(\)\.task' C:\CppProj\DeepLearningQT\src
-```
-
-Every hit is either an existing task branch to extend or presentation-only
-text to leave alone.
-
----
-
-## Recipe A — Add a model variant to an existing task
-
-Prerequisite: the backend factory and Core package already support the spec
-(see `DeepLearning/docs/adding-modules.md` Recipe A).
-
-Worked example: expose `sg-2-l` (backend index 2, scale `L`) in the UI.
-
-### A.1 Add the option
-
-`src/model_spec_catalog.h`:
-
-```cpp
-inline constexpr std::array<ModelSpecOption, 5> model_spec_options{{
-    {"sg", 0, "s"},
-    {"sg", 1, "m"},
-    {"sg", 2, "l"},     // added
-    {"cls", 1, "s"},
-    {"cls", 2, "n"},
-}};
-```
-
-### A.2 Nothing else is required
+# DeepLearning Studio module rules
 
-- `WorkflowGraph::add_task_node()` picks `first_model_spec(task)` and accepts
-  the spec through `supports_model_spec()`.
-- `WorkflowGraph::validate_for_execution()` already validates against the
-  catalog, so "model spec is not registered" disappears for the new option.
-- `TrainingWorkspace::populate_model_options()` and the inference page build
-  their combos from the same array.
+A Studio module consumes Core task data and exposes it through the owning TaskNode. Core defines computation and typed task structures. Qt defines Project persistence, interaction and presentation.
 
-### A.3 Test
+The system definitions are in [project-overview.md](project-overview.md). Backend module rules are in [Core adding-modules.md](../../MyLibtorchLearning/docs/adding-modules.md).
 
-Extend `test/workflow_test.cpp` (or `test/task_workspace_service_test.cpp`):
+## 1. Module responsibilities
 
-```cpp
-WorkflowGraph graph;
-const int dataset = graph.add_node(NodeKind::DatasetInput);
-const int task = graph.add_task_node({"sg"});
-graph.connect(dataset, 0, task, 0);
-auto& config = std::get<TaskNodeConfig>(graph.node(task).config);
-config.model_index = 2;
-config.model_scale = "l";
-config.training.output_directory = "output";
-// no "model spec is not registered" issue for the task node
-```
+| Module | Responsibility |
+| --- | --- |
+| src/workflow.h | Workflow domain data, TaskNode configuration, Core ModelList and typed result associations |
+| src/task_module_catalog.h | Task ids and module availability |
+| src/model_spec_catalog.h | Model specifications offered by Qt |
+| src/workflow.cpp | Graph topology, connection validation and Node lifecycle in memory |
+| src/task_dataset_binding.cpp | Raw sample grouping, rebind comparison and binding synchronization |
+| src/task_workspace_service.cpp | Task operations, Core request construction, quality checks and result association |
+| src/workflow_document.cpp | Exact Workflow schema, binding fields, typed results and Node asset references |
+| src/model_list_storage.cpp | Node ModelList serialization |
+| src/project_manager.cpp | Project save/open, resource paths and persistence coordination |
+| src/annotation_codec.* and src/annotation_exchange.* | External annotation decoding, mapping and export |
+| Annotation widgets and src/task_workspace_pages.cpp | Editing, display and operation requests |
+| src/task_workspace.cpp | Task page composition and shared result selection |
+| src/main_window.cpp | User confirmation, Project context and training/inference jobs |
 
-Run:
+Widgets keep viewport, drawing and selection state. Authoritative samples, classes, splits and results remain with the TaskNode. Core request construction belongs to TaskWorkspaceService.
 
-```powershell
-cmake --build C:\CppProj\DeepLearningQT\build --config Release
-ctest --test-dir C:\CppProj\DeepLearningQT\build -C Release --output-on-failure
-```
+Core geometry and task Result types can appear in domain data and persistence. Mathematical operations remain in Core. Qt's association layer relates those objects to sample, Model and Weight identities.
 
-If the spec is offered in Qt but missing in the backend, training fails at
-runtime with `unregistered sg model spec: sg-2-l`. That order is intentional.
+## 2. Ownership rules
 
----
+Each TaskNode owns a Core ModelList. Model operations and result lookup begin with the current Workflow and Node. Model conversion adds a branch to its ModelEntry.
 
-## Recipe B — Add a field to an existing task binding
+Inference lookup uses model_id + weight_id within the current TaskNode. Format and precision are branch metadata. Annotation, Inference and Results share one model/weight selection. An empty branch clears the prediction overlay.
 
-Worked example: add a per-sample `review_note` string. This is the most common
-"small module" change and the one most likely to break persistence.
+Sample fields belong to TaskSampleBinding. Task-level settings belong to TaskNodeConfig or the settings structures it owns. AnnotationClass holds class metadata.
 
-### B.1 Domain structure
+## 3. Binding rules
 
-`src/workflow.h` — add the field to the correct struct:
+The existing samples' ordered image_paths and binding bucket_capacity are persisted binding facts. source_node_id comes from current edges and becomes zero on disconnect.
 
-```cpp
-struct TaskSampleBinding {
-    // ... existing fields ...
-    std::string review_note;   // added
-};
-```
+A fresh Task connects and synchronizes normally. A detached Task compares its snapshot with the candidate Dataset before an edge is added. Comparison checks identity and bucket membership only. Existing quality checks handle resource and task validity.
 
-Choose the narrowest owner: per-sample data belongs to `TaskSampleBinding`,
-per-task settings to `TaskNodeConfig`/`TrainingSettings`, per-class data to
-`AnnotationClass`.
+Destructive Dataset changes require confirmation at the application boundary. Clear sample-dependent state before synchronizing the new inventory. Preserve classes, split_settings, preprocessing, other Task configuration and models. Explicit annotation import supplies the receiving Task's new classes and targets.
 
-### B.2 Persistence (writer + reader + exact lists)
+Persist removed references before deleting the affected TaskNode's annotations/ and inference/ directories. Cleanup uses current edges and explicit Node paths.
 
-`src/workflow_document.cpp` has three places that must change together:
+## 4. Persistence rules
 
-1. `binding_to_json()` — write the field:
+Writers, readers and exact-field lists in workflow_document.cpp define the same schema. Stored fields require matching serialization and parsing. Runtime diagnostics such as quality_issues are derived and are not persisted.
 
-```cpp
-{"review_note", QString::fromStdString(value.review_note)},
-```
+Resource paths use ProjectStorage portable/runtime conversion. Save As relocates internal paths, including detached binding paths and inference artifacts. External paths retain their external scope.
 
-2. `binding_from_json()` — read it with the same type helper used by neighbors:
+ModelListStorage owns the Node's models/model_list.json. Workflow result entries hold model/weight references. Full typed results belong in the exact branch's result.json. Referenced spatial targets belong in the owning Node's annotations/ directory.
 
-```cpp
-sample.review_note =
-    required_string(value, "review_note", "Task sample").toStdString();
-```
+Ordinary save uses atomic replacement per file. Inference replacement preserves the selected branch until its new result commits. See [project_spec.md](project_spec.md) and [inference-modelist-todo-guide.md](inference-modelist-todo-guide.md).
 
-3. The `require_exact_fields(...)` list for that object must include the new
-   key. The parser rejects missing **and** unknown keys, so an out-of-date list
-   makes every existing document fail to open.
+## 5. Extension and validation
 
-If the field lives on `TaskNodeConfig`, the same three edits go to
-`config_to_json()` / `config_from_json()` and its exact list.
+A task representation starts in Core. Qt consumes the public type and service contract. Model specifications offered by Qt must exist in Core's model registration.
 
-### B.3 Sync and service behavior
+For a domain field, update its owning structure, writer, reader and exact-field list together. Map it into Core requests only where the selected operation consumes it. The relevant view edits the owning data through the service.
 
-`src/task_dataset_binding.cpp` `synchronize_task_dataset_binding()` copies an
-existing `TaskSampleBinding` when a sample survives a dataset reimport
-(`sample = std::move(old->second)`). New fields are preserved automatically.
-When a field is derived rather than stored, compute it in that function or in
-`TaskWorkspaceService::refresh_quality()` and mark `outcome.changed = true`.
+For result presentation, consume the task's complete Core Result. Keep prediction filtering, metric computation and mask rendering in the Core task module.
 
-If the field affects training/inference, map it in
-`TaskWorkspaceService::build_training_request()` or
-`build_inference_request()`. Never read the widget from there.
+Source files are discovered through the CMake source glob. Tests require explicit studio_add_test registration. Extend the existing contract tests for binding identity, persistence, Node isolation and affected UI behavior.
 
-### B.4 UI + test
-
-- Edit the owning view (`DatasetSelectionView`, `DatasetSplitView`, or the
-  annotation editor) to display/edit the field.
-- Add a round-trip assertion to `test/workflow_document_test.cpp`: serialize a
-  graph containing the field, parse it, compare the value, and assert that
-  removing the key from the JSON is rejected.
-
----
-
-## Recipe C — Add a task module end to end
-
-Worked example: expose object detection (`od`) after the backend task exists.
-Steps are ordered; keep this order or the UI will not compile at intermediate
-points.
-
-### C.1 Verify the backend is published
-
-```powershell
-cmake --install C:\CppProj\DeepLearning\build --config Release --prefix C:\CppProj\DeepLearning\build\package
-```
-
-Confirm that `DeepLearning/build/package/include/DeepLearning/detection/...`
-and the od result headers exist. If not, finish
-`DeepLearning/docs/adding-modules.md` Recipe D first.
-
-### C.2 Register the task module
-
-`src/task_module_catalog.h`:
-
-```cpp
-inline constexpr std::array<TaskModuleDefinition, 3> task_modules{{
-    {"sg", "Semantic Segmentation", "Train and run pixel-level semantic segmentation models.", true, ""},
-    {"cls", "Classification", "Train and run image classification models.", true, ""},
-    {"od", "Object Detection", "Train and run object detection models.", true, ""},
-}};
-```
-
-This makes the module appear in `SelectTaskModuleDialog`, gives the node its
-title in `workflow_scene.cpp`, and lets `properties_editor.cpp` resolve it.
-Keep `available=false` plus a reason while you build the remaining steps; the
-dialog then disables the entry with a visible explanation instead of crashing.
-
-### C.3 Register model specs
-
-`src/model_spec_catalog.h`:
-
-```cpp
-{"od", 0, "s"},
-```
-
-`WorkflowGraph::add_task_node({"od"})` now succeeds and
-`validate_for_execution()` accepts the spec.
-
-### C.4 Allow the task id in validation
-
-`src/workflow.cpp` currently hard-codes the legal task ids:
-
-```cpp
-if (config.task != "sg" && config.task != "cls") issues.push_back({id, -1, "task type must be sg or cls"});
-if (config.model_index < 0) issues.push_back({id, -1, "model index must be non-negative"});
-if (!supported_scale(config.model_scale)) issues.push_back({id, -1, "model scale must be n, s, m, l, or x"});
-else if ((config.task == "sg" || config.task == "cls") &&
-         !supports_model_spec(config.task, config.model_index, config.model_scale))
-    issues.push_back({id, -1, "model spec is not registered for the selected task"});
-```
-
-Replace the **first** and the **last `else if`** block with one catalog-driven
-check so every registered module stays legal without editing this function
-again. Keep the `model_index` and `supported_scale` checks in between:
-
-```cpp
-const auto* module = find_task_module(config.task);
-if (!module)
-    issues.push_back({id, -1, "task type is not registered"});
-else if (!module->available)
-    issues.push_back({id, -1, std::string(module->unavailable_reason)});
-else if (!supports_model_spec(config.task, config.model_index, config.model_scale))
-    issues.push_back({id, -1, "model spec is not registered for the selected task"});
-```
-
-Keep the remaining `config.training.*` and dataset-binding checks unchanged.
-
-### C.5 Domain conversion in the workspace service
-
-`src/task_workspace_service.cpp` contains the task branches. Extend each one:
-
-**Split stratification** — `split_stratum()`: add an `od` branch that derives
-strata from the task's canonical target and annotation state. An `Annotated`
-sample with empty boxes is a valid zero-object negative sample. Boxes and
-annotation state determine negative-sample membership.
-
-**Quality checks** — `refresh_quality()` currently sets
-`const bool segmentation = task().task == "sg";`. Add detection-specific
-validation in the same loop: boxes outside the image, empty label, zero-area
-box, missing class reference. Push findings into `sample.quality_issues` so
-malformed samples are excluded from training with a visible reason.
-
-**Training request** — `build_training_request()` converts `TaskSampleBinding`
-into `jocelin::meta::AiMetaData`. Add the od branch next to the sg/cls branches:
-
-```cpp
-if (tool_type == jocelin::config::ToolType::Od &&
-    sample_binding.annotation_state == "unannotated")
-    continue;   // dense/detection targets need real annotation
-// ...
-} else if (tool_type == jocelin::config::ToolType::Od) {
-    sample.boxes = detection_target_boxes(sample_binding, binding().classes);
-    // Annotated + empty boxes is valid negative supervision; retain the sample.
-}
-```
-
-The adapter (`detection_target_boxes`) is Qt-owned and may read a file format.
-It produces the backend `std::vector<jocelin::geo::DetBox>` consumed by
-`AiMetaData`.
-
-**Inference request** — `build_inference_request()` fills `InferenceTarget`
-per image. Add the od target mapping there (for example the ground-truth boxes
-used by the metric).
-
-**Result storage** — `record_inference_result()` visits the
-`InferenceReport` variant. Add the od branch:
-
-```cpp
-} else if (const auto* od =
-               std::get_if<jocelin::result::od::OdInferenceResult>(&report)) {
-    for (const auto& record : od->samples) {
-        ResultReference stored;
-        stored.result_id = result_identifier(record);
-        stored.source_sample_id = sample_id_for(record.image_path);
-        stored.result = record;
-        set.samples.push_back(std::move(stored));
-    }
-}
-```
-
-Add the Core task Result type to the variant in `ResultReference`. New task
-fields belong to that Core Result; update their project JSON encoding, path
-handling and viewers without adding parallel fields to `ResultReference`.
-
-### C.6 Annotation editor
-
-Create a widget (for example `src/detection_annotation.h/.cpp`) that edits the
-task's real object. It must:
-
-- draw on the existing image viewport transform;
-- keep only temporary handles/drag state as widget members;
-- commit the result by calling `TaskWorkspaceService` mutators or by writing
-  the same `TaskSampleBinding` fields the backend adapter reads.
-
-Wire it in `TaskWorkspace::refresh_annotation()` in `src/task_workspace.cpp`,
-which currently assumes a binary sg/cls split:
-
-```cpp
-const QString task_id = QString::fromStdString(task.task);
-const bool segmentation = task_id == "sg";
-const bool classification = task_id == "cls";
-segmentation_->setVisible(segmentation);
-classification_->setVisible(classification);
-detection_->setVisible(task_id == "od");
-if (task_id == "od") detection_->set_task_dataset(/* same inputs as sg */);
-```
-
-Add the member and its setup/clear calls wherever `segmentation_` and
-`classification_` are constructed and cleared.
-
-### C.7 Workspace pages
-
-`src/task_workspace_pages.cpp` renders training, inference and results. Extend:
-
-- **Inference canvas** — `InferenceWorkspace::refresh_canvas()` chooses
-  `classification_canvas_` vs `segmentation_canvas_`. Add
-  `detection_canvas_` to `canvas_stack_` and select it for `od`; the overlay
-  toggle label becomes "Boxes" (or similar) instead of "Heatmap"/"Inference".
-- **Results table** — `ResultsWorkspace::refresh_table()` writes columns
-  (sample, prediction, confidence, area). For od, replace the "area" value with
-  box count or mean IoU, and update the per-sample detail text in
-  `refresh_sample_detail()`.
-- **Aggregate metrics** — classification shows Accuracy/P/R/F1 over labeled
-  images, sg shows per-image Mean IoU/P/R/F1 for labeled images. Decide which is true for od, and read it from the od
-  Core task Result or batch metrics held by `InferenceResultSet`; never recompute it in Qt.
-- **Canvas classes** — reuse the shared class-color helper so od overlays use
-  the same `AnnotationClass` colors as sg.
-
-### C.8 File exchange (optional)
-
-Annotation import and Project storage follow
-[annotation-import-and-storage.md](annotation-import-and-storage.md). A new task first defines its typed Core target, then its source adapters normalize external data into that target through the shared import boundary. All source formats use the Project's canonical task storage. Unknown or ambiguous formats fail explicitly.
-
-### C.9 Tests
-
-Register new tests explicitly in `CMakeLists.txt`:
-
-```cmake
-studio_add_test(
-    detection_workspace_test detection_workspace_domain
-    test/detection_workspace_test.cpp)
-```
-
-Cover, in order:
-
-1. `workflow_test.cpp` — an `od` task node validates with its registered spec
-   and rejects an unregistered spec.
-2. `task_workspace_service_test.cpp` — `build_training_request()` converts a
-   bound detection sample into `AiMetaData::boxes`, excludes malformed samples,
-   and `record_inference_result()` stores od records.
-3. `workflow_document_test.cpp` — new persisted fields round-trip and unknown
-   keys are rejected.
-4. A widget/canvas test if the editor has interaction logic worth protecting.
-
-### C.10 Optional: project template
-
-`src/project_home.cpp` and `MainWindow::newProjectFromTemplate()` create
-`Dataset -> Task` templates. Add an od quick-start action only after the
-module is fully usable; an unavailable template should not create a broken
-project.
-
----
-
-## Recipe D — Add a new node kind (rare)
-
-Task modules do **not** need a new node kind. Only add one when the workflow
-needs a genuinely new processing stage (for example a "Dataset Merge" node):
-
-1. `src/workflow.h`: add the `NodeKind` enumerator and its config struct; add
-   it to the `NodeConfig` variant and `WorkflowGraph::input_ports/output_ports`.
-2. `src/node_registry.h/.cpp`: add the `NodeDescriptor` (title, badge, accent,
-   position).
-3. `src/workflow_scene.cpp`: the scene renders ports/summary from the registry;
-   add the summary text branch.
-4. `src/properties_editor.cpp`: add the editor page for the new config.
-5. `src/workflow.cpp`: validation rules for the new kind.
-6. `src/workflow_document.cpp`: serialize/parse the config and update exact
-   field lists.
-7. `src/main_window.cpp`: add it to the Node Library menu.
-8. Tests: workflow domain + document round-trip + scene interaction.
-
----
-
-## 3. Definition of done
-
-- [ ] The backend module exists, is installed, and its headers are visible in
-      `build/package/include/DeepLearning/...`.
-- [ ] The task/spec appears in `task_module_catalog.h` / `model_spec_catalog.h`.
-- [ ] `workflow.cpp` validation accepts the new task through the catalog, not
-      through another hard-coded id.
-- [ ] Every new persisted field is written, read, and listed in the exact-field
-      checks; strict rejection still works.
-- [ ] `task_workspace_service.cpp` converts Qt data into backend structures;
-      no widget builds a `TrainingRequest`/`InferenceRequest` directly.
-- [ ] No Qt-only duplicate of a backend sample, class, split, model, or result
-      structure was introduced.
-- [ ] The editor commits into `TaskSampleBinding`/`AiMetaData`, not into a
-      parallel canvas model.
-- [ ] New tests are registered in `CMakeLists.txt` with unique ctest names.
-- [ ] Release build + full `ctest` pass + `scripts/verify_release_clean.ps1`.
-
-## 4. Pitfalls seen in this repository
-
-- **Patch the JSON writer only.** The reader then fails on its exact-field
-  list and every old project stops opening. Update both sides in one edit.
-- **Business logic in a widget.** Widgets should call
-  `TaskWorkspaceService`; they must not build backend metadata or compute
-  metrics.
-- **Second result cache.** Results are persisted per `model_id + WeightType`
-  inside the Project. Do not add a parallel list in a page widget.
-- **`QImage` as canonical annotation.** A segmentation mask shown as `QImage`
-  is a view/file adapter; committed data is `std::vector<Region>` (or the new
-  backend geometry type) in `AiMetaData`.
-- **Task availability flag ignored.** A module marked `available=false` must be
-  rejected by `add_task_node`, not just greyed out in the dialog.
-- **CMake glob expectations.** New `src` files are automatic; new tests, new
-  resources, and new runtime dependencies are not.
-- **Keyword macros.** The Studio library defines `QT_NO_KEYWORDS`; use
-  `Q_SIGNALS`, `Q_SLOTS`, `Q_EMIT`, not `signals`, `slots`, `emit`.
-
-## 5. Verification
-
-```powershell
-cmake -S C:\CppProj\DeepLearningQT -B C:\CppProj\DeepLearningQT\build `
-  -G "Visual Studio 17 2022" -A x64 `
-  -DQt5_DIR=C:\Qt\5.15.2\msvc2019_64\lib\cmake\Qt5 `
-  -DVTK_DIR=C:\CLib\vtkQt\lib\cmake\vtk-9.2 `
-  -DTBB_DIR=C:\CLib\TBB\lib\cmake\tbb `
-  -Dlibuv_DIR=C:\CLib\libuv\lib\cmake\libuv `
-  "-DCMAKE_PREFIX_PATH=C:\CppProj\DeepLearning\build\package;C:\CLib\libtorchCpu\libtorch" `
-  -DOpenCV_DIR=C:\CLib\opencv\install\x64\vc17\lib
-
-cmake --build C:\CppProj\DeepLearningQT\build --config Release
-ctest --test-dir C:\CppProj\DeepLearningQT\build -C Release --output-on-failure
-& C:\CppProj\DeepLearningQT\scripts\verify_release_clean.ps1
-```
+Use the owner-approved preset and existing Core build target. Build and test commands are in [README.md](../README.md). Studio imports DeepLearning::Core from that build or an explicitly selected installation.

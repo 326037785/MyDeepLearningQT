@@ -52,7 +52,8 @@ public:
     void set_service(TaskWorkspaceService* service);
     void refresh();
     std::function<void()> changed;
-    std::function<void(int)> open_dataset_requested;
+    std::function<void(int node_id)> open_dataset_requested;
+    std::function<bool(int, DatasetConfig, int, const TaskDatasetBinding*)> dataset_replace_requested;
 
 private:
     void apply_filter();
@@ -119,7 +120,7 @@ public:
 private:
     void commit_model_spec();
     void populate_model_options();
-    void populate_project_models();
+    void populate_models();
     const ProjectModel* controlled_model() const;
     QString training_source_mode() const;
     void update_model_compatibility();
@@ -160,7 +161,7 @@ private:
     QProgressBar* progress_ = nullptr;
     LossChart* chart_ = nullptr;
     QPushButton* run_details_ = nullptr;
-    std::vector<ProjectModel> project_models_;
+    std::vector<ProjectModel> models_;
     QString model_compatibility_severity_;
     bool rebuilding_ = false;
 };
@@ -170,6 +171,7 @@ public:
     explicit InferenceWorkspace(QWidget* parent = nullptr);
     void set_service(TaskWorkspaceService* service);
     void set_models(const std::vector<ProjectModel>& models);
+    void synchronize_result_selection();
     void refresh();
     void request_start();
     void set_busy(bool busy);
@@ -185,6 +187,7 @@ public:
 
 private:
     void commit_selection_scope();
+    void commit_result_selection();
     void refresh_canvas();
     void refresh_device_types();
     void refresh_devices();
@@ -195,7 +198,7 @@ private:
     const jocelin::model::ModelWeight* selected_weight() const;
     void update_command_presentation();
     TaskWorkspaceService* service_ = nullptr;
-    std::vector<ProjectModel> project_models_;
+    std::vector<ProjectModel> models_;
     ProjectModelBrowser* model_browser_ = nullptr;
     QListWidget* images_ = nullptr;
     QStackedWidget* canvas_stack_ = nullptr;
@@ -231,7 +234,7 @@ private:
     void refresh_sample_detail();
 
     TaskWorkspaceService* service_ = nullptr;
-    std::vector<ProjectModel> project_models_;
+    std::vector<ProjectModel> models_;
     ProjectModelBrowser* model_browser_ = nullptr;
     QWidget* summary_ = nullptr;
     QLabel* context_ = nullptr;
@@ -253,8 +256,7 @@ private:
     QPushButton* open_folder_ = nullptr;
     QPushButton* export_button_ = nullptr;
     QString selected_model_id_;
-    jocelin::config::WeightType selected_weight_format_ =
-        jocelin::config::WeightType::LibTorch;
+    QComboBox* weight_branch_ = nullptr;
 };
 
 } // namespace studio

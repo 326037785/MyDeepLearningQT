@@ -42,7 +42,7 @@ public:
     void set_dataset(const std::vector<TaskSampleBinding>& samples,
                      const QStringList& class_names,
                      const QVector<int>& class_labels);
-    void set_inference_directory(const QString& directory);
+    void set_inference_result(const InferenceResultSet* result, const QStringList& model_classes = {});
     void refresh_inference_result();
 
     std::function<void(const QString&)> class_add_requested;
@@ -71,7 +71,8 @@ private:
     QStringList display_names_;
     QStringList class_names_;
     QVector<int> class_labels_;
-    QString inference_directory_;
+    std::vector<ResultReference> inference_results_;
+    QStringList prediction_class_names_;
     int current_row_ = -1;
     int view_mode_ = 0;
     int predicted_class_ = -1;

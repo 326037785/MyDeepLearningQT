@@ -26,7 +26,7 @@ struct AnnotationImportResult {
 struct AnnotationImportStats {
     int image_count = 0;
     int mask_count = 0;
-    int background_only_count = 0;
+    int unannotated_count = 0;
     int class_count = 0;
     int review_count = 0;
 };
