@@ -9,6 +9,7 @@ class QPushButton;
 namespace studio {
 
 class SaveProjectAsDialog final : public QDialog {
+    Q_OBJECT
 public:
     explicit SaveProjectAsDialog(
         const QString& current_name,

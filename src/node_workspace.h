@@ -38,7 +38,6 @@ public:
     void update_training_progress(
         int node_id,
         const jocelin::train::TrainingProgress& progress);
-    void append_training_log(int node_id, const QString& text);
     void finish_training(
         int node_id,
         const jocelin::training::TrainingResult& result,

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300">
+  <defs>
+    <linearGradient id="wash" x1="0" x2="1" y1="1" y2="0"><stop stop-color="#edf4ff"/><stop offset="1" stop-color="#c9ddfb"/></linearGradient>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#fff" stop-opacity=".8"/><stop offset="1" stop-color="#d7e6fb" stop-opacity=".58"/></linearGradient>
+    <linearGradient id="image" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#94b9e5"/><stop offset="1" stop-color="#355985"/></linearGradient>
+  </defs>
+  <path d="M0 300C70 237 100 238 150 255c44-93 98-96 139-67C373 39 489 29 600 0v300z" fill="url(#wash)"/>
+  <g fill="url(#panel)" stroke="#fff" stroke-opacity=".9" stroke-width="2">
+    <path d="M423 67l132-41q12-4 12 9v177q0 8-9 11l-135 39z"/>
+    <path d="M321 87l151-47q12-4 12 9v180q0 9-9 12l-154 43z"/>
+    <path d="M218 97l154-46q12-4 12 9v178q0 10-9 13l-157 43z"/>
+    <path d="M94 82l158-48q13-4 13 10v184q0 10-10 13L94 283q-10 2-10-9V95q0-10 10-13z"/>
+  </g>
+  <path d="M106 111l136-40v142l-136 36z" fill="url(#image)" opacity=".9"/>
+  <path d="M112 205l36-50 27 25 22-31 39 59v0l-124 33z" fill="#7fa5bd" opacity=".8"/>
+  <circle cx="154" cy="141" r="10" fill="#d6e9f9" opacity=".75"/>
+  <path d="M129 135l89-26v104l-89 25z" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="4 3"/>
+  <g fill="#fff"><rect x="126" y="132" width="6" height="6"/><rect x="215" y="106" width="6" height="6"/><rect x="126" y="235" width="6" height="6"/><rect x="215" y="210" width="6" height="6"/></g>
+  <path d="M266 119l91-27v118l-91 25z" fill="#7ca8e1" opacity=".58"/>
+  <path d="M279 190l14-34 16 4 10-28 22 8v55l-62 17z" fill="#7ad2bd" fill-opacity=".6" stroke="#78d5ba" stroke-width="2"/>
+  <g fill="none" stroke="#79a6e6" stroke-width="2" opacity=".85">
+    <path d="M397 127l25 24 24-38M397 127l25 52 24-38M397 155l25-4 24 18M397 155l25 52 24-38M397 183l25-32 24-10M397 183l25-4 24 18M397 211l25-32 24-18M397 211l25-4 24-10"/>
+  </g>
+  <g fill="#8ab2ed"><circle cx="397" cy="127" r="6"/><circle cx="397" cy="155" r="6"/><circle cx="397" cy="183" r="6"/><circle cx="397" cy="211" r="6"/><circle cx="422" cy="151" r="6"/><circle cx="422" cy="179" r="6"/><circle cx="422" cy="207" r="6"/><circle cx="446" cy="113" r="6"/><circle cx="446" cy="141" r="6"/><circle cx="446" cy="169" r="6"/><circle cx="446" cy="197" r="6"/></g>
+</svg>

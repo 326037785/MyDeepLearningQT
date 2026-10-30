@@ -20,7 +20,13 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 | src/annotation_codec.* and src/annotation_exchange.* | External annotation decoding, mapping and export |
 | Annotation widgets and src/task_workspace_pages.cpp | Editing, display and operation requests |
 | src/task_workspace.cpp | Task page composition and shared result selection |
-| src/main_window.cpp | User confirmation, Project context and training/inference jobs |
+| src/main_window.cpp | Application shell: feature composition, page/Dock mounting, window layout and status presentation |
+| src/project_module.cpp | Project commands, home page and metadata panel, using ProjectManager |
+| src/workflow_module.cpp | Workflow canvas/tabs, node library, properties and Dataset-change confirmation |
+| src/model_actions.cpp | Named model import/export/delete/clear interactions for the owning TaskNode |
+| src/execution_module.cpp | Existing training/inference Jobs, launch requests and progress/completion handling |
+| src/settings_module.cpp | Preferences and language commands |
+| src/activity_log.cpp | UTF-8 session log files, menu action and a separate log viewer |
 
 Widgets keep viewport, drawing and selection state. Authoritative samples, classes, splits and results remain with the TaskNode. Core request construction belongs to TaskWorkspaceService.
 
@@ -55,6 +61,36 @@ ModelListStorage owns the Node's models/model_list.json. Workflow result entries
 Ordinary save uses atomic replacement per file. Inference replacement preserves the selected branch until its new result commits. See [project_spec.md](project_spec.md) and [inference-modelist-todo-guide.md](inference-modelist-todo-guide.md).
 
 ## 5. Extension and validation
+
+UI features create their actions, views and interactions in their own module. Use
+Qt's QMenu/QToolBar APIs for actions and MainWindow::mount_page/mount_dock for
+views; connect feature requests explicitly in the composition code. Keep complex
+operations in named methods, leaving short connections in the shell. Domain state
+stays in ProjectManager, Workflow and TaskNode; do not add a UI state center.
+Extract a service/coordinator only for a flow with real cross-module reuse.
+
+Command availability belongs to its feature module. Query ExecutionModule for
+busy state; it includes the existing operation identity through startup and queued
+completion, as well as the Jobs. Guard project transitions at their named entry
+points so home callbacks and recent-project commands obey the same rule as toolbar
+actions. Refreshing a view must preserve the execution lock.
+
+Write diagnostic text through the supplied log callback. ActivityLog owns the
+file and its on-demand dialog; do not place raw logs, checkpoint paths or error
+traces in workspace labels. Keep actionable status, progress and results in the
+owning feature. Session logs stay in `logs/` beside the executable; do not use
+AppData or the working directory. Training retains its existing per-run log file
+inside the owning project.
+
+WorkflowModule builds the canvas, node library and properties panel separately.
+Tab selection, closing and renaming share its named activation method; connect
+widget requests to these operations rather than repeating switch logic in lambdas.
+
+Modules receive their domain references and output callbacks explicitly. The
+shell owns built-in module lifetimes; mounted widgets belong to the Qt parent
+tree, and actions belong to their feature QObject or menu. These are source-level
+extension points. DLL loading and runtime unloading are not implemented. See the
+[UI modularization plan](ui-modularization-plan.md) for boundaries and evidence.
 
 A task representation starts in Core. Qt consumes the public type and service contract. Model specifications offered by Qt must exist in Core's model registration.
 

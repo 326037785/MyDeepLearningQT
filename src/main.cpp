@@ -1,30 +1,18 @@
 #include "main_window.h"
+#include "ui_language.h"
 
 #include <QApplication>
-#include <QFontDatabase>
-
-namespace {
-
-QFont application_font() {
-    const QStringList installed = QFontDatabase().families();
-    for (const QString& preferred : {"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Noto Sans", "DejaVu Sans"}) {
-        if (installed.contains(preferred, Qt::CaseInsensitive)) {
-            QFont font(preferred);
-            font.setPointSizeF(8.5);
-            font.setStyleStrategy(QFont::PreferAntialias);
-            return font;
-        }
-    }
-    return QFontDatabase::systemFont(QFontDatabase::GeneralFont);
-}
-
-} // namespace
+#include <QIcon>
+#include <QTranslator>
 
 int main(int argc, char* argv[]) {
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
     QApplication app(argc, argv);
-    app.setFont(application_font());
+    app.setWindowIcon(QIcon(":/studio/studio.ico"));
+    QTranslator qt_translator;
+    QTranslator studio_translator;
+    studio::install_ui_language(app, qt_translator, studio_translator);
     studio::MainWindow window;
     window.show();
     return app.exec();

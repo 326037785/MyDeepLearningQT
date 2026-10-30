@@ -43,7 +43,6 @@ public:
 
     void training_started();
     void update_training_progress(const jocelin::train::TrainingProgress& progress);
-    void append_training_log(const QString& text);
     void finish_training(const jocelin::training::TrainingResult& result,
                          const QString& error);
     void inference_started();

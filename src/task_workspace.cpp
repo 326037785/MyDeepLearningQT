@@ -538,10 +538,6 @@ void TaskWorkspace::update_training_progress(
     training_->update_progress(progress);
 }
 
-void TaskWorkspace::append_training_log(const QString& text) {
-    training_->append_log(text);
-}
-
 void TaskWorkspace::finish_training(
     const jocelin::training::TrainingResult& result,
     const QString& error)

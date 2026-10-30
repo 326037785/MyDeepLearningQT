@@ -16,7 +16,6 @@ class QFrame;
 class QLabel;
 class QLineEdit;
 class QListWidget;
-class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QScrollArea;
@@ -105,7 +104,6 @@ public:
     void set_busy(bool busy);
     void begin();
     void update_progress(const jocelin::train::TrainingProgress& progress);
-    void append_log(const QString& text);
     void finish(const jocelin::training::TrainingResult& result, const QString& error);
     std::function<void(const TrainingLaunchRequest&)> start_requested;
     std::function<void()> stop_requested;
@@ -157,7 +155,6 @@ private:
     QLabel* epoch_ = nullptr;
     QLabel* loss_ = nullptr;
     QLabel* metric_ = nullptr;
-    QLabel* log_summary_ = nullptr;
     QProgressBar* progress_ = nullptr;
     LossChart* chart_ = nullptr;
     QPushButton* run_details_ = nullptr;

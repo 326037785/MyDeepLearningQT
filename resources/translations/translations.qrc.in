@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/studio/translations">
+    <file alias="studio_zh_CN.qm">@CMAKE_CURRENT_BINARY_DIR@/studio_zh_CN.qm</file>
+    @STUDIO_QT_TRANSLATION_ENTRY@
+  </qresource>
+</RCC>

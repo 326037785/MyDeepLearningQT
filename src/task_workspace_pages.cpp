@@ -46,7 +46,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -1212,16 +1211,12 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     chart_->setMinimumHeight(220);
     monitor_layout->addWidget(chart_, 1);
     auto* log_bar = new QHBoxLayout;
-    log_summary_ = new QLabel(tr("No runtime messages"), monitor);
-    log_summary_->setObjectName("trainingLogSummary");
-    log_summary_->setProperty("meta", true);
-    log_summary_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    log_bar->addWidget(log_summary_, 1);
-    run_details_ = new QPushButton(tr("Run details"), monitor);
+    log_bar->addStretch();
+    run_details_ = new QPushButton(tr("View training log"), monitor);
     run_details_->setObjectName("trainingRunDetailsButton");
     run_details_->setProperty("compact", true);
     run_details_->setToolTip(
-        tr("Open the project Activity Log in the Output panel."));
+        tr("Open the training log in a separate window."));
     log_bar->addWidget(run_details_);
     monitor_layout->addLayout(log_bar);
 
@@ -1718,7 +1713,6 @@ void TrainingWorkspace::set_busy(bool busy) {
 
 void TrainingWorkspace::begin() {
     chart_->reset();
-    log_summary_->setText(tr("Training started"));
     progress_->setValue(0);
     epoch_->setText(tr("Epoch 0 / %1").arg(epochs_->value()));
     loss_->setText(tr("Loss —"));
@@ -1741,14 +1735,6 @@ void TrainingWorkspace::update_progress(const jocelin::train::TrainingProgress& 
         QString::fromStdString(value.validation_metric_name));
 }
 
-void TrainingWorkspace::append_log(const QString& text) {
-    const QString summary = text.simplified();
-    if (!summary.isEmpty()) {
-        log_summary_->setText(summary);
-        log_summary_->setToolTip(text);
-    }
-}
-
 void TrainingWorkspace::finish(
     const jocelin::training::TrainingResult& result,
     const QString& error)
@@ -1761,13 +1747,6 @@ void TrainingWorkspace::finish(
                 result.end_state == jocelin::training::TrainingEndState::Stopped
                     ? QStringLiteral("stopped")
                     : QStringLiteral("completed"));
-    if (!error.isEmpty()) append_log(error);
-    else {
-        append_log(tr("Best checkpoint: %1")
-            .arg(QString::fromStdString(result.best_model_path)));
-        append_log(tr("Last checkpoint: %1")
-            .arg(QString::fromStdString(result.last_model_path)));
-    }
     refresh();
 }
 

@@ -29,7 +29,7 @@ set(TBB_DIR "C:/CLib/TBB/lib/cmake/tbb" CACHE PATH
 set(libuv_DIR "C:/CLib/libuv/lib/cmake/libuv" CACHE PATH
     "Optional libuv package location used to infer its runtime directory")
 
-find_package(Qt5 5.15 REQUIRED COMPONENTS Widgets Concurrent Svg)
+find_package(Qt5 5.15 REQUIRED COMPONENTS Widgets Concurrent Svg LinguistTools)
 # Older OpenCV exports can name imported VTK/TBB targets as DLL dependencies.
 if(EXISTS "${TBB_DIR}/TBBConfig.cmake" OR EXISTS "${TBB_DIR}/tbb-config.cmake")
     find_package(TBB QUIET CONFIG COMPONENTS tbb)
@@ -85,31 +85,6 @@ foreach(opencv_target IN LISTS OpenCV_LIBRARIES)
 endforeach()
 list(REMOVE_DUPLICATES STUDIO_OPTIONAL_RUNTIME_DLLS)
 
-file(GLOB STUDIO_INTERNAL_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
-list(REMOVE_ITEM STUDIO_INTERNAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-
-add_library(DeepLearningStudioLib STATIC ${STUDIO_INTERNAL_SOURCES})
-target_include_directories(DeepLearningStudioLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(DeepLearningStudioLib PUBLIC
-    DeepLearning::Core
-    Qt5::Widgets
-    Qt5::Concurrent
-    Qt5::Svg)
-target_compile_definitions(DeepLearningStudioLib PUBLIC QT_NO_KEYWORDS NOMINMAX)
-
-add_executable(DeepLearningStudio WIN32
-    resources/studio.qrc
-    src/main.cpp)
-target_link_libraries(DeepLearningStudio PRIVATE DeepLearningStudioLib)
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT DeepLearningStudio)
-
-if(MSVC)
-    set_property(TARGET DeepLearningStudio PROPERTY VS_DEBUGGER_ENVIRONMENT
-        "PATH=${VTK_RUNTIME_DIR};${TBB_RUNTIME_DIR};${LIBUV_RUNTIME_DIR};${LIBTORCH_RUNTIME_DIR};%PATH%")
-endif()
-
 function(studio_copy_runtime target)
     if(NOT WIN32)
         return()
@@ -132,6 +107,7 @@ function(studio_copy_runtime target)
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:${target}>/imageformats
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Qt5_DIR}/../../../plugins/imageformats/qico.dll"
             "${Qt5_DIR}/../../../plugins/imageformats/qjpeg.dll"
             "${Qt5_DIR}/../../../plugins/imageformats/qtiff.dll"
             "${Qt5_DIR}/../../../plugins/imageformats/qwebp.dll"
@@ -140,66 +116,12 @@ function(studio_copy_runtime target)
         VERBATIM)
 endfunction()
 
-studio_copy_runtime(DeepLearningStudio)
-
 include(CTest)
 if(BUILD_TESTING)
     find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
+endif()
 
-    function(studio_add_test target test_name source)
-        add_executable(${target} ${source})
-        target_link_libraries(${target} PRIVATE DeepLearningStudioLib)
-        set_target_properties(${target} PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.test-artifacts/$<CONFIG>")
-        studio_copy_runtime(${target})
-        add_test(NAME ${test_name} COMMAND ${target})
-    endfunction()
-
-    studio_add_test(
-        image_viewport_transform_test image_viewport_transform
-        test/image_viewport_transform_test.cpp)
-
-    add_executable(dataset_visual_test
-        resources/studio.qrc
-        test/dataset_visual_test.cpp)
-    target_link_libraries(dataset_visual_test PRIVATE DeepLearningStudioLib)
-    set_target_properties(dataset_visual_test PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.test-artifacts/$<CONFIG>")
-    studio_copy_runtime(dataset_visual_test)
-    add_test(NAME dataset_visual_contract COMMAND dataset_visual_test)
-
-    studio_add_test(
-        workflow_engine_test workflow_engine
-        test/workflow_test.cpp)
-    studio_add_test(
-        workflow_document_test workflow_document_roundtrip
-        test/workflow_document_test.cpp)
-    studio_add_test(
-        project_manager_test project_manager_roundtrip
-        test/project_manager_test.cpp)
-    studio_add_test(
-        task_workspace_service_test task_workspace_domain
-        test/task_workspace_service_test.cpp)
-    studio_add_test(
-        annotation_exchange_test annotation_exchange_contract
-        test/annotation_exchange_test.cpp)
-    studio_add_test(
-        augmentation_dialog_test augmentation_dialog_contract
-        test/augmentation_dialog_test.cpp)
-
-    add_executable(workflow_scene_test test/workflow_scene_test.cpp)
-    target_link_libraries(workflow_scene_test PRIVATE DeepLearningStudioLib Qt5::Test)
-    set_target_properties(workflow_scene_test PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.test-artifacts/$<CONFIG>")
-    studio_copy_runtime(workflow_scene_test)
-    add_test(NAME workflow_scene_interactions COMMAND workflow_scene_test)
-
-    add_executable(main_window_test
-        resources/studio.qrc
-        test/main_window_test.cpp)
-    target_link_libraries(main_window_test PRIVATE DeepLearningStudioLib)
-    set_target_properties(main_window_test PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/.test-artifacts/$<CONFIG>")
-    studio_copy_runtime(main_window_test)
-    add_test(NAME main_window_integration COMMAND main_window_test)
+add_subdirectory(src)
+if(BUILD_TESTING)
+    add_subdirectory(test)
 endif()

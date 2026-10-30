@@ -7,6 +7,7 @@ class QLineEdit;
 namespace studio {
 
 class NewProjectDialog final : public QDialog {
+    Q_OBJECT
 public:
     explicit NewProjectDialog(QWidget* parent = nullptr);
 

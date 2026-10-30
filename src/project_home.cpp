@@ -14,10 +14,12 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
-#include <QSettings>
+#include <QSvgRenderer>
 #include <QTableWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -52,10 +54,44 @@ RecentProjectSummary project_summary(const QString& path) {
     return summary;
 }
 
-QPushButton* nav_button(const QString& text, QWidget* parent, bool active = false) {
-    auto* button = new QPushButton(text, parent);
-    button->setProperty("homeNav", true);
-    button->setProperty("active", active);
+QPixmap render_svg(const QString& path, const QSize& size) {
+    QPixmap image(size);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    QSvgRenderer(path).render(&painter);
+    return image;
+}
+
+QPushButton* home_action(const QString& title, const QString& hint,
+                         const QString& icon, QWidget* parent) {
+    auto* button = new QPushButton(parent);
+    button->setProperty("homeAction", true);
+    button->setAccessibleName(title);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setMinimumHeight(92);
+    auto* layout = new QHBoxLayout(button);
+    layout->setContentsMargins(18, 14, 18, 14);
+    layout->setSpacing(16);
+    auto* symbol = new QLabel(button);
+    symbol->setPixmap(render_svg(":/studio/icons/" + icon + ".svg", QSize(36, 36)));
+    symbol->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(symbol);
+    auto* text = new QVBoxLayout;
+    text->setSpacing(4);
+    auto* name = new QLabel(title, button);
+    name->setProperty("homeActionTitle", true);
+    name->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* detail = new QLabel(hint, button);
+    detail->setProperty("homeActionHint", true);
+    detail->setWordWrap(true);
+    detail->setAttribute(Qt::WA_TransparentForMouseEvents);
+    text->addWidget(name);
+    text->addWidget(detail);
+    layout->addLayout(text, 1);
+    auto* arrow = new QLabel(QString::fromUtf8("›"), button);
+    arrow->setProperty("homeActionArrow", true);
+    arrow->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(arrow);
     return button;
 }
 
@@ -67,36 +103,6 @@ ProjectHome::ProjectHome(QWidget* parent) : QWidget(parent) {
     shell->setContentsMargins(0, 0, 0, 0);
     shell->setSpacing(0);
 
-    auto* navigation = new QFrame(this);
-    navigation->setObjectName("homeNavigation");
-    navigation->setMinimumWidth(176);
-    navigation->setMaximumWidth(196);
-    auto* navigation_layout = new QVBoxLayout(navigation);
-    navigation_layout->setContentsMargins(12, 16, 12, 28);
-    navigation_layout->setSpacing(5);
-    auto* product = new QLabel(tr("DEEP LEARNING\nSTUDIO"), navigation);
-    product->setProperty("navBrand", true);
-    navigation_layout->addWidget(product);
-    navigation_layout->addSpacing(12);
-    auto* home = nav_button(tr("Home"), navigation, true);
-    auto* nav_create = nav_button(tr("New Project"), navigation);
-    auto* nav_open = nav_button(tr("Open Project"), navigation);
-    auto* recent_anchor = nav_button(tr("Recent Projects"), navigation);
-    auto* quick_start = nav_button(tr("Quick Start"), navigation);
-    auto* templates = nav_button(tr("Templates"), navigation);
-    quick_start->setObjectName("homeQuickStartButton");
-    templates->setObjectName("homeTemplatesButton");
-    quick_start->setToolTip(tr("Create a semantic-segmentation starter project."));
-    templates->setToolTip(tr("Create a project from a reusable workflow template."));
-    auto* template_menu = new QMenu(templates);
-    auto* segmentation_template = template_menu->addAction(tr("Semantic segmentation"));
-    auto* classification_template = template_menu->addAction(tr("Image classification"));
-    templates->setMenu(template_menu);
-    for (QPushButton* item : {home, nav_create, nav_open, recent_anchor, quick_start, templates})
-        navigation_layout->addWidget(item);
-    navigation_layout->addStretch();
-    shell->addWidget(navigation);
-
     auto* scroll = new QScrollArea(this);
     scroll->setObjectName("homeScroll");
     scroll->setWidgetResizable(true);
@@ -104,77 +110,63 @@ ProjectHome::ProjectHome(QWidget* parent) : QWidget(parent) {
     scroll->setFrameShape(QFrame::NoFrame);
     auto* content = new QWidget(scroll);
     content->setObjectName("homeContent");
-    auto* page = new QVBoxLayout(content);
-    page->setContentsMargins(28, 24, 28, 24);
-    page->setSpacing(16);
+    auto* content_layout = new QVBoxLayout(content);
+    content_layout->setContentsMargins(40, 20, 40, 28);
+    auto* column = new QWidget(content);
+    column->setMaximumWidth(1280);
+    auto* content_row = new QHBoxLayout;
+    content_row->addStretch(0);
+    content_row->addWidget(column, 1);
+    content_row->addStretch(0);
+    content_layout->addLayout(content_row);
+    content_layout->addStretch();
+    auto* page = new QVBoxLayout(column);
+    page->setContentsMargins(0, 0, 0, 0);
+    page->setSpacing(20);
 
-    auto* hero = new QFrame(content);
+    auto* hero = new QFrame(column);
+    hero_ = hero;
     hero->setObjectName("homeHero");
     auto* hero_shell = new QHBoxLayout(hero);
-    hero_shell->setContentsMargins(24, 20, 24, 20);
-    hero_shell->setSpacing(24);
-    auto* hero_copy = new QVBoxLayout;
-    hero_copy->setSpacing(8);
-    auto* eyebrow = new QLabel(tr("DEEP LEARNING STUDIO"), hero);
-    eyebrow->setProperty("eyebrow", true);
-    auto* title = new QLabel(tr("Build a vision project,\nnot just a graph."), hero);
+    hero_shell->setContentsMargins(32, 12, 0, 12);
+    hero_shell->setSpacing(8);
+    hero->setMinimumHeight(260);
+    auto* title = new QLabel(hero);
+    title->setText(tr("Build a %1").arg("<span style='color:#1764d6'>" + tr("Vision Project") + "</span>"));
     title->setProperty("homeTitle", true);
-    auto* description = new QLabel(tr("Create a project to organize datasets, annotations, training runs, models and inference results."), hero);
-    description->setWordWrap(true);
-    description->setMaximumWidth(720);
-    description->setProperty("homeDescription", true);
-    hero_copy->addWidget(eyebrow);
-    hero_copy->addWidget(title);
-    hero_copy->addWidget(description);
-    auto* actions = new QHBoxLayout;
-    actions->setSpacing(12);
-    auto* create = new QPushButton(tr("+  New Project"), hero);
-    create->setObjectName("homeNewProjectButton");
-    create->setProperty("primary", true);
-    auto* open = new QPushButton(tr("Open Project"), hero);
-    open->setObjectName("homeOpenProjectButton");
-    open->setProperty("accentSecondary", true);
-    create->setMinimumHeight(36);
-    open->setMinimumHeight(36);
-    actions->addWidget(create);
-    actions->addWidget(open);
-    actions->addStretch();
-    hero_copy->addSpacing(4);
-    hero_copy->addLayout(actions);
-    hero_shell->addLayout(hero_copy, 3);
+    title->setWordWrap(true);
+    hero_shell->addWidget(title, 1);
 
-    auto* visual = new QFrame(hero);
+    auto* visual = new QLabel(hero);
     hero_visual_ = visual;
     visual->setObjectName("homeHeroVisual");
-    visual->setMinimumWidth(250);
-    visual->setMaximumWidth(360);
-    auto* visual_layout = new QVBoxLayout(visual);
-    visual_layout->setContentsMargins(20, 18, 20, 18);
-    visual_layout->setSpacing(8);
-    auto* visual_title = new QLabel(tr("VISION WORKFLOW"), visual);
-    visual_title->setProperty("eyebrow", true);
-    visual_layout->addWidget(visual_title);
-    for (const QString& stage : {tr("01  DATASET & LABELS"), tr("02  TRAIN & MONITOR"), tr("03  INFERENCE RESULTS")}) {
-        auto* chip = new QLabel(stage, visual);
-        chip->setProperty("heroStage", true);
-        visual_layout->addWidget(chip);
-    }
-    visual_layout->addStretch();
-    hero_shell->addWidget(visual, 1);
+    visual->setPixmap(render_svg(":/studio/home-vision.svg", QSize(500, 250)));
+    visual->setAlignment(Qt::AlignCenter);
+    hero_shell->addWidget(visual, 0, Qt::AlignRight | Qt::AlignVCenter);
     page->addWidget(hero);
 
-    auto* recent_card = new QFrame(content);
+    auto* actions = new QHBoxLayout;
+    actions->setSpacing(16);
+    auto* create = home_action(tr("New Project"), tr("Start a new workspace"), "new-project", column);
+    create->setObjectName("homeNewProjectButton");
+    create->setProperty("primaryCard", true);
+    auto* open = home_action(tr("Open Project"), tr("Choose a project file"), "open-project", column);
+    open->setObjectName("homeOpenProjectButton");
+    auto* browse_recent = home_action(tr("Recent Projects"), tr("Browse recent projects"), "recent-projects", column);
+    browse_recent->setObjectName("homeRecentProjectsButton");
+    actions->addWidget(create, 1);
+    actions->addWidget(open, 1);
+    actions->addWidget(browse_recent, 1);
+    page->addLayout(actions);
+
+    auto* recent_card = new QFrame(column);
     recent_card->setObjectName("recentProjectsCard");
     auto* recent_card_layout = new QVBoxLayout(recent_card);
     recent_card_layout->setContentsMargins(16, 14, 16, 16);
     recent_card_layout->setSpacing(8);
     auto* recent_title = new QLabel(tr("Recent projects"), recent_card);
     recent_title->setProperty("sectionTitle", true);
-    auto* recent_hint = new QLabel(tr("Continue where you left off, or open a project from another location."), recent_card);
-    recent_hint->setProperty("muted", true);
-    recent_hint->setWordWrap(true);
     recent_card_layout->addWidget(recent_title);
-    recent_card_layout->addWidget(recent_hint);
     recent_table_ = new QTableWidget(recent_card);
     recent_table_->setObjectName("recentProjectsTable");
     recent_table_->setColumnCount(4);
@@ -188,7 +180,7 @@ ProjectHome::ProjectHome(QWidget* parent) : QWidget(parent) {
     recent_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     recent_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     recent_table_->setMinimumHeight(0);
-    recent_empty_ = new QLabel(tr("No recent projects yet. Create a project to begin your first vision workflow."), recent_card);
+    recent_empty_ = new QLabel(tr("No recent projects"), recent_card);
     recent_empty_->setObjectName("recentProjectsEmpty");
     recent_empty_->setProperty("muted", true);
     recent_empty_->setAlignment(Qt::AlignCenter);
@@ -203,22 +195,25 @@ ProjectHome::ProjectHome(QWidget* parent) : QWidget(parent) {
 
     connect(create, &QPushButton::clicked, this, [this] { if (create_project) create_project(); });
     connect(open, &QPushButton::clicked, this, [this] { if (open_project) open_project(); });
-    connect(nav_create, &QPushButton::clicked, this, [this] { if (create_project) create_project(); });
-    connect(nav_open, &QPushButton::clicked, this, [this] { if (open_project) open_project(); });
-    connect(quick_start, &QPushButton::clicked, this, [this] { if (this->quick_start) this->quick_start(); });
-    connect(segmentation_template, &QAction::triggered, this, [this] { if (create_template) create_template("sg"); });
-    connect(classification_template, &QAction::triggered, this, [this] { if (create_template) create_template("cls"); });
-    connect(recent_anchor, &QPushButton::clicked, scroll, [scroll, recent_card] { scroll->ensureWidgetVisible(recent_card, 0, 24); });
+    connect(browse_recent, &QPushButton::clicked, scroll, [scroll, recent_card] {
+        scroll->ensureWidgetVisible(recent_card, 0, 24);
+    });
+    connect(recent_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        auto* item = recent_table_->item(row, 1);
+        if (item && open_recent) open_recent(item->data(Qt::UserRole).toString());
+    });
     refresh_recent_projects();
 }
 
 void ProjectHome::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    if (hero_visual_) hero_visual_->setVisible(event->size().width() >= 980);
+    const bool wide = event->size().width() >= 1000;
+    if (hero_visual_) hero_visual_->setVisible(wide);
+    if (hero_) hero_->setMinimumHeight(wide ? 260 : 150);
 }
 
 void ProjectHome::refresh_recent_projects() {
-    const QStringList recent = RecentProjectStore(8).prune().mid(0, 6);
+    const QStringList recent = RecentProjectStore(8).prune();
     recent_table_->clearContents();
     recent_table_->setRowCount(recent.size());
     recent_table_->setVisible(!recent.isEmpty());
@@ -228,6 +223,7 @@ void ProjectHome::refresh_recent_projects() {
         const QFileInfo manifest(path);
         const RecentProjectSummary summary = project_summary(path);
         auto* project_cell = new QWidget(recent_table_);
+        project_cell->setObjectName("recentProjectCell");
         auto* project_layout = new QVBoxLayout(project_cell);
         project_layout->setContentsMargins(6, 4, 6, 4);
         project_layout->setSpacing(1);
@@ -241,10 +237,12 @@ void ProjectHome::refresh_recent_projects() {
 
         auto* path_item = new QTableWidgetItem(QDir::toNativeSeparators(manifest.absoluteFilePath()));
         path_item->setToolTip(QDir::toNativeSeparators(manifest.absoluteFilePath()));
+        path_item->setData(Qt::UserRole, path);
         recent_table_->setItem(row, 1, path_item);
         recent_table_->setItem(row, 2, new QTableWidgetItem(manifest.lastModified().toString("yyyy-MM-dd  HH:mm")));
 
         auto* actions = new QWidget(recent_table_);
+        actions->setObjectName("recentProjectCell");
         auto* action_layout = new QHBoxLayout(actions);
         action_layout->setContentsMargins(4, 2, 4, 2);
         action_layout->setSpacing(6);

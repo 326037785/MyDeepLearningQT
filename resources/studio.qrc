@@ -1,4 +1,9 @@
 <RCC>
+  <qresource prefix="/studio">
+    <file alias="studio.ico">icons/studio.ico</file>
+    <file alias="studio.svg">icons/studio.svg</file>
+    <file alias="home-vision.svg">home-vision.svg</file>
+  </qresource>
   <qresource prefix="/studio/icons">
     <file alias="previous.svg">icons/previous.svg</file>
     <file alias="next.svg">icons/next.svg</file>
@@ -30,5 +35,9 @@
     <file alias="stop.svg">icons/stop.svg</file>
     <file alias="export.svg">icons/export.svg</file>
     <file alias="lock.svg">icons/lock.svg</file>
+    <file alias="new-project.svg">icons/new-project.svg</file>
+    <file alias="open-project.svg">icons/open-project.svg</file>
+    <file alias="recent-projects.svg">icons/recent-projects.svg</file>
+    <file alias="settings.svg">icons/settings.svg</file>
   </qresource>
 </RCC>

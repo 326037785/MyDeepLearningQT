@@ -344,14 +344,6 @@ void NodeWorkspace::update_training_progress(
         task_workspace_->update_training_progress(progress);
 }
 
-void NodeWorkspace::append_training_log(
-    int node_id,
-    const QString& text)
-{
-    if (node_id == node_id_ && task_workspace_)
-        task_workspace_->append_training_log(text);
-}
-
 void NodeWorkspace::finish_training(
     int node_id,
     const jocelin::training::TrainingResult& result,

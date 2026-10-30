@@ -31,7 +31,8 @@ Get-ChildItem -LiteralPath $release -Recurse -Force | ForEach-Object {
     $relative = $_.FullName.Substring($release.TrimEnd('\').Length).TrimStart('\').Replace('\', '/')
     $allowed = ($relative -ieq 'DeepLearningStudio.exe') -or
                ($relative -match '^[^/]+\.dll$') -or
-               ($relative -match '^(platforms|imageformats)/[^/]+\.dll$')
+               ($relative -match '^(platforms|imageformats)/[^/]+\.dll$') -or
+               ($relative -match '^logs/studio-[0-9]{8}-[0-9]{9}-[0-9]+\.log$')
     if (-not $allowed) {
         $errors.Add("File is not on the Release whitelist: $($_.FullName)")
     }

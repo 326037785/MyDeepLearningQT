@@ -33,6 +33,7 @@
 #include <QPushButton>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QSplitterHandle>
@@ -139,6 +140,10 @@ void dataset_lifecycle_ui() {
 int main(int argc, char** argv) try {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication application(argc, argv);
+    QTemporaryDir settings_directory;
+    if (!settings_directory.isValid()) return 1;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_directory.path());
     dataset_lifecycle_ui();
     QTemporaryDir temporary;
     if (!temporary.isValid()) return 1;
@@ -350,7 +355,8 @@ int main(int argc, char** argv) try {
         !window.findChild<QWidget*>("trainingProjectModelBrowser") ||
         window.findChild<QComboBox*>("trainingSourceMode") ||
         !window.findChild<QPushButton*>("trainingRunDetailsButton") ||
-        window.findChild<QPlainTextEdit*>("trainingLog")) return 22;
+        window.findChild<QPlainTextEdit*>("trainingLog") ||
+        window.findChild<QLabel*>("trainingLogSummary")) return 22;
     auto* loss_chart = window.findChild<QWidget*>("embeddedLossChart");
     auto* training_start =
         window.findChild<QPushButton*>("trainingStartButton");

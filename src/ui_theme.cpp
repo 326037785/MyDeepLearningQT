@@ -10,7 +10,7 @@ void apply_ui_theme(QApplication& application) {
     application.setStyleSheet(QStringLiteral(R"QSS(
 QMainWindow, QWidget { background: #F6F8FA; color: #172B32; }
 QLabel, QCheckBox, QRadioButton { background: transparent; }
-QMenuBar { font-size: 12px; background: #FFFFFF; border-bottom: 1px solid #DCE4E7; padding: 1px 6px; }
+QMenuBar { font-size: 12px; background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 1px 6px; }
 QMenuBar::item { padding: 3px 7px; }
 QMenuBar::item:selected { background: #EEF8F5; border-radius: 4px; }
 QToolBar { background: #173F46; border: 0; padding: 1px 8px; spacing: 2px; }
@@ -31,19 +31,25 @@ QLabel[eyebrow=true] { font-size: 11px; font-weight: 700; letter-spacing: 1px; c
 QLabel[muted=true] { color: #667A83; }
 QLabel[meta=true] { font-size: 11px; color: #667A83; }
 
-QWidget#projectHome, QWidget#homeContent { background: #F4F7F8; }
-QScrollArea#homeScroll { background: #F4F7F8; border: 0; }
-QFrame#homeNavigation { background: #FFFFFF; border-right: 1px solid #DCE4E7; }
-QLabel[navBrand=true] { font-size: 14px; font-weight: 700; color: #173F46; }
-QPushButton[homeNav=true] { background: transparent; border: 0; border-radius: 6px; padding: 8px 10px; text-align: left; color: #425765; font-weight: 500; }
-QPushButton[homeNav=true]:hover { background: #EEF8F5; color: #087A5C; }
-QPushButton[homeNav=true][active=true] { background: #DDF5EE; color: #087A5C; border-left: 3px solid #0EA67A; font-weight: 700; }
-QFrame#homeHero { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #FFFFFF,stop:1 #EAF7F4); border: 1px solid #D9E7E4; border-radius: 12px; }
-QFrame#homeHeroVisual { background: #FFFFFF; border: 1px solid #DCE4E7; border-radius: 10px; }
-QLabel[heroStage=true] { background: #EEF8F5; color: #087A5C; border-left: 3px solid #0EA67A; border-radius: 5px; padding: 8px 10px; font-weight: 600; }
-QFrame#recentProjectsCard { background: #FFFFFF; border: 1px solid #DCE4E7; border-radius: 10px; }
-QLabel[homeTitle=true] { font-size: 30px; font-weight: 700; color: #172B32; }
-QLabel[homeDescription=true] { font-size: 13px; color: #425765; }
+QToolBar#homeToolbar { background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 5px 10px; spacing: 4px; }
+QToolBar#homeToolbar QToolButton { color: #17243C; padding: 5px 9px; }
+QToolBar#homeToolbar QToolButton:hover { background: #DFEAF9; }
+QToolBar#homeToolbar QToolButton:disabled { color: #8A96A6; }
+QWidget#homeToolbarSpacer { background: transparent; }
+QWidget#projectHome, QWidget#homeContent { background: #F8FAFD; }
+QScrollArea#homeScroll { background: #F8FAFD; border: 0; }
+QFrame#homeHero { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #F8FAFD,stop:1 #E6F0FF); border: 0; }
+QLabel[homeTitle=true] { font-size: 40px; font-weight: 700; color: #0C1E3A; }
+QPushButton[homeAction=true] { background: #FBFCFE; border: 1px solid #D5DEEA; border-radius: 8px; text-align: left; }
+QPushButton[homeAction=true][primaryCard=true] { background: #EFF6FF; border-color: #9AC1FF; }
+QPushButton[homeAction=true]:hover { background: #EAF3FF; border-color: #82AFF3; }
+QLabel[homeActionTitle=true] { color: #0C1E3A; font-size: 16px; font-weight: 700; }
+QLabel[homeActionHint=true] { color: #53647D; font-size: 13px; }
+QLabel[homeActionArrow=true] { color: #61748C; font-size: 24px; }
+QFrame#recentProjectsCard { background: transparent; border: 0; border-top: 1px solid #DCE4EF; border-radius: 0; }
+QTableWidget#recentProjectsTable { background: transparent; border: 0; border-radius: 0; }
+QTableWidget#recentProjectsTable QHeaderView::section { background: #F8FAFD; border-bottom: 1px solid #DCE4EF; }
+QWidget#recentProjectCell { background: #F8FAFD; }
 QLabel#recentProjectsEmpty, QFrame[emptyState=true] { background: #F8FAFB; border: 1px dashed #C8D6DA; border-radius: 8px; padding: 16px; }
 
 QFrame#workflowContextHeader { background: #FFFFFF; border-bottom: 1px solid #DCE4E7; }

@@ -53,9 +53,18 @@ The usage rules are in [ModelList and Inference guide](docs/inference-modelist-t
 Project and persistence definitions are in [project_spec.md](docs/project_spec.md).
 AI bridge entry points are in [.ai-bridge/project-context.md](.ai-bridge/project-context.md).
 
+## UI composition
+
+`MainWindow` provides the application shell and mounts pages and Docks. Project,
+workflow, model actions, execution, settings and activity logging live in their own modules.
+Features create their own actions and views, use Qt menus/toolbars, and connect
+through explicit dependencies. Business state remains in the existing domain
+objects. See [module rules](docs/adding-modules.md) and the
+[modularization plan](docs/ui-modularization-plan.md) for extension boundaries.
+
 ## Build
 
-Use Visual Studio 2022, Qt 5.15, C++17 and Release | x64. Each checkout has one
+Use Visual Studio 2022, Qt 5.15 with Linguist tools, C++17 and Release | x64. Each checkout has one
 approved Studio build directory. It defaults to `build`; override
 `STUDIO_REQUIRED_BUILD_DIRECTORY` in a local preset to use another approved
 location. The GPU checkout uses `MyDeepLearningQT` inside the repository, with
@@ -88,11 +97,36 @@ Static libraries stay under `<build>/.build-artifacts`; test executables and the
 runtime files stay under `<build>/.test-artifacts/Release`. Test programs and
 `Qt5Test.dll` must not enter the product directory.
 
+The root CMake file owns dependencies, common build settings, runtime deployment
+and CTest. Application targets live in `src/CMakeLists.txt`; the 12 test targets
+live in `test/CMakeLists.txt`. Their compiler and Qt autogen intermediates stay
+under `<build>/src` and `<build>/test`, while the output paths above remain fixed.
+
 ## Tests
 
 The existing test targets are part of the normal development build. Run them
 through the local test preset, or `ctest --test-dir <build> -C Release
 --output-on-failure`. Keep test executables separate from product output.
+
+## Startup and language
+
+The File menu and home toolbar share the project actions. Existing workflow
+templates are available under File > New from Template. Recent projects can be
+opened from the menu or by double-clicking a row on the home page.
+
+Choose English or Simplified Chinese from the home toolbar or Settings >
+Preferences. The selection is saved and takes effect after restarting. Chinese
+currently covers the home page, menus, and project dialogs; task workspaces
+remain in English. The Qt Linguist catalog is
+`resources/translations/studio_zh_CN.ts`; the build compiles and embeds it.
+
+Diagnostics are written as UTF-8 session files under `logs/` beside the executable
+(`MyDeepLearningQT/Release/logs` in the current build). Activity logs follow the
+application directory and do not use AppData. View > Activity Log opens the
+file in a separate window; logs do not occupy a workspace Dock or training-page
+summary row. Training keeps its existing `runs/<run_id>/training.log`; the
+training page's View training log button opens that file. Progress, curves and
+business results remain in their workspaces.
 
 ## Runtime dependencies
 
@@ -113,6 +147,7 @@ through the local test preset, or `ctest --test-dir <build> -C Release
 
 ## Documentation
 
+- [Qt UI modularization plan](docs/ui-modularization-plan.md): implemented boundaries, validation records, and remaining extension options.
 - `docs/node_identity.md`: persistent Node identity, runtime Task identity, sample identity and ownership.
 - `docs/annotation_spec.md`: Node-wise Annotation persistence and task-wise target rules.
 - `docs/annotation-import-and-storage.md`: import boundaries, Node assets and recovery.
