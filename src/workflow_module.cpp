@@ -1,10 +1,11 @@
 #include "workflow_module.h"
 #include "main_window.h"
 #include "activity_log.h"
+#include "icon_provider.h"
 #include "node_registry.h"
 #include "node_workspace.h"
 #include "properties_editor.h"
-#include "select_task_module_dialog.h"
+#include "task_module_catalog.h"
 #include "task_workspace_service.h"
 #include "task_workspace_pages.h"
 #include "workflow_scene.h"
@@ -299,22 +300,7 @@ void WorkflowModule::build_workspace() {
     workflow_header->setObjectName("workflowContextHeader");
     auto* workflow_header_layout = new QVBoxLayout(workflow_header);
     workflow_header_layout->setContentsMargins(12, 5, 12, 0);
-    workflow_header_layout->setSpacing(4);
-    auto* workflow_top_row = new QHBoxLayout;
-    workflow_top_row->setSpacing(10);
-    auto* workflow_identity = new QVBoxLayout;
-    workflow_identity->setSpacing(2);
-    workflow_context_title_ = new QLabel(workflow_header);
-    workflow_context_title_->setProperty("workflowContextTitle", true);
-    workflow_context_hint_ = new QLabel(workflow_header);
-    workflow_context_hint_->setProperty("muted", true);
-    workflow_identity->addWidget(workflow_context_title_);
-    workflow_identity->addWidget(workflow_context_hint_);
-    workflow_top_row->addLayout(workflow_identity, 1);
-    auto* library_hint = new QLabel(tr("Add nodes  >  Connect  >  Configure"), workflow_header);
-    library_hint->setProperty("workflowSteps", true);
-    workflow_top_row->addWidget(library_hint);
-    workflow_header_layout->addLayout(workflow_top_row);
+    workflow_header_layout->setSpacing(0);
     auto* tabs_row = new QHBoxLayout;
     tabs_row->setContentsMargins(0, 0, 0, 0);
     tabs_row->setSpacing(4);
@@ -323,10 +309,10 @@ void WorkflowModule::build_workspace() {
     workflow_tabs_->setTabsClosable(false);
     workflow_tabs_->setExpanding(false);
     workflow_tabs_->setElideMode(Qt::ElideRight);
-    auto* add_tab = new QPushButton(tr("+"), workflow_header);
+    auto* add_tab = new QPushButton(workflow_header);
     add_tab->setObjectName("addWorkflowTabButton");
-    add_tab->setToolTip(tr("Add workflow"));
-    add_tab->setMaximumWidth(34);
+    IconProvider::configure(add_tab, "add", tr("Add workflow"));
+    add_tab->setFixedSize(34, 32);
     tabs_row->addWidget(workflow_tabs_);
     tabs_row->addWidget(add_tab);
     tabs_row->addStretch();
@@ -342,17 +328,16 @@ void WorkflowModule::build_workspace() {
     auto* view_tools_layout = new QHBoxLayout(view_tools);
     view_tools_layout->setContentsMargins(4, 4, 4, 4);
     view_tools_layout->setSpacing(4);
-    auto* grid_button = new QPushButton(tr("Grid"), view_tools);
+    auto* grid_button = new QToolButton(view_tools);
     grid_button->setObjectName("workflowGridButton");
+    IconProvider::configure(grid_button, "grid", tr("Show the workflow grid and snap moved nodes to it."));
     grid_button->setCheckable(true);
     const bool grid_visible = QSettings("Jocelin", "DeepLearningStudio").value("workflow/gridVisible", true).toBool();
     grid_button->setChecked(grid_visible);
-    grid_button->setToolTip(tr("Show the workflow grid and snap moved nodes to it."));
     scene_->set_grid_visible(grid_visible);
     auto* align_button = new QToolButton(view_tools);
     align_button->setObjectName("workflowAlignButton");
-    align_button->setText(tr("Arrange"));
-    align_button->setToolTip(tr("Align or distribute the selected workflow nodes."));
+    IconProvider::configure(align_button, "arrange", tr("Align or distribute the selected workflow nodes."));
     align_button->setPopupMode(QToolButton::InstantPopup);
     auto* arrange_menu = new QMenu(align_button);
     const QList<QPair<QString, QString>> arrange_commands = {
@@ -364,52 +349,23 @@ void WorkflowModule::build_workspace() {
         connect(action, &QAction::triggered, this, [this, command = item.second] {
             QString error;
             if (!arrange_selected_nodes(scene_, command, &error)) shell_.show_message(error, 3500);
-            else shell_.show_message(tr("Selected nodes arranged."), 2500);
         });
     }
     align_button->setMenu(arrange_menu);
-    auto* fit_button = new QPushButton(tr("Fit"), view_tools);
-    fit_button->setToolTip(tr("Fit the complete workflow into view"));
+    auto* fit_button = new QToolButton(view_tools);
+    fit_button->setObjectName("workflowFitButton");
+    IconProvider::configure(fit_button, "fit", tr("Fit the complete workflow into view"));
     view_tools_layout->addWidget(grid_button);
     view_tools_layout->addWidget(align_button);
     view_tools_layout->addWidget(fit_button);
     canvas_layout->addWidget(view_tools, 0, 0, Qt::AlignTop | Qt::AlignRight);
-    canvas_empty_state_ = new QFrame(canvas_host);
-    canvas_empty_state_->setObjectName("canvasEmptyState");
-    canvas_empty_state_->setMinimumWidth(360);
-    auto* empty_layout = new QVBoxLayout(canvas_empty_state_);
-    empty_layout->setContentsMargins(28, 24, 28, 24);
-    empty_layout->setSpacing(8);
-    auto* empty_icon = new QLabel(tr("[ DATA ]  ->  [ TASK ]  ->  [ RESULT ]"), canvas_empty_state_);
-    empty_icon->setAlignment(Qt::AlignCenter);
-    empty_icon->setProperty("muted", true);
-    auto* empty_title = new QLabel(tr("Your workflow is empty"), canvas_empty_state_);
-    empty_title->setAlignment(Qt::AlignCenter);
-    empty_title->setProperty("sectionTitle", true);
-    auto* empty_hint = new QLabel(tr("Drag nodes from the library, or load an example workflow to get started."), canvas_empty_state_);
-    empty_hint->setAlignment(Qt::AlignCenter);
-    empty_hint->setWordWrap(true);
-    empty_hint->setProperty("muted", true);
-    auto* empty_action = new QPushButton(tr("Load Example Workflow"), canvas_empty_state_);
-    empty_action->setProperty("accentSecondary", true);
-    empty_layout->addWidget(empty_icon);
-    empty_layout->addWidget(empty_title);
-    empty_layout->addWidget(empty_hint);
-    empty_layout->addWidget(empty_action, 0, Qt::AlignHCenter);
-    canvas_layout->addWidget(canvas_empty_state_, 0, 0, Qt::AlignCenter);
     workspace_layout->addWidget(canvas_host, 1);
     connect(add_tab, &QPushButton::clicked, this, [this] { addWorkflow(); });
-    connect(grid_button, &QPushButton::toggled, this, [this](bool visible) {
+    connect(grid_button, &QToolButton::toggled, this, [this](bool visible) {
         scene_->set_grid_visible(visible);
         QSettings("Jocelin", "DeepLearningStudio").setValue("workflow/gridVisible", visible);
-        shell_.show_message(visible ? tr("Workflow grid and snapping enabled") : tr("Workflow grid and snapping disabled"), 2500);
     });
-    connect(fit_button, &QPushButton::clicked, this, [this] {
-        const QRectF bounds = node_bounds(scene_);
-        fit_graph_capped(view_, bounds.isEmpty() ? QRectF(-300, -200, 600, 400)
-                                                 : bounds.adjusted(-80, -80, 80, 80), 1.0);
-    });
-    connect(empty_action, &QPushButton::clicked, this, [this] { loadExampleWorkflow(); });
+    connect(fit_button, &QToolButton::clicked, this, &WorkflowModule::fit);
     connect(workflow_tabs_, &QTabBar::currentChanged, this, &WorkflowModule::activateWorkflow);
     connect(workflow_tabs_, &QTabBar::tabCloseRequested, this, &WorkflowModule::closeWorkflow);
     connect(workflow_tabs_, &QTabBar::tabBarDoubleClicked, this, &WorkflowModule::renameWorkflow);
@@ -423,53 +379,38 @@ void WorkflowModule::build_library() {
     auto* library_layout = new QVBoxLayout(library);
     library_layout->setContentsMargins(8, 8, 8, 8);
     library_layout->setSpacing(5);
-    auto* library_search = new QLineEdit(library);
-    library_search->setObjectName("nodeLibrarySearch");
-    library_search->setPlaceholderText(tr("Search nodes..."));
-    library_search->setClearButtonEnabled(true);
-    library_layout->addWidget(library_search);
-    auto* library_help = new QLabel(tr("Click to add. Double-click a canvas node to configure."), library);
-    library_help->setWordWrap(true);
-    library_help->setProperty("muted", true);
-    library_layout->addWidget(library_help);
-    library_layout->addSpacing(4);
-    QVector<QPair<QLabel*, QPushButton*>> library_items;
-    for (const auto& descriptor : node_descriptors()) {
-        const QString detail = descriptor.kind == NodeKind::DatasetInput
-            ? tr("Import and validate raw images")
-            : tr("Open the complete six-step task workspace");
-        const QString group = descriptor.kind == NodeKind::DatasetInput
-            ? "data" : "task";
-        auto* group_label = new QLabel(group.toUpper(), library);
-        group_label->setProperty("eyebrow", true);
-        library_layout->addWidget(group_label);
-        auto* button = new QPushButton(descriptor.badge + "   " + descriptor.title, library);
-        button->setObjectName("add" + descriptor.title.simplified().remove(' ') + "Button");
+    auto* data_label = new QLabel(tr("Data"), library);
+    data_label->setProperty("libraryGroup", true);
+    library_layout->addWidget(data_label);
+    auto* dataset = new QPushButton(IconProvider::icon("dataset"), tr("Dataset"), library);
+    dataset->setObjectName("addDatasetButton");
+    dataset->setProperty("nodeLibraryItem", true);
+    dataset->setProperty("group", "data");
+    dataset->setMinimumHeight(38);
+    connect(dataset, &QPushButton::clicked, this, [this] { addNode(NodeKind::DatasetInput); });
+    library_layout->addWidget(dataset);
+    auto* task_label = new QLabel(tr("Task"), library);
+    task_label->setProperty("libraryGroup", true);
+    library_layout->addWidget(task_label);
+    for (const auto& module : task_modules) {
+        if (!module.available) continue;
+        const QString id = QString::fromLatin1(module.id);
+        auto* button = new QPushButton(IconProvider::icon("task-" + id), tr(module.display_name), library);
+        button->setObjectName("addTask_" + id + "Button");
         button->setProperty("nodeLibraryItem", true);
-        button->setProperty("group", group);
-        button->setToolTip(detail);
-        button->setMinimumHeight(34);
+        button->setProperty("group", "task");
+        button->setMinimumHeight(38);
         button->setMinimumWidth(0);
         button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-        connect(button, &QPushButton::clicked, this, [this, kind = descriptor.kind] { addNode(kind); });
+        connect(button, &QPushButton::clicked, this, [this, id] { addNode(NodeKind::TaskConfig, id); });
         library_layout->addWidget(button);
-        library_items.push_back({group_label, button});
     }
-    connect(library_search, &QLineEdit::textChanged, this, [library_items](const QString& text) {
-        const QString term = text.trimmed();
-        for (const auto& item : library_items) {
-            const bool visible = term.isEmpty() || item.second->text().contains(term, Qt::CaseInsensitive) ||
-                                 item.second->toolTip().contains(term, Qt::CaseInsensitive);
-            item.first->setVisible(visible);
-            item.second->setVisible(visible);
-        }
-    });
-    library_layout->addSpacing(12);
+    library_layout->addStretch();
     auto* example = new QPushButton(tr("Load Example Workflow"), library);
     example->setObjectName("loadExampleButton");
+    example->setProperty("accentSecondary", true);
     connect(example, &QPushButton::clicked, this, [this] { loadExampleWorkflow(); });
     library_layout->addWidget(example);
-    library_layout->addStretch();
     library_dock_->setWidget(library);
     shell_.mount_dock(Qt::LeftDockWidgetArea, library_dock_);
     library_dock_->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
@@ -485,32 +426,14 @@ void WorkflowModule::build_properties() {
     property_layout->setSpacing(0);
     property_editor_ = new PropertiesEditor(property_panel);
     property_layout->addWidget(property_editor_, 1);
-    auto* overview = new QFrame(property_panel);
-    overview->setObjectName("workflowOverview");
-    auto* overview_layout = new QGridLayout(overview);
-    overview_layout->setContentsMargins(12, 10, 12, 10);
-    overview_layout->setHorizontalSpacing(12);
-    overview_layout->setVerticalSpacing(6);
-    auto* overview_title = new QLabel(tr("WORKFLOW OVERVIEW"), overview);
-    overview_title->setProperty("eyebrow", true);
-    overview_layout->addWidget(overview_title, 0, 0, 1, 2);
-    const QStringList overview_names = {tr("Nodes"), tr("Connections"), tr("Parameters"), tr("Status")};
-    QLabel** overview_values[] = {&overview_nodes_, &overview_connections_, &overview_parameters_, &overview_status_};
-    for (int row = 0; row < overview_names.size(); ++row) {
-        overview_layout->addWidget(new QLabel(overview_names[row], overview), row + 1, 0);
-        *overview_values[row] = new QLabel(overview);
-        (*overview_values[row])->setProperty("overviewValue", true);
-        overview_layout->addWidget(*overview_values[row], row + 1, 1, Qt::AlignRight);
-    }
-    property_layout->addWidget(overview);
     auto* minimap = new QFrame(property_panel);
     minimap->setObjectName("minimapPanel");
     auto* minimap_layout = new QVBoxLayout(minimap);
     minimap_layout->setContentsMargins(12, 10, 12, 10);
-    auto* minimap_title = new QLabel(tr("MINIMAP"), minimap);
-    minimap_title->setProperty("eyebrow", true);
+    auto* minimap_title = new QLabel(tr("Minimap"), minimap);
+    minimap_title->setProperty("libraryGroup", true);
     auto* minimap_view = new WorkflowMinimap(view_, minimap);
-    minimap_view->setToolTip(tr("Read-only workflow overview. The green frame is the visible canvas."));
+    minimap_view->setToolTip(tr("Drag to move around the workflow."));
     minimap_layout->addWidget(minimap_title);
     minimap_layout->addWidget(minimap_view);
     property_layout->addWidget(minimap);
@@ -524,22 +447,37 @@ void WorkflowModule::build_properties() {
     shell_.mount_dock(Qt::RightDockWidgetArea, property_dock_);
 }
 
-void WorkflowModule::mount(QToolBar& toolbar, QMenu& view_menu) {
-    const auto action = [this, &toolbar](const QString& text, const char* name, auto callback) {
+void WorkflowModule::mount(QToolBar& toolbar, QMenu& edit_menu, QMenu& view_menu) {
+    const auto action = [this](const QString& text, const char* name, auto callback) {
         auto* value = new QAction(text, this);
         value->setObjectName(name);
         connect(value, &QAction::triggered, this, callback);
-        toolbar.addAction(value);
         editing_actions_.push_back(value);
         return value;
     };
-    action(tr("Clear"), "clearWorkflowAction", [this] { clearWorkflow(); });
+    auto* clear = action(tr("Clear workflow"), "clearWorkflowAction", [this] { clearWorkflow(); });
     auto* remove = action(tr("Delete"), "deleteAction", [this] { deleteSelected(); });
+    delete_action_ = remove;
+    remove->setIcon(IconProvider::icon("trash"));
     remove->setShortcuts({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)});
-    action(tr("Fit"), "fitAction", [this] { fit(); });
+    remove->setEnabled(false);
+    connect(scene_, &QGraphicsScene::selectionChanged, this, [this] {
+        delete_action_->setEnabled(workflow_workspace_->isEnabled() && !scene_->selectedItems().isEmpty());
+    });
+    edit_menu.addAction(remove);
+    edit_menu.addAction(clear);
+    toolbar.addAction(remove);
     toolbar.addSeparator();
+    auto* spacer = new QWidget(&toolbar);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar.addWidget(spacer);
     run_action_ = action(tr("Open Task"), "openTaskAction", [this] { runWorkflow(); });
-    if (auto* button = qobject_cast<QToolButton*>(toolbar.widgetForAction(run_action_))) button->setProperty("runAction", true);
+    run_action_->setIcon(IconProvider::icon("play-white"));
+    toolbar.addAction(run_action_);
+    if (auto* button = qobject_cast<QToolButton*>(toolbar.widgetForAction(run_action_))) {
+        button->setProperty("runAction", true);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    }
     if (auto* button = qobject_cast<QToolButton*>(toolbar.widgetForAction(remove))) button->setProperty("destructive", true);
     view_menu.addAction(library_dock_->toggleViewAction());
     view_menu.addAction(property_dock_->toggleViewAction());
@@ -573,8 +511,11 @@ std::map<int, QPointF>& WorkflowModule::positions() { return project_.active_wor
 void WorkflowModule::bindActiveWorkflow() {
     node_workspace_->clear_node();
     scene_->set_model(&graph(), &positions());
-    if (shell_.is_current_page(node_workspace_))
+    if (shell_.is_current_page(node_workspace_)) {
         shell_.show_workflow(workflow_workspace_);
+        run_action_->setVisible(true);
+        delete_action_->setVisible(true);
+    }
     refreshProjectUi();
     showProperties();
     refreshValidation();
@@ -583,7 +524,7 @@ void WorkflowModule::bindActiveWorkflow() {
 void WorkflowModule::unbindWorkflowViews() {
     if (scene_) scene_->set_model(nullptr, nullptr);
     if (node_workspace_) node_workspace_->clear_node();
-    if (property_editor_) property_editor_->show_workflow({}, {}, 0, 0);
+    if (property_editor_) property_editor_->show_workflow();
 }
 
 QString WorkflowModule::connectedDatasetDirectory(int node_id) {
@@ -656,14 +597,7 @@ void WorkflowModule::renameWorkflow(int index) {
     catch (const std::exception& error) { QMessageBox::warning(&shell_, tr("Cannot rename workflow"), error.what()); }
 }
 
-void WorkflowModule::addNode(NodeKind kind) {
-    QString task_module;
-    if (kind == NodeKind::TaskConfig) {
-        SelectTaskModuleDialog dialog(&shell_);
-        if (dialog.exec() != QDialog::Accepted) return;
-        task_module = dialog.selected_module_id();
-        if (task_module.isEmpty()) return;
-    }
+void WorkflowModule::addNode(NodeKind kind, const QString& task_module) {
     const int kind_index = static_cast<int>(std::count_if(graph().nodes().begin(), graph().nodes().end(),
         [kind](const auto& item) { return item.second.kind == kind; }));
     const int node_id = kind == NodeKind::TaskConfig
@@ -706,7 +640,6 @@ void WorkflowModule::loadExampleWorkflow() {
     positions()[node_id] = QPointF(80, -40);
     project_.mark_active_dirty();
     bindActiveWorkflow();
-    shell_.show_message(tr("Example loaded; resource paths remain intentionally unconfigured"));
 }
 
 void WorkflowModule::deleteSelected() {
@@ -775,8 +708,7 @@ void WorkflowModule::showProperties() {
     if (node_id != 0 && graph().nodes().count(node_id) != 0) {
         property_editor_->edit_node(&graph(), node_id, [this] { markWorkflowChanged(); });
     } else {
-        property_editor_->show_workflow(project_.metadata().name, project_.active_workflow().name,
-                                        graph().nodes().size(), graph().connections().size());
+        property_editor_->show_workflow();
     }
 }
 
@@ -785,8 +717,9 @@ void WorkflowModule::refreshValidation(bool report_to_log) {
     scene_->refresh_validation(issues_);
     run_action_->setEnabled(issues_.empty() && (!busy || !busy()));
     shell_.clear_message();
+    shell_.set_context_status(issues_.empty() ? QString{}
+        : tr("Needs review: %1").arg(issue_text(issues_.front())));
     if (!issues_.empty()) {
-        shell_.set_context_status(tr("Needs review: %1").arg(issue_text(issues_.front())));
         if (report_to_log) {
             log_.append_log(tr("Workflow validation failed:"));
             for (const auto& issue : issues_) log_.append_log("- " + issue_text(issue));
@@ -816,8 +749,6 @@ void WorkflowModule::runWorkflow() {
         });
     if (task == graph().nodes().end()) return;
     openNodeWorkspace(task->first);
-    shell_.show_message(
-        tr("Task workspace opened. Configure Training or Inference to run."), 5000);
 }
 
 void WorkflowModule::refreshProjectUi() {
@@ -835,26 +766,13 @@ void WorkflowModule::refreshProjectUi() {
         connect(close, &QToolButton::clicked, this, [this, index] { closeWorkflow(index); });
     }
     workflow_tabs_->setCurrentIndex(static_cast<int>(project_.active_index()));
-    if (workflow_context_title_ && workflow_context_hint_) {
-        workflow_context_title_->setText(project_.metadata().name + "  /  " + project_.active_workflow().name);
-        workflow_context_hint_->setText(graph().nodes().empty()
-            ? tr("Empty workflow - add a Dataset node from the left.")
-            : tr("Drag nodes from the left. Double-click to configure."));
-    }
-    if (canvas_empty_state_) canvas_empty_state_->setVisible(graph().nodes().empty());
-    if (overview_nodes_) overview_nodes_->setText(QString::number(graph().nodes().size()));
-    if (overview_connections_) overview_connections_->setText(QString::number(graph().connections().size()));
-    if (overview_parameters_) overview_parameters_->setText(QString::number(graph().nodes().size()));
-    if (overview_status_) overview_status_->setText(issues_.empty() && !graph().nodes().empty() ? tr("Ready") :
-                                                    graph().nodes().empty() ? tr("Empty") : tr("Needs review"));
-    shell_.set_context_status(graph().nodes().empty()
-        ? tr("Workflow: Empty")
-        : tr("Workflow: %1 nodes | %2 connections").arg(graph().nodes().size()).arg(graph().connections().size()));
     if (project_changed) project_changed();
 }
 
 void WorkflowModule::showWorkflowWorkspace() {
     shell_.show_workflow(workflow_workspace_);
+    run_action_->setVisible(true);
+    delete_action_->setVisible(true);
     refreshProjectUi();
     QTimer::singleShot(0, this, [this] {
         if (!shell_.is_current_page(workflow_workspace_)) return;
@@ -871,10 +789,12 @@ void WorkflowModule::openNodeWorkspace(int node_id) {
     node_workspace_->edit_node(&graph(), node_id, dataset);
     shell_.show_task(node_workspace_);
     run_action_->setVisible(false);
+    delete_action_->setVisible(false);
 }
 
 void WorkflowModule::setEditingEnabled(bool enabled) {
     for (auto* action : editing_actions_) action->setEnabled(enabled);
+    delete_action_->setEnabled(enabled && !scene_->selectedItems().isEmpty());
     workflow_tabs_->setEnabled(enabled);
     workflow_workspace_->setEnabled(enabled);
     library_dock_->setEnabled(enabled);

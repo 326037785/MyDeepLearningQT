@@ -50,7 +50,7 @@ private:
 
 class NodeItem final : public QGraphicsObject {
 public:
-    static constexpr qreal Width = 220.0;
+    static constexpr qreal Width = 280.0;
     NodeItem(WorkflowGraph* graph, int node_id);
 
     QRectF boundingRect() const override;

@@ -1,5 +1,4 @@
 #include "workflow_scene.h"
-#include "model_presentation.h"
 #include "task_module_catalog.h"
 
 #include <QApplication>
@@ -136,7 +135,7 @@ qreal NodeItem::height() const {
     const auto& node_value = graph_->node(node_id_);
     const size_t rows = std::max<size_t>(1, std::max(
         WorkflowGraph::input_ports(node_value.kind).size(), WorkflowGraph::output_ports(node_value.kind).size()));
-    return 32.0 + static_cast<qreal>(rows) * 22.0 + 46.0;
+    return 32.0 + static_cast<qreal>(rows) * 22.0 + 16.0;
 }
 
 QRectF NodeItem::boundingRect() const { return QRectF(-10, -10, Width + 20, height() + 24); }
@@ -147,29 +146,26 @@ QString NodeItem::summary() const {
         const auto& config = std::get<DatasetConfig>(node_value.config);
         const int valid = static_cast<int>(std::count_if(config.items.begin(), config.items.end(),
             [](const DatasetConfig::Item& item) { return item.valid; }));
-        if (!config.items.empty()) return QString("%1 valid image(s)").arg(valid);
-        return config.directory.empty() ? "No images imported" : elide(QString::fromStdString(config.directory), 168);
+        if (!config.items.empty()) return QCoreApplication::translate("studio::WorkflowModule", "%1 valid image(s)").arg(valid);
+        return config.directory.empty() ? QCoreApplication::translate("studio::WorkflowModule", "No images imported")
+                                        : elide(QString::fromStdString(config.directory), 168);
     }
     if (node_value.kind == NodeKind::TaskConfig) {
         const auto& config = std::get<TaskNodeConfig>(node_value.config);
-        if (config.task.empty() || config.model_scale.empty()) return "Task and model not configured";
-        const auto* module = find_task_module(config.task);
-        const QString task_name = module ? QString::fromLatin1(module->display_name)
-                                         : QString::fromStdString(config.task);
-        return task_name + " | model " + QString::number(config.model_index) + " · " +
-               model_scale_name(QString::fromStdString(config.model_scale)) +
-               (config.device.type == jocelin::config::DeviceType::Gpu ? " | GPU" : " | CPU");
+        if (config.task.empty() || config.model_scale.empty())
+            return QCoreApplication::translate("studio::WorkflowModule", "Task and model not configured");
+        return QCoreApplication::translate("studio::WorkflowModule", "Model %1").arg(config.model_index);
     }
     return {};
 }
 
 QString NodeItem::status_text() const {
     const auto status = graph_->node(node_id_).status;
-    if (status == NodeStatus::Running) return "RUNNING";
-    if (status == NodeStatus::Success) return "SUCCESS";
-    if (status == NodeStatus::Error) return "ERROR";
-    if (!issues_.empty()) return "NOT READY";
-    return "READY";
+    if (status == NodeStatus::Running) return QCoreApplication::translate("studio::WorkflowModule", "Running");
+    if (status == NodeStatus::Success) return QCoreApplication::translate("studio::WorkflowModule", "Success");
+    if (status == NodeStatus::Error) return QCoreApplication::translate("studio::WorkflowModule", "Error");
+    if (!issues_.empty()) return QCoreApplication::translate("studio::WorkflowModule", "Not ready");
+    return QCoreApplication::translate("studio::WorkflowModule", "Ready");
 }
 
 void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) {
@@ -203,20 +199,23 @@ void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget
     painter->drawRoundedRect(QRectF(0, 0, Width, 32), 7, 7);
     const QColor badge_color = node_value.kind == NodeKind::DatasetInput
         ? data_type_color(DataType::Dataset)
-        : QColor("#C7782B");
+        : std::get<TaskNodeConfig>(node_value.config).task == "sg" ? QColor("#0EA67A") : QColor("#C7782B");
     painter->setBrush(badge_color);
     painter->drawEllipse(QRectF(10, 8, 16, 16));
     painter->setPen(Qt::white);
     QFont title_font = painter->font(); title_font.setPointSizeF(8.5); title_font.setWeight(QFont::DemiBold);
     painter->setFont(title_font);
-    QString node_title = QString::fromStdString(WorkflowGraph::name(node_value.kind));
+    const auto name = WorkflowGraph::name(node_value.kind);
+    QString node_title = QCoreApplication::translate("studio::WorkflowModule", name.c_str());
     if (node_value.kind == NodeKind::TaskConfig) {
         const auto& task = std::get<TaskNodeConfig>(node_value.config);
         if (const auto* module = find_task_module(task.task))
-            node_title = QString::fromLatin1(module->display_name);
+            node_title = QCoreApplication::translate("studio::WorkflowModule", module->display_name);
     }
-    painter->drawText(QRectF(32, 0, Width - 40, 32), Qt::AlignVCenter,
-                      node_title + "  #" + QString::number(node_id_));
+    const QString node_id = "  #" + QString::number(node_id_);
+    node_title = QFontMetrics(title_font).elidedText(node_title, Qt::ElideRight,
+        static_cast<int>(Width - 44 - QFontMetrics(title_font).horizontalAdvance(node_id)));
+    painter->drawText(QRectF(32, 0, Width - 40, 32), Qt::AlignVCenter, node_title + node_id);
     QFont badge_font = painter->font(); badge_font.setPointSizeF(6.5); badge_font.setBold(true);
     painter->setFont(badge_font);
     painter->drawText(QRectF(10, 8, 16, 16), Qt::AlignCenter,
@@ -224,27 +223,16 @@ void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget
 
     QFont detail_font = painter->font(); detail_font.setPointSizeF(7.0); detail_font.setWeight(QFont::Normal);
     painter->setFont(detail_font);
-    painter->setPen(QColor("#334B50"));
-    const auto& inputs = WorkflowGraph::input_ports(node_value.kind);
-    for (size_t i = 0; i < inputs.size(); ++i)
-        painter->drawText(QRectF(10, 37 + static_cast<qreal>(i) * 22, 86, 20), Qt::AlignVCenter,
-                          QString::fromStdString(inputs[i].name));
-    const auto& outputs = WorkflowGraph::output_ports(node_value.kind);
-    for (size_t i = 0; i < outputs.size(); ++i)
-        painter->drawText(QRectF(Width - 96, 37 + static_cast<qreal>(i) * 22, 86, 20), Qt::AlignVCenter | Qt::AlignRight,
-                          QString::fromStdString(outputs[i].name));
-
     painter->setPen(QColor("#587075"));
-    const size_t port_rows = std::max<size_t>(1, std::max(inputs.size(), outputs.size()));
-    const qreal summary_y = 37.0 + static_cast<qreal>(port_rows) * 22.0;
     const QString compact_summary = QFontMetrics(painter->font()).elidedText(
-        summary(), Qt::ElideRight, static_cast<int>(Width - 20));
-    painter->drawText(QRectF(10, summary_y, Width - 20, 18), Qt::AlignVCenter, compact_summary);
-    painter->setPen(QPen(QColor("#D9E5E3"), 1));
-    painter->drawLine(QPointF(8, node_height - 22), QPointF(Width - 8, node_height - 22));
-    painter->setPen(border);
-    detail_font.setWeight(QFont::DemiBold); painter->setFont(detail_font);
-    painter->drawText(QRectF(10, node_height - 22, Width - 20, 18), Qt::AlignVCenter | Qt::AlignRight, status_text());
+        summary(), Qt::ElideRight, static_cast<int>(Width - 42));
+    painter->drawText(QRectF(14, 37, Width - 42, 22), Qt::AlignVCenter, compact_summary);
+    QColor state_color("#0EA67A");
+    if (!issues_.empty() || node_value.status == NodeStatus::Running) state_color = QColor("#D09232");
+    if (node_value.status == NodeStatus::Error) state_color = QColor("#C63737");
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(state_color);
+    painter->drawEllipse(QRectF(Width - 20, 44, 8, 8));
 }
 
 PortItem* NodeItem::port(PortDirection direction, size_t index) const {
@@ -254,6 +242,9 @@ PortItem* NodeItem::port(PortDirection direction, size_t index) const {
 
 void NodeItem::set_validation(const std::vector<ValidationIssue>& issues) {
     issues_ = issues;
+    QString tooltip = status_text();
+    for (const auto& issue : issues_) tooltip += "\n" + QString::fromStdString(issue.message);
+    setToolTip(tooltip);
     for (size_t i = 0; i < input_ports_.size(); ++i) {
         const bool rejected = std::any_of(issues_.begin(), issues_.end(), [i](const ValidationIssue& issue) {
             return issue.port_index == static_cast<int>(i);
@@ -379,13 +370,6 @@ void WorkflowScene::rebuild() {
     if (!graph_ || !positions_) return;
     if (graph_->nodes().empty()) {
         setSceneRect(-320, -180, 640, 360);
-        auto* empty = addText("Empty workflow\nAdd a node or load the example workflow");
-        empty->setDefaultTextColor(QColor("#6F8588"));
-        QFont font = QApplication::font();
-        font.setPointSize(font.pointSize() + 2);
-        empty->setFont(font);
-        empty->setTextWidth(360);
-        empty->setPos(-180, -45);
         return;
     }
     int index = 0;

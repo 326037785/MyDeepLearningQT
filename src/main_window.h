@@ -2,7 +2,7 @@
 #include <QMainWindow>
 #include <memory>
 
-class QCloseEvent; class QDockWidget; class QLabel; class QResizeEvent;
+class QCloseEvent; class QDockWidget; class QLabel; class QMenu; class QResizeEvent;
 class QStackedWidget; class QToolBar;
 namespace studio {
 class ActivityLog; class ExecutionModule; class ModelActions;
@@ -24,7 +24,6 @@ public:
     void show_message(const QString& text, int timeout = 0);
     void clear_message();
     void set_context_status(const QString& text);
-    void set_saved_status(const QString& text);
     void set_runtime_status(const QString& text, const char* state);
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -43,12 +42,12 @@ private:
     QStackedWidget* pages_ = nullptr;
     QToolBar* workflow_toolbar_ = nullptr;
     QToolBar* home_toolbar_ = nullptr;
+    QMenu* edit_menu_ = nullptr;
     QDockWidget* project_dock_ = nullptr;
     QDockWidget* library_dock_ = nullptr;
     QDockWidget* property_dock_ = nullptr;
     QList<QDockWidget*> docks_;
     QLabel* context_ = nullptr;
-    QLabel* saved_ = nullptr;
     QLabel* runtime_ = nullptr;
 };
 } // namespace studio

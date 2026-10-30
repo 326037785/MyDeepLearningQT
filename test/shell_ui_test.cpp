@@ -21,6 +21,7 @@
 #include <QGraphicsView>
 #include <QIcon>
 #include <QInputDialog>
+#include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPointer>
@@ -31,6 +32,7 @@
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 #include <QTranslator>
 #include <QtTest/QTest>
 
@@ -95,9 +97,21 @@ void module_command_boundaries(studio::MainWindow& window, const QString& projec
     auto* view = window.findChild<QGraphicsView*>("workflowView");
     auto* scene = view ? dynamic_cast<studio::WorkflowScene*>(view->scene()) : nullptr;
     auto* run = window.findChild<QAction*>("openTaskAction");
+    auto* remove = window.findChild<QAction*>("deleteAction");
+    auto* edit = window.findChild<QMenu*>("editMenu");
     auto* save = window.findChild<QAction*>("saveProjectAction");
     auto* recent = window.findChild<QMenu*>("recentProjectsMenu");
-    require(home && tabs && add && scene && run && save && recent, "module contributions are missing");
+    require(home && tabs && add && scene && run && remove && edit && save && recent, "module contributions are missing");
+    auto* grid = window.findChild<QToolButton*>("workflowGridButton");
+    auto* fit = window.findChild<QToolButton*>("workflowFitButton");
+    auto* status = window.findChild<QLabel*>("workflowStatusContext");
+    require(grid && fit && status && !grid->icon().isNull() && !fit->icon().isNull() &&
+            !grid->accessibleName().isEmpty() && !fit->accessibleName().isEmpty(),
+            "canvas controls are missing accessible icons");
+    grid->setChecked(!grid->isChecked());
+    require(scene->grid_visible() == grid->isChecked(), "grid control did not update the canvas");
+    require(!window.findChild<QWidget*>("workflowOverview") &&
+            !window.findChild<QWidget*>("nodeLibrarySearch"), "redundant workflow controls remain");
 
     QTimer::singleShot(0, [] {
         if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
@@ -107,6 +121,10 @@ void module_command_boundaries(studio::MainWindow& window, const QString& projec
     });
     add->click();
     require(tabs->count() == 2 && tabs->currentIndex() == 1, "adding a workflow did not bind its tab");
+    const QString validation_message = status->text();
+    workflow->refreshProjectUi();
+    require(!validation_message.isEmpty() && status->text() == validation_message && !run->isEnabled(),
+            "workflow refresh hid the validation problem");
     auto* graph = scene->model();
     const int source = graph->add_node(studio::NodeKind::DatasetInput);
     const QString dataset_directory = QDir(QFileInfo(project_file).absolutePath()).filePath("dataset");
@@ -118,6 +136,17 @@ void module_command_boundaries(studio::MainWindow& window, const QString& projec
     scene->rebuild();
     scene->model_changed();
     require(run->isEnabled(), "valid workflow cannot open its task");
+    require(!remove->isEnabled(), "delete is available without a selection");
+    for (auto* item : scene->items()) {
+        if (item->data(0).toInt() == task) { item->setSelected(true); break; }
+    }
+    require(remove->isEnabled(), "delete did not follow the node selection");
+    scene->clearSelection();
+    require(!remove->isEnabled(), "delete stayed enabled after clearing the selection");
+    scene->node_activated(task);
+    require(!run->isVisible() && !remove->isVisible() && !edit->isEnabled(), "workflow commands remained available in the node workspace");
+    workflow->showWorkflowWorkspace();
+    require(run->isVisible() && remove->isVisible() && edit->isEnabled(), "workflow commands did not return with the canvas");
     int dialogs_seen = 0;
     QTimer dialogs;
     QObject::connect(&dialogs, &QTimer::timeout, [&] {

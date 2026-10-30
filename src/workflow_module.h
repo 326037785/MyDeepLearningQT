@@ -12,7 +12,7 @@ class WorkflowModule final : public QObject {
 public:
     WorkflowModule(ProjectManager& project, MainWindow& shell, ActivityLog& log);
     ~WorkflowModule() override;
-    void mount(QToolBar& toolbar, QMenu& view_menu);
+    void mount(QToolBar& toolbar, QMenu& edit_menu, QMenu& view_menu);
     void bindActiveWorkflow();
     void unbindWorkflowViews();
     void showWorkflowWorkspace();
@@ -42,7 +42,7 @@ private:
     bool activateWorkflow(int index);
     void closeWorkflow(int index);
     void renameWorkflow(int index);
-    void addNode(NodeKind kind);
+    void addNode(NodeKind kind, const QString& task_module = {});
     void clearWorkflow();
     void loadExampleWorkflow();
     void deleteSelected();
@@ -61,15 +61,9 @@ private:
     QDockWidget* library_dock_ = nullptr;
     QDockWidget* property_dock_ = nullptr;
     PropertiesEditor* property_editor_ = nullptr;
-    QLabel* workflow_context_title_ = nullptr;
-    QLabel* workflow_context_hint_ = nullptr;
     QTabBar* workflow_tabs_ = nullptr;
-    QWidget* canvas_empty_state_ = nullptr;
-    QLabel* overview_nodes_ = nullptr;
-    QLabel* overview_connections_ = nullptr;
-    QLabel* overview_parameters_ = nullptr;
-    QLabel* overview_status_ = nullptr;
     QAction* run_action_ = nullptr;
+    QAction* delete_action_ = nullptr;
     std::vector<QAction*> editing_actions_;
     std::vector<ValidationIssue> issues_;
 };

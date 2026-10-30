@@ -20,8 +20,15 @@ QToolBar QToolButton:disabled { color: #7D9699; }
 QToolBar QToolButton[runAction=true] { background: #0EA67A; color: white; font-weight: 700; padding-left: 14px; padding-right: 14px; }
 QToolBar QToolButton[runAction=true]:hover { background: #0A8E69; }
 QToolBar QToolButton[destructive=true] { color: #FFD6D1; }
+QToolBar#workflowToolbar { background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 4px 10px; spacing: 4px; }
+QToolBar#workflowToolbar QToolButton { color: #17243C; padding: 6px 9px; }
+QToolBar#workflowToolbar QToolButton:hover { background: #DFEAF9; }
+QToolBar#workflowToolbar QToolButton[runAction=true] { background: #0EA67A; color: white; padding: 6px 14px; }
+QToolBar#workflowToolbar QToolButton[runAction=true]:hover { background: #0A8E69; }
+QToolBar#workflowToolbar QToolButton[runAction=true]:disabled { background: #A4C5BB; color: #EFF6F4; }
 QDockWidget { font-size: 12px; font-weight: 600; }
 QDockWidget::title { background: #FFFFFF; padding: 8px 10px; border-bottom: 1px solid #DCE4E7; color: #C65F24; }
+QDockWidget#nodeLibraryDock::title, QDockWidget#propertiesDock::title { background: #F1F5FB; color: #17243C; }
 QGroupBox { background: #FFFFFF; font-weight: 600; border: 1px solid #DCE4E7; border-radius: 7px; margin-top: 10px; padding: 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
 QLabel[heading=true] { font-size: 16px; font-weight: 600; color: #173F46; padding: 2px 0 4px 0; }
@@ -53,23 +60,20 @@ QWidget#recentProjectCell { background: #F8FAFD; }
 QLabel#recentProjectsEmpty, QFrame[emptyState=true] { background: #F8FAFB; border: 1px dashed #C8D6DA; border-radius: 8px; padding: 16px; }
 
 QFrame#workflowContextHeader { background: #FFFFFF; border-bottom: 1px solid #DCE4E7; }
-QLabel[workflowContextTitle=true] { font-size: 13px; font-weight: 700; color: #173F46; }
 QLabel[workspaceTitle=true] { font-size: 14px; font-weight: 700; color: #173F46; }
 QLabel[annotationContext=true]{font-weight: 600;  color: #172B32;}
 QLabel[emptyHint=true]{color: #667A83;background: #F4F7F8;border: 0;border-radius: 5px;padding: 8px;}
-QLabel[workflowSteps=true] { font-size: 10px; color: #087A5C; background: #EAF7F4; border: 1px solid #CDE9E2; border-radius: 9px; padding: 3px 7px; }
+QLabel[libraryGroup=true] { background: #EDF2F5; color: #172B32; font-weight: 700; border-radius: 4px; padding: 8px; }
 QTabBar#workflowTabs { background: #FFFFFF; }
 QTabBar#workflowTabs::tab { background: #FFFFFF; border: 1px solid #DCE4E7; border-bottom: 0; padding: 7px 12px; margin-right: 3px; min-width: 90px; }
-QTabBar#workflowTabs::tab:selected { color: #087A5C; border-top: 2px solid #0EA67A; background: #F8FCFB; }
+QTabBar#workflowTabs::tab:selected { color: #087A5C; border-bottom: 2px solid #0EA67A; background: #F8FCFB; }
 QToolButton#workflowTabCloseButton { color: #667A83; background: transparent; border: 0; border-radius: 4px; font-weight: 700; padding: 0; }
 QToolButton#workflowTabCloseButton:hover { color: #A33B32; background: #FCEBE9; }
-QFrame#canvasEmptyState { background: #FFFFFF; border: 1px dashed #C8D6DA; border-radius: 10px; }
 QFrame#canvasViewTools { background: #FFFFFF; border: 1px solid #DCE4E7; border-radius: 7px; }
-QFrame#canvasViewTools QToolButton { background: #FFFFFF; border: 1px solid #C8D6DA; border-radius: 5px; padding: 5px 8px; min-height: 18px; }
-QFrame#canvasViewTools QToolButton:hover { background: #EEF8F5; border-color: #70BFAE; }
-QFrame#workflowOverview, QFrame#minimapPanel { background: #FFFFFF; border-top: 1px solid #DCE4E7; }
+QFrame#canvasViewTools QToolButton { background: #FFFFFF; border: 0; border-radius: 5px; padding: 6px; min-height: 20px; }
+QFrame#canvasViewTools QToolButton:hover, QFrame#canvasViewTools QToolButton:checked { background: #DDF5EE; }
+QFrame#minimapPanel { background: #FFFFFF; border-top: 1px solid #DCE4E7; }
 QGraphicsView#workflowMinimapView { background: #F4F7F6; border: 1px solid #DCE4E7; border-radius: 5px; }
-QLabel[overviewValue=true] { font-weight: 700; color: #172B32; }
 QLabel[status=ready] { color: #0EA67A; font-weight: 700; }
 QLabel[status=running] { color: #C9821E; font-weight: 700; }
 QLabel[status=error] { color: #C0392B; font-weight: 700; }
@@ -81,9 +85,8 @@ QPushButton[primary=true] { background: #0EA67A; color: white; border-color: #0A
 QPushButton[primary=true]:hover { background: #0A8E69; }
 QPushButton[accentSecondary=true] { background: white; color: #087A5C; border-color: #20A987; font-weight: 700; }
 QPushButton[destructive=true] { color: #C0392B; border-color: #E7B8B2; }
-QPushButton[nodeLibraryItem=true] { background: #FFFFFF; padding: 6px 8px; font-size: 12px; font-weight: 600; }
-QPushButton[nodeLibraryItem=true][group=data] { border-left: 4px solid #2C91A5; }
-QPushButton[nodeLibraryItem=true][group=task] { border-left: 4px solid #D78A2F; }
+QPushButton[nodeLibraryItem=true] { background: transparent; border: 0; padding: 6px 12px; font-size: 12px; font-weight: 500; }
+QPushButton[nodeLibraryItem=true]:hover { background: #DDF5EE; }
 QPushButton[stepNav=true] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: #667A83; padding: 5px 8px; text-align: center; }
 QPushButton[stepNav=true][active=true] { color: #087A5C; border-bottom-color: #0EA67A; font-weight: 700; }
 QPushButton[stepNav=true][done=true] { color: #0EA67A; }

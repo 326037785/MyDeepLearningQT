@@ -1,7 +1,7 @@
 #include "properties_editor.h"
+#include "icon_provider.h"
 #include "model_presentation.h"
 #include "model_spec_catalog.h"
-#include "task_module_catalog.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -23,17 +23,10 @@ namespace studio {
 
 namespace {
 
-QLabel* heading(const QString& text, QWidget* parent) {
-    auto* label = new QLabel(text, parent);
-    label->setProperty("heading", true);
-    return label;
-}
-
 QWidget* dataset_editor(WorkflowGraph* graph, int node_id, std::function<void()> changed) {
     (void)changed;
     auto* editor = new QWidget;
     auto* layout = new QVBoxLayout(editor);
-    layout->addWidget(heading(PropertiesEditor::tr("Dataset  #%1").arg(node_id), editor));
     auto* group = new QGroupBox(PropertiesEditor::tr("Data source"), editor);
     auto* form = new QFormLayout(group);
     auto& config = std::get<DatasetConfig>(graph->node(node_id).config);
@@ -44,17 +37,6 @@ QWidget* dataset_editor(WorkflowGraph* graph, int node_id, std::function<void()>
     directory->setTextInteractionFlags(Qt::TextSelectableByMouse);
     form->addRow(PropertiesEditor::tr("Directory"), directory);
     form->addRow(PropertiesEditor::tr("Bucket capacity"), new QLabel(QString::number(config.bucket_capacity), group));
-    // Show selected image count (details live in the node workspace)
-    int valid = 0;
-    for (const auto& item : config.items) valid += item.valid ? 1 : 0;
-    auto* selection_label = new QLabel(PropertiesEditor::tr("%1 valid, %2 failed")
-        .arg(valid).arg(config.items.size() - valid), group);
-    selection_label->setProperty("muted", true);
-    form->addRow(PropertiesEditor::tr("Inventory"), selection_label);
-    auto* hint = new QLabel(PropertiesEditor::tr("Open the Dataset workspace to import, preview, and select images."), group);
-    hint->setWordWrap(true);
-    hint->setProperty("muted", true);
-    form->addRow(QString{}, hint);
     layout->addWidget(group);
     layout->addStretch();
     return editor;
@@ -63,24 +45,7 @@ QWidget* dataset_editor(WorkflowGraph* graph, int node_id, std::function<void()>
 QWidget* task_editor(WorkflowGraph* graph, int node_id, std::function<void()> changed) {
     auto* editor = new QWidget;
     auto* layout = new QVBoxLayout(editor);
-    layout->addWidget(heading(PropertiesEditor::tr("Task  #%1").arg(node_id), editor));
     auto& config = std::get<TaskNodeConfig>(graph->node(node_id).config);
-    const auto* module = find_task_module(config.task);
-
-    auto* identity_group = new QGroupBox(PropertiesEditor::tr("Task"), editor);
-    auto* identity_form = new QFormLayout(identity_group);
-    auto* type = new QLabel(
-        module ? PropertiesEditor::tr(module->display_name)
-               : PropertiesEditor::tr("Unknown task"), identity_group);
-    type->setObjectName("propertiesTaskTypeReadOnly");
-    type->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto* module_id = new QLabel(QString::fromStdString(config.task), identity_group);
-    module_id->setObjectName("propertiesTaskModuleReadOnly");
-    module_id->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    identity_form->addRow(PropertiesEditor::tr("Type"), type);
-    identity_form->addRow(PropertiesEditor::tr("Module"), module_id);
-    layout->addWidget(identity_group);
-
     auto notify = [changed] { if (changed) changed(); };
     auto* model_group = new QGroupBox(PropertiesEditor::tr("Model"), editor);
     auto* model_form = new QFormLayout(model_group);
@@ -156,16 +121,10 @@ QWidget* task_editor(WorkflowGraph* graph, int node_id, std::function<void()> ch
 
     auto* inference_group = new QGroupBox(PropertiesEditor::tr("Inference"), editor);
     auto* inference_form = new QFormLayout(inference_group);
-    auto* inference_device = new QLabel(
-        config.device.type == jocelin::config::DeviceType::Gpu
-            ? PropertiesEditor::tr("GPU") : PropertiesEditor::tr("CPU"),
-        inference_group);
-    inference_device->setObjectName("propertiesInferenceDevice");
     auto* inference_batch = new QSpinBox(inference_group);
     inference_batch->setObjectName("propertiesInferenceBatchSize");
     inference_batch->setRange(1, 1024);
     inference_batch->setValue(config.inference_batch_size);
-    inference_form->addRow(PropertiesEditor::tr("Device"), inference_device);
     inference_form->addRow(PropertiesEditor::tr("Batch size"), inference_batch);
     layout->addWidget(inference_group);
 
@@ -185,13 +144,11 @@ QWidget* task_editor(WorkflowGraph* graph, int node_id, std::function<void()> ch
             notify();
         });
     QObject::connect(device, qOverload<int>(&QComboBox::currentIndexChanged), editor,
-        [&config, device, inference_device, notify](int) {
+        [&config, device, notify](int) {
             const auto type = static_cast<jocelin::config::DeviceType>(device->currentData().toInt());
             config.device = type == jocelin::config::DeviceType::Gpu
                 ? jocelin::config::Device{type, 0, "cuda:0"}
                 : jocelin::config::cpu_device();
-            inference_device->setText(type == jocelin::config::DeviceType::Gpu
-                ? PropertiesEditor::tr("GPU") : PropertiesEditor::tr("CPU"));
             notify();
         });
     QObject::connect(width, qOverload<int>(&QSpinBox::valueChanged), editor,
@@ -218,18 +175,16 @@ PropertiesEditor::PropertiesEditor(QWidget* parent) : QWidget(parent), layout_(n
     layout_->setContentsMargins(0, 0, 0, 0);
 }
 
-void PropertiesEditor::show_workflow(const QString& project_name, const QString& workflow_name,
-                                     size_t node_count, size_t connection_count) {
+void PropertiesEditor::show_workflow() {
     auto* editor = new QWidget;
     auto* layout = new QVBoxLayout(editor);
-    layout->addWidget(heading(tr("Workflow"), editor));
-    auto* group = new QGroupBox(tr("Current context"), editor);
-    auto* form = new QFormLayout(group);
-    form->addRow(tr("Project"), new QLabel(project_name, group));
-    form->addRow(tr("Workflow"), new QLabel(workflow_name, group));
-    form->addRow(tr("Graph"), new QLabel(tr("%1 nodes, %2 connections").arg(node_count).arg(connection_count), group));
-    layout->addWidget(group);
-    layout->addWidget(new QLabel(tr("Select a node to edit its configuration."), editor));
+    layout->addStretch();
+    auto* icon = new QLabel(editor);
+    icon->setPixmap(IconProvider::icon("settings").pixmap(36, 36));
+    icon->setAlignment(Qt::AlignCenter);
+    icon->setAccessibleName(tr("Select a node to edit its configuration."));
+    icon->setToolTip(icon->accessibleName());
+    layout->addWidget(icon);
     layout->addStretch();
     replace_content(editor);
 }

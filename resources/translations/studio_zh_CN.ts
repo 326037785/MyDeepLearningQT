@@ -71,6 +71,10 @@
       <translation>文件</translation>
     </message>
     <message>
+      <source>Edit</source>
+      <translation>编辑</translation>
+    </message>
+    <message>
       <location filename="../../src/main_window.cpp" line="85" />
       <source>View</source>
       <translation>视图</translation>
@@ -669,5 +673,31 @@ This cannot be recovered.</source>
       <source>Ready</source>
       <translation>就绪</translation>
     </message>
+    <message><source>Data</source><translation>数据</translation></message>
+    <message><source>Dataset</source><translation>数据集</translation></message>
+    <message><source>Task</source><translation>任务</translation></message>
+    <message><source>Semantic Segmentation</source><translation>语义分割</translation></message>
+    <message><source>Classification</source><translation>分类</translation></message>
+    <message><source>Add workflow</source><translation>添加工作流</translation></message>
+    <message><source>Close workflow</source><translation>关闭工作流</translation></message>
+    <message><source>Clear workflow</source><translation>清空工作流</translation></message>
+    <message><source>Delete</source><translation>删除</translation></message>
+    <message><source>Open Task</source><translation>打开任务</translation></message>
+    <message><source>Load Example Workflow</source><translation>加载示例工作流</translation></message>
+    <message><source>Minimap</source><translation>缩略图</translation></message>
+    <message><source>Drag to move around the workflow.</source><translation>拖动以移动工作流画布。</translation></message>
+    <message><source>Show the workflow grid and snap moved nodes to it.</source><translation>显示网格并将移动的节点吸附到网格。</translation></message>
+    <message><source>Align or distribute the selected workflow nodes.</source><translation>对齐或分布选中的节点。</translation></message>
+    <message><source>Fit the complete workflow into view</source><translation>显示完整工作流</translation></message>
+    <message><source>Needs review: %1</source><translation>需要检查：%1</translation></message>
+    <message><source>Node %1: </source><translation>节点 %1：</translation></message>
+    <message><source>%1 valid image(s)</source><translation>%1 张有效图像</translation></message>
+    <message><source>No images imported</source><translation>尚未导入图像</translation></message>
+    <message><source>Task and model not configured</source><translation>尚未配置任务和模型</translation></message>
+    <message><source>Model %1</source><translation>模型 %1</translation></message>
+    <message><source>Running</source><translation>运行中</translation></message>
+    <message><source>Success</source><translation>成功</translation></message>
+    <message><source>Error</source><translation>错误</translation></message>
+    <message><source>Not ready</source><translation>未就绪</translation></message>
   </context>
 </TS>

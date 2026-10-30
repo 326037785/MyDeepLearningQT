@@ -18,6 +18,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -43,6 +44,7 @@ void ProjectModule::mount(QMenu& menu, QToolBar& home_bar, QToolBar& workflow_ba
         return value;
     };
     auto* home = action(tr("Home"), "projectHomeAction", [this] { show_home(); });
+    home->setIcon(shell_.style()->standardIcon(QStyle::SP_DirHomeIcon));
     workflow_bar.addAction(home);
     workflow_bar.addSeparator();
     auto* create = action(tr("New Project"), "newProjectAction", [this] { newProject(); });
@@ -132,8 +134,6 @@ void ProjectModule::refresh() {
     const QString title = QStringLiteral("DeepLearning Workflow Studio");
     shell_.setWindowTitle(project_.has_storage() || project_.is_dirty()
         ? project_.metadata().name + " - " + title + (project_.is_dirty() ? " *" : "") : title);
-    shell_.set_saved_status(project_.is_dirty() ? tr("Unsaved changes  *") :
-        project_.has_storage() ? tr("Saved") : tr("Saved: Never"));
 }
 
 void ProjectModule::set_editing_enabled(bool enabled) {
@@ -278,7 +278,6 @@ void ProjectModule::openProject(const QString& requested_path) {
         show_workflow();
         updateRecentProjects(project_.project_file());
         log(tr("Project opened: %1").arg(project_.project_file()));
-        shell_.show_message(tr("Project opened - add nodes from Node Library or double-click an existing node to configure it."), 8000);
     } catch (const std::exception& error) {
         after_switch();
         QMessageBox::critical(&shell_, tr("Open rejected"), QString::fromUtf8(error.what()));

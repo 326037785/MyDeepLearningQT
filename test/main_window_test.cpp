@@ -166,51 +166,21 @@ int main(int argc, char** argv) try {
         save_as->shortcut() != QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S))
         return 40;
     if (!window.findChild<QPushButton*>("addDatasetButton") ||
-        !window.findChild<QPushButton*>("addTaskButton")) return 4;
+        !window.findChild<QPushButton*>("addTask_sgButton") ||
+        !window.findChild<QPushButton*>("addTask_clsButton")) return 4;
     if (!capture(window, "WORKFLOW_HOME_UI_CAPTURE")) return 5;
 
-    const QString pristine_title = window.windowTitle();
-    bool task_dialog_checked = false;
-    QTimer::singleShot(0, [&task_dialog_checked] {
-        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        if (!dialog) return;
-        auto* modules = dialog->findChild<QTableWidget*>("taskModuleTable");
-        auto* create = dialog->findChild<QPushButton*>("createTaskModuleButton");
-        if (!modules || !create || modules->currentRow() != -1 || create->isEnabled()) return;
-        task_dialog_checked = true;
-        dialog->reject();
-    });
-    window.findChild<QPushButton*>("addTaskButton")->click();
-    if (!task_dialog_checked) return 41;
     if (!scene->model()) return 47;
     if (!scene->model()->nodes().empty()) return 48;
-    if (window.windowTitle() != pristine_title) return 49;
 
     window.findChild<QPushButton*>("addDatasetButton")->click();
-    bool task_created = false;
-    QTimer::singleShot(0, [&task_created] {
-        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        if (!dialog) return;
-        auto* modules = dialog->findChild<QTableWidget*>("taskModuleTable");
-        auto* create = dialog->findChild<QPushButton*>("createTaskModuleButton");
-        if (!modules || !create) return;
-        for (int row = 0; row < modules->rowCount(); ++row) {
-            if (modules->item(row, 1)->text() != "sg") continue;
-            modules->setCurrentCell(row, 0);
-            task_created = create->isEnabled();
-            create->click();
-            return;
-        }
-    });
-    window.findChild<QPushButton*>("addTaskButton")->click();
+    window.findChild<QPushButton*>("addTask_sgButton")->click();
     application.processEvents();
     auto* dataset = node(scene, 1);
     auto* task = node(scene, 2);
-    if (!task_created || !dataset || !task) return 6;
+    if (!dataset || !task) return 6;
     const auto& created_task = std::get<studio::TaskNodeConfig>(scene->model()->node(2).config);
     if (created_task.task != "sg" || !scene->model()->connections().empty() ||
-        !window.findChild<QLabel*>("propertiesTaskTypeReadOnly") ||
-        !window.findChild<QLabel*>("propertiesTaskModuleReadOnly") ||
         window.findChild<QComboBox*>("taskTypeCombo"))
         return 42;
     auto* property_batch = window.findChild<QSpinBox*>("propertiesTrainingBatchSize");
@@ -755,24 +725,9 @@ int main(int argc, char** argv) try {
     auto* project_dock = window.findChild<QDockWidget*>("projectDock");
     if (!library_dock || !project_dock || library_dock->isFloating() ||
         project_dock->isFloating() || view->width() < 380) return 28;
-    bool classification_created = false;
-    QTimer::singleShot(0, [&classification_created] {
-        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        if (!dialog) return;
-        auto* modules = dialog->findChild<QTableWidget*>("taskModuleTable");
-        auto* create = dialog->findChild<QPushButton*>("createTaskModuleButton");
-        if (!modules || !create) return;
-        for (int row = 0; row < modules->rowCount(); ++row) {
-            if (modules->item(row, 1)->text() != "cls") continue;
-            modules->setCurrentCell(row, 0);
-            classification_created = create->isEnabled();
-            create->click();
-            return;
-        }
-    });
-    window.findChild<QPushButton*>("addTaskButton")->click();
+    window.findChild<QPushButton*>("addTask_clsButton")->click();
     const auto& classification = std::get<studio::TaskNodeConfig>(scene->model()->node(3).config);
-    if (!classification_created || classification.task != "cls" ||
+    if (classification.task != "cls" ||
         classification.model_index != 1 || classification.model_scale != "s" ||
         scene->model()->connections().size() != 1)
         return 45;

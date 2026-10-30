@@ -39,5 +39,11 @@
     <file alias="open-project.svg">icons/open-project.svg</file>
     <file alias="recent-projects.svg">icons/recent-projects.svg</file>
     <file alias="settings.svg">icons/settings.svg</file>
+    <file alias="dataset.svg">icons/dataset.svg</file>
+    <file alias="task-cls.svg">icons/task-cls.svg</file>
+    <file alias="task-sg.svg">icons/task-sg.svg</file>
+    <file alias="grid.svg">icons/grid.svg</file>
+    <file alias="arrange.svg">icons/arrange.svg</file>
+    <file alias="play-white.svg">icons/play-white.svg</file>
   </qresource>
 </RCC>

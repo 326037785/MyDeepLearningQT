@@ -13,7 +13,6 @@
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QFontDatabase>
-#include <QFontMetrics>
 #include <QIcon>
 #include <QLabel>
 #include <QMenu>
@@ -25,7 +24,6 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QToolBar>
-#include <algorithm>
 
 namespace studio {
 namespace {
@@ -73,30 +71,30 @@ void MainWindow::buildUi() {
     workflow_toolbar_ = addToolBar(tr("Project and workflow"));
     workflow_toolbar_->setObjectName("workflowToolbar");
     workflow_toolbar_->setMovable(false);
-    workflow_toolbar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    workflow_toolbar_->setMinimumHeight(std::clamp(QFontMetrics(workflow_toolbar_->font()).height() + 8, 20, 30));
-    workflow_toolbar_->setMaximumHeight(30);
+    workflow_toolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    workflow_toolbar_->setIconSize(QSize(20, 20));
+    workflow_toolbar_->setMinimumHeight(44);
     home_toolbar_ = addToolBar(tr("Project commands"));
     home_toolbar_->setObjectName("homeToolbar");
     home_toolbar_->setMovable(false);
     home_toolbar_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     auto* file_menu = menuBar()->addMenu(tr("File"));
     file_menu->setObjectName("fileMenu");
+    edit_menu_ = menuBar()->addMenu(tr("Edit"));
+    edit_menu_->setObjectName("editMenu");
     auto* view_menu = menuBar()->addMenu(tr("View"));
     auto* settings_menu = menuBar()->addMenu(tr("Settings"));
     settings_menu->setObjectName("settingsMenu");
 
     context_ = new QLabel(statusBar());
-    saved_ = new QLabel(statusBar());
     runtime_ = new QLabel(tr("Ready"), statusBar());
     context_->setObjectName("workflowStatusContext");
-    saved_->setObjectName("savedStatus");
     runtime_->setObjectName("runtimeStatus");
     context_->setMinimumWidth(0);
     context_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     runtime_->setProperty("status", "ready");
+    runtime_->hide();
     statusBar()->addWidget(context_, 1);
-    statusBar()->addPermanentWidget(saved_);
     statusBar()->addPermanentWidget(runtime_);
 
     log_ = new ActivityLog(this);
@@ -107,7 +105,7 @@ void MainWindow::buildUi() {
     project_module_->mount(*file_menu, *home_toolbar_, *workflow_toolbar_);
     project_dock_ = project_module_->dock();
     view_menu->addAction(project_dock_->toggleViewAction());
-    workflow_->mount(*workflow_toolbar_, *view_menu);
+    workflow_->mount(*workflow_toolbar_, *edit_menu_, *view_menu);
     library_dock_ = workflow_->library_dock();
     property_dock_ = workflow_->property_dock();
     auto& workspace = workflow_->node_workspace();
@@ -164,24 +162,27 @@ void MainWindow::show_home(QWidget* page) {
     pages_->setCurrentWidget(page);
     clear_message();
     workflow_toolbar_->hide(); home_toolbar_->show(); hide_docks();
-    context_->clear(); saved_->clear();
+    edit_menu_->setEnabled(false);
+    context_->clear();
 }
 void MainWindow::show_workflow(QWidget* page) {
     pages_->setCurrentWidget(page);
     clear_message(); workflow_toolbar_->show(); home_toolbar_->hide();
+    edit_menu_->setEnabled(true);
     project_dock_->show(); library_dock_->show(); library_dock_->raise();
     property_dock_->setVisible(width() >= 1200);
 }
 void MainWindow::show_task(QWidget* page) {
     pages_->setCurrentWidget(page);
     workflow_toolbar_->show(); home_toolbar_->hide(); hide_docks();
+    edit_menu_->setEnabled(false);
 }
 void MainWindow::show_message(const QString& text, int timeout) { statusBar()->showMessage(text, timeout); }
 void MainWindow::clear_message() { statusBar()->clearMessage(); }
 void MainWindow::set_context_status(const QString& text) { context_->setText(text); }
-void MainWindow::set_saved_status(const QString& text) { saved_->setText(text); }
 void MainWindow::set_runtime_status(const QString& text, const char* state) {
     runtime_->setText(text); runtime_->setProperty("status", state);
+    runtime_->setVisible(QByteArray(state) != "ready");
     runtime_->style()->unpolish(runtime_); runtime_->style()->polish(runtime_);
 }
 
