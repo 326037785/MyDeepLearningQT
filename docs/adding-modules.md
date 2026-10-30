@@ -30,6 +30,8 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 
 Widgets keep viewport, drawing and selection state. Authoritative samples, classes, splits and results remain with the TaskNode. Core request construction belongs to TaskWorkspaceService.
 
+Annotation tool definitions and gesture maintenance belong outside concrete Task widgets. A Task chooses applicable tools and owns target edits, undo history, validity and persistence; tool code only supplies interaction results. See the [annotation tool layering contract](annotation-tool-layering.md) before adding a task editor or a drawing tool.
+
 Core geometry and task Result types can appear in domain data and persistence. Mathematical operations remain in Core. Qt's association layer relates those objects to sample, Model and Weight identities.
 
 ## 2. Ownership rules

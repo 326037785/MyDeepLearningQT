@@ -108,6 +108,12 @@ The existing test targets are part of the normal development build. Run them
 through the local test preset, or `ctest --test-dir <build> -C Release
 --output-on-failure`. Keep test executables separate from product output.
 
+UI contract tests verify behavior, data ownership and result synchronization;
+layout proportions, control hierarchy and captions are not contracts. Tests do
+not write screenshots. Visual inspection is manual: run the application and
+inspect the pages at the target window size. See
+[annotation-tool-layering.md](docs/annotation-tool-layering.md).
+
 ## Startup and language
 
 The File menu and home toolbar share the project actions. Existing workflow

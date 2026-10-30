@@ -120,6 +120,8 @@ Core owns the task representations in AiMetaData, including bucket inputs, annot
 
 SG Annotation uses Core Regions. The editor converts canvas pixels when applying edits. Core owns label scanning, region operations, tensor conversion and result-mask rendering. Qt loads images and presents diagnostics.
 
+Qt annotation tools have task-independent definitions and gesture maintenance; each Task composes only the tools it needs and owns target edits, undo history and validation. The [annotation tool layering contract](annotation-tool-layering.md) records the implemented ownership boundary and behavior constraints.
+
 Training uses LibTorch on CPU or a selected GPU. Inference combines the selected weight with a compatible device and available executor. LibTorch and ONNX support CPU/GPU routes, OpenVINO supports CPU, and TensorRT supports GPU. Qt filters unsupported routes. Core reports device adjustments while preserving the selected weight; Qt displays the warning.
 
 Qt sends task filtering inputs through InferenceRequest::config. Core produces the effective parameters, flags, predictions and metrics in task Result objects. SG previews use SgResult::render_interest_mask(). Classification rejection is -1 and displays as Unknown.

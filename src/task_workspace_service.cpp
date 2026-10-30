@@ -777,6 +777,9 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.runtime_mode = jocelin::config::RuntimeMode::Train;
     backend.model_index = config.model_index;
     backend.model_scale = model_scale;
+    backend.model_embed_dim = 768;
+    backend.model_depth = 12;
+    backend.model_num_heads = 12;
     backend.batch_size = config.training.batch_size;
     backend.bucket_capacity = std::max(1, source_dataset().bucket_capacity);
     backend.num_classes = tool_type == jocelin::config::ToolType::Cls
@@ -787,14 +790,32 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.image_width = config.training.image_width;
     backend.image_height = config.training.image_height;
     backend.num_workers = config.training.workers;
+    backend.val_batch_size = 0;
+    backend.val_num_workers = -1;
+    backend.train_drop_last = true;
     backend.optimizer_type = config.training.optimizer;
+    backend.momentum = 0.9f;
+    backend.adam_beta1 = 0.9f;
+    backend.adam_beta2 = 0.999f;
     backend.scheduler_type = config.training.scheduler;
+    backend.scheduler_step_size = 30;
+    backend.scheduler_gamma = 0.1f;
     backend.scheduler_t_max = config.training.epochs;
     backend.save_interval = 1;
     backend.model_save_dir = config.training.output_directory;
     backend.weight_type = jocelin::config::WeightType::LibTorch;
     backend.device = device;
     backend.augment = config.training.augment;
+    backend.normalize = true;
+    backend.bgr_to_rgb = true;
+    backend.mean[0] = 0.485f;
+    backend.mean[1] = 0.456f;
+    backend.mean[2] = 0.406f;
+    backend.std[0] = 0.229f;
+    backend.std[1] = 0.224f;
+    backend.std[2] = 0.225f;
+    backend.loss_type = jocelin::config::LossType::Auto;
+    backend.metric_type = jocelin::config::MetricType::Auto;
 
     if (tool_type == jocelin::config::ToolType::Sg) {
         class_names.resize(static_cast<size_t>(backend.num_classes));
@@ -870,6 +891,9 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.runtime_mode = jocelin::config::RuntimeMode::Infer;
     backend.model_index = model.model_index;
     backend.model_scale = model.model_scale;
+    backend.model_embed_dim = 768;
+    backend.model_depth = 12;
+    backend.model_num_heads = 12;
     backend.batch_size = config.inference_batch_size;
     backend.num_classes = static_cast<int>(model.classes.size()) +
         (task_type == jocelin::config::ToolType::Sg ? 1 : 0);
@@ -878,6 +902,24 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.weight_type = weight.format;
     backend.device = device;
     backend.require_checkpoint_match = true;
+    backend.use_checkpoint_config = true;
+    backend.allow_partial_checkpoint_load = false;
+    backend.normalize = true;
+    backend.mean[0] = 0.485f;
+    backend.mean[1] = 0.456f;
+    backend.mean[2] = 0.406f;
+    backend.std[0] = 0.229f;
+    backend.std[1] = 0.224f;
+    backend.std[2] = 0.225f;
+    backend.confidence_threshold = 0.5f;
+    backend.min_region_area = 1;
+    backend.max_region_area = std::numeric_limits<int64_t>::max();
+    backend.aspect_ratio_range = {0.0, std::numeric_limits<double>::max()};
+    backend.min_component_confidence = 0.0;
+    backend.cls_confidence_threshold = 0.0;
+    backend.morphological_refine = true;
+    backend.morph_kernel_size = 5;
+    backend.morph_iterations = 1;
 
     jocelin::inference::InferenceRequest request;
     request.config = backend;
@@ -890,6 +932,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     request.segmentation_result.save_option =
         jocelin::result::sg::SaveOption::ResultWithHeatmapOverlay;
     request.segmentation_result.save_color_mask = true;
+    request.segmentation_result.overlay_alpha = 0.45f;
     request.classification_result.save_dir = output;
     return request;
 }

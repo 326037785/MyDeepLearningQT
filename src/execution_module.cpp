@@ -110,7 +110,11 @@ bool ExecutionModule::is_running() const {
     return active_training_node_id_ != 0 || active_inference_node_id_ != 0 ||
         training_job_.is_running() || inference_job_.is_running();
 }
-void ExecutionModule::start_training(int node_id) { start_training(node_id, TrainingLaunchRequest{}); }
+void ExecutionModule::start_training(int node_id) {
+    TrainingLaunchRequest request;
+    request.mode = "new";
+    start_training(node_id, request);
+}
 void ExecutionModule::stop() { training_job_.request_stop(); }
 void ExecutionModule::pause() { training_job_.request_pause(); }
 void ExecutionModule::message(const QString& text, int timeout) { status(text, timeout); }

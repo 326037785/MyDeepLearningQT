@@ -29,8 +29,8 @@ class QToolButton;
 namespace studio {
 
 class ClassificationCanvas;
+class ImageResultCanvas;
 class LossChart;
-class MaskCanvas;
 class ProjectModelBrowser;
 class SampleBrowser;
 
@@ -199,7 +199,7 @@ private:
     ProjectModelBrowser* model_browser_ = nullptr;
     QListWidget* images_ = nullptr;
     QStackedWidget* canvas_stack_ = nullptr;
-    MaskCanvas* segmentation_canvas_ = nullptr;
+    ImageResultCanvas* segmentation_canvas_ = nullptr;
     ClassificationCanvas* classification_canvas_ = nullptr;
     QCheckBox* overlay_layer_ = nullptr;
     QComboBox* device_type_ = nullptr;
@@ -243,7 +243,7 @@ private:
     QLabel* state_ = nullptr;
     QLabel* sample_detail_ = nullptr;
     QStackedWidget* canvas_stack_ = nullptr;
-    MaskCanvas* segmentation_canvas_ = nullptr;
+    ImageResultCanvas* segmentation_canvas_ = nullptr;
     ClassificationCanvas* classification_canvas_ = nullptr;
     QCheckBox* overlay_layer_ = nullptr;
     QWidget* empty_state_ = nullptr;

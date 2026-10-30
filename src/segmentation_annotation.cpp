@@ -30,7 +30,6 @@
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
-#include <QLineF>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
@@ -197,10 +196,7 @@ QColor class_color(int value) {
     return colors[value % static_cast<int>(std::size(colors))];
 }
 
-constexpr qreal kTransformHandleRadius = 5.0;
-constexpr qreal kRotationHandleDistance = 24.0;
 constexpr int kAnnotationViewportMargin = 24;
-constexpr qreal kMinimumTransformScale = 0.05;
 
 QSize annotation_viewport_size(const QSize& size) {
     return {
@@ -211,33 +207,6 @@ QSize annotation_viewport_size(const QSize& size) {
 QPointF annotation_viewport_point(const QPointF& point) {
     return point - QPointF(kAnnotationViewportMargin, kAnnotationViewportMargin);
 }
-constexpr qreal kMaximumTransformScale = 32.0;
-constexpr double kDegreesPerRadian = 57.29577951308232;
-
-QTransform transform_about(const QPointF& anchor, qreal rotation_degrees,
-                           qreal scale_x, qreal scale_y) {
-    QTransform transform;
-    transform.translate(anchor.x(), anchor.y());
-    transform.rotate(rotation_degrees);
-    transform.scale(scale_x, scale_y);
-    transform.translate(-anchor.x(), -anchor.y());
-    return transform;
-}
-
-qreal dot_product(const QPointF& left, const QPointF& right) {
-    return left.x() * right.x() + left.y() * right.y();
-}
-
-qreal vector_length(const QPointF& vector) {
-    return std::hypot(vector.x(), vector.y());
-}
-
-qreal normalized_angle_delta(qreal degrees) {
-    while (degrees > 180.0) degrees -= 360.0;
-    while (degrees < -180.0) degrees += 360.0;
-    return degrees;
-}
-
 QImage neutral_mask_overlay(const QImage& source) {
     if (source.isNull()) return {};
     const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
@@ -254,7 +223,8 @@ QImage neutral_mask_overlay(const QImage& source) {
 
 } // namespace
 
-MaskCanvas::MaskCanvas(QWidget* parent) : QWidget(parent), undo_stack_(new QUndoStack(this)) {
+MaskCanvas::MaskCanvas(QWidget* parent)
+    : QWidget(parent), overlay_opacity_(0.34), undo_stack_(new QUndoStack(this)) {
     setObjectName("segmentationMaskCanvas");
     setMinimumSize(280, 160);
     setMouseTracking(true);
@@ -289,8 +259,9 @@ bool MaskCanvas::load(const QString& image_path, const QString& mask_path, QStri
     heatmap_overlay_ = {};
     mask_overlay_ = {};
     viewport_.reset();
+    pan_.end();
     undo_stack_->clear();
-    polygon_points_.clear();
+    interaction_.reset();
     stroke_before_ = {};
     dirty_ = false;
     rebuild_overlay();
@@ -315,8 +286,9 @@ void MaskCanvas::clear() {
     heatmap_overlay_ = {};
     mask_overlay_ = {};
     viewport_.reset();
+    pan_.end();
     undo_stack_->clear();
-    polygon_points_.clear();
+    interaction_.reset();
     stroke_before_ = {};
     dirty_ = false;
     update();
@@ -469,18 +441,21 @@ QPointF MaskCanvas::widget_position(const QPointF& image_point) const {
             target.top() + image_point.y() * target.height() / image_.height()};
 }
 
-void MaskCanvas::set_tool(Tool tool) {
-    if (tool != Tool::Polygon && !polygon_points_.isEmpty())
-        cancel_polygon();
-    if (tool != tool_) clear_transform_edit();
-    tool_ = tool;
-    painting_ = false;
-    transform_dragging_ = false;
-    active_transform_handle_ = TransformHandle::None;
-    shape_start_ = {-1, -1};
-    setCursor(tool_ == Tool::Pan ? Qt::OpenHandCursor :
-              tool_ == Tool::TransformRegion ? Qt::ArrowCursor :
-              tool_ == Tool::Pick ? Qt::PointingHandCursor : Qt::CrossCursor);
+void MaskCanvas::set_tool(AnnotationTool tool) {
+    const bool polygon_was_active = interaction_.polygon_active();
+    if (tool != interaction_.tool()) {
+        clear_transform_edit();
+    }
+    interaction_.set_tool(tool);
+    if (polygon_was_active && !interaction_.polygon_active()) {
+        stroke_before_ = {};
+        if (polygon_active_changed) {
+            polygon_active_changed(false);
+        }
+    }
+    setCursor(tool == AnnotationTool::Pan ? Qt::OpenHandCursor :
+              tool == AnnotationTool::TransformSelection ? Qt::ArrowCursor :
+              tool == AnnotationTool::Pick ? Qt::PointingHandCursor : Qt::CrossCursor);
     update();
 }
 
@@ -551,32 +526,47 @@ void MaskCanvas::paintEvent(QPaintEvent*) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(QPen(QColor("#F4C66A"), 2, Qt::DashLine));
     painter.setBrush(QColor(244, 198, 106, 45));
-    if ((tool_ == Tool::Rectangle || tool_ == Tool::Ellipse ||
-         tool_ == Tool::ThresholdRoi) &&
-        painting_ && shape_start_.x() >= 0 && hover_point_.x() >= 0) {
+    if ((interaction_.tool() == AnnotationTool::Rectangle ||
+         interaction_.tool() == AnnotationTool::Ellipse ||
+         interaction_.tool() == AnnotationTool::ThresholdRoi) &&
+        interaction_.painting() && interaction_.shape_start().x() >= 0 &&
+        interaction_.hover_point().x() >= 0) {
         const QRectF shape(
-            QRectF(map_point(shape_start_), map_point(hover_point_)).normalized());
-        if (tool_ == Tool::Ellipse)
+            QRectF(map_point(interaction_.shape_start()),
+                   map_point(interaction_.hover_point())).normalized());
+        if (interaction_.tool() == AnnotationTool::Ellipse) {
             painter.drawEllipse(shape);
-        else
+        } else {
             painter.drawRect(shape);
+        }
     }
-    if (tool_ == Tool::Polygon && !polygon_points_.isEmpty()) {
+    if (interaction_.tool() == AnnotationTool::Polygon && interaction_.polygon_active()) {
         QPolygonF preview;
-        for (const QPoint& point : polygon_points_) preview << map_point(point);
-        if (hover_point_.x() >= 0) preview << map_point(hover_point_);
+        for (const QPoint& point : interaction_.polygon_points()) {
+            preview << map_point(point);
+        }
+        if (interaction_.hover_point().x() >= 0) {
+            preview << map_point(interaction_.hover_point());
+        }
         painter.setBrush(Qt::NoBrush);
         painter.drawPolyline(preview);
-        for (const QPoint& point : polygon_points_) painter.drawEllipse(map_point(point), 3.5, 3.5);
+        for (const QPoint& point : interaction_.polygon_points()) {
+            painter.drawEllipse(map_point(point), 3.5, 3.5);
+        }
     }
-    if (transform_region_) paint_transform_controls(painter);
+    if (transform_region_) {
+        paint_transform_controls(painter);
+    }
 }
 
 void MaskCanvas::mousePressEvent(QMouseEvent* event) {
-    if (image_.isNull()) return;
+    if (image_.isNull()) {
+        return;
+    }
     setFocus(Qt::MouseFocusReason);
+    const AnnotationTool tool = interaction_.tool();
 
-    if (event->button() == Qt::LeftButton && tool_ == Tool::TransformRegion) {
+    if (event->button() == Qt::LeftButton && tool == AnnotationTool::TransformSelection) {
         if (transform_region_) {
             const TransformHandle handle = transform_handle_at(event->pos());
             if (handle != TransformHandle::None) {
@@ -589,82 +579,89 @@ void MaskCanvas::mousePressEvent(QMouseEvent* event) {
         }
         return;
     }
-
     if (event->button() == Qt::MiddleButton ||
-        (event->button() == Qt::LeftButton && tool_ == Tool::Pan)) {
-        panning_ = true;
-        pan_last_ = event->pos();
+        (event->button() == Qt::LeftButton && tool == AnnotationTool::Pan)) {
+        pan_.begin(event->pos());
         setCursor(Qt::ClosedHandCursor);
         return;
     }
-
-    if (event->button() == Qt::RightButton && tool_ == Tool::Polygon) {
-        if (polygon_points_.size() >= 3)
-            finish_polygon();
+    if (event->button() == Qt::RightButton && tool == AnnotationTool::Polygon) {
+        finish_polygon();
         event->accept();
         return;
     }
-    if (event->button() != Qt::LeftButton) return;
-
-    const QPoint image_pixel = image_point(event->pos());
-    if (tool_ == Tool::Pick) {
-        if (image_pixel.x() < 0) return;
-        const int value = mask_.constScanLine(image_pixel.y())[image_pixel.x()];
-        if (class_picked) class_picked(value);
+    if (event->button() != Qt::LeftButton) {
         return;
     }
-    if (!editing_enabled_) return;
-    if (tool_ != Tool::Eraser && class_value_ <= 0) {
+
+    const QPoint image_pixel = image_point(event->pos());
+    if (tool == AnnotationTool::Pick) {
+        const AnnotationGesture gesture = interaction_.press(image_pixel);
+        if (gesture.kind != AnnotationGesture::Kind::Point) {
+            return;
+        }
+        const int value = mask_.constScanLine(gesture.point.y())[gesture.point.x()];
+        if (class_picked) {
+            class_picked(value);
+        }
+        return;
+    }
+    if (!editing_enabled_) {
+        return;
+    }
+    if (tool != AnnotationTool::Eraser && class_value_ <= 0) {
         const int requested = class_required ? class_required() : 0;
-        if (requested <= 0) return;
+        if (requested <= 0) {
+            return;
+        }
         class_value_ = requested;
     }
-    if (tool_ == Tool::Fill) {
-        if (image_pixel.x() >= 0) fill_at(image_pixel);
+    if (tool == AnnotationTool::Fill) {
+        const AnnotationGesture gesture = interaction_.press(image_pixel);
+        if (gesture.kind == AnnotationGesture::Kind::Point) {
+            fill_at(gesture.point);
+        }
         return;
     }
     const QPoint point = annotation_point(event->pos());
-    if (point.x() < 0) return;
-    if (tool_ == Tool::Polygon) {
-        const bool starting = polygon_points_.isEmpty();
-        if (starting) stroke_before_ = mask_;
-        polygon_points_.append(point);
-        hover_point_ = point;
-        update();
-        if (starting && polygon_active_changed) polygon_active_changed(true);
+    if (point.x() < 0) {
         return;
     }
-
-    stroke_before_ = mask_;
-    painting_ = true;
-    stroke_last_point_ = point;
-    hover_point_ = point;
-    if (tool_ == Tool::Rectangle || tool_ == Tool::Ellipse ||
-        tool_ == Tool::ThresholdRoi)
-        shape_start_ = point;
-    else paint_at(point);
+    const bool polygon_starting = tool == AnnotationTool::Polygon &&
+        !interaction_.polygon_active();
+    if (polygon_starting || tool != AnnotationTool::Polygon) {
+        stroke_before_ = mask_;
+    }
+    const AnnotationGesture gesture = interaction_.press(point);
+    if (tool == AnnotationTool::Polygon) {
+        update();
+        if (polygon_starting && polygon_active_changed) {
+            polygon_active_changed(true);
+        }
+    } else if (gesture.kind == AnnotationGesture::Kind::StrokeStart) {
+        paint_at(gesture.point);
+    }
 }
 
 void MaskCanvas::mouseMoveEvent(QMouseEvent* event) {
-    if (panning_) {
-        const QPointF delta = event->pos() - pan_last_;
-        viewport_.pan_by(delta);
-        pan_last_ = event->pos();
+    if (pan_.active()) {
+        viewport_.pan_by(pan_.move(event->pos()));
         update();
         return;
     }
-
+    const AnnotationTool tool = interaction_.tool();
     const bool extended_annotation_tool =
-        tool_ == Tool::Brush || tool_ == Tool::Eraser || tool_ == Tool::Polygon ||
-        tool_ == Tool::Rectangle || tool_ == Tool::Ellipse || tool_ == Tool::ThresholdRoi;
-    hover_point_ = extended_annotation_tool
-        ? annotation_point(event->pos())
-        : image_point(event->pos());
-    if (transform_dragging_) {
+        tool == AnnotationTool::Brush || tool == AnnotationTool::Eraser ||
+        tool == AnnotationTool::Polygon || tool == AnnotationTool::Rectangle ||
+        tool == AnnotationTool::Ellipse || tool == AnnotationTool::ThresholdRoi;
+    const QPoint hover = extended_annotation_tool
+        ? annotation_point(event->pos()) : image_point(event->pos());
+    const AnnotationGesture gesture = interaction_.move(hover);
+    if (transform_.dragging()) {
         update_transform_drag(image_position(event->pos()));
         return;
     }
-    if (tool_ == Tool::TransformRegion && transform_region_) {
+    if (tool == AnnotationTool::TransformSelection && transform_region_) {
         switch (transform_handle_at(event->pos())) {
         case TransformHandle::TopLeft:
         case TransformHandle::BottomRight:
@@ -694,68 +691,66 @@ void MaskCanvas::mouseMoveEvent(QMouseEvent* event) {
         }
         return;
     }
-    if (painting_ && (tool_ == Tool::Brush || tool_ == Tool::Eraser)) {
-        const QPoint point = annotation_point(event->pos());
-        if (point.x() >= 0) {
-            paint_segment(stroke_last_point_, point);
-            stroke_last_point_ = point;
-        }
-    } else if (tool_ == Tool::Rectangle || tool_ == Tool::Ellipse ||
-               tool_ == Tool::ThresholdRoi || tool_ == Tool::Polygon) update();
+    if (gesture.kind == AnnotationGesture::Kind::StrokeSegment) {
+        paint_segment(gesture.from, gesture.point);
+    } else if (tool == AnnotationTool::Rectangle || tool == AnnotationTool::Ellipse ||
+               tool == AnnotationTool::ThresholdRoi || tool == AnnotationTool::Polygon) {
+        update();
+    }
 }
 
 void MaskCanvas::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton && transform_dragging_) {
+    if (event->button() == Qt::LeftButton && transform_.dragging()) {
         finish_transform_drag();
         return;
     }
+    const AnnotationTool tool = interaction_.tool();
     if (event->button() == Qt::MiddleButton ||
-        (event->button() == Qt::LeftButton && tool_ == Tool::Pan)) {
-        panning_ = false;
-        setCursor(tool_ == Tool::Pan ? Qt::OpenHandCursor :
-                  tool_ == Tool::TransformRegion ? Qt::ArrowCursor : Qt::CrossCursor);
+        (event->button() == Qt::LeftButton && tool == AnnotationTool::Pan)) {
+        pan_.end();
+        setCursor(tool == AnnotationTool::Pan ? Qt::OpenHandCursor :
+                  tool == AnnotationTool::TransformSelection ? Qt::ArrowCursor : Qt::CrossCursor);
         return;
     }
-    if (event->button() != Qt::LeftButton || !painting_) return;
-    painting_ = false;
-    stroke_last_point_ = {-1, -1};
-    if ((tool_ == Tool::Rectangle || tool_ == Tool::Ellipse) &&
-        shape_start_.x() >= 0 && hover_point_.x() >= 0) {
-        const QRect shape = QRect(shape_start_, hover_point_).normalized();
-        if (tool_ == Tool::Ellipse)
-            apply_ellipse(shape);
-        else {
-            const int value = class_value_;
-            QPainter painter(&mask_);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(value, value, value));
-            painter.drawRect(shape);
-            painter.end();
-        }
+    if (event->button() != Qt::LeftButton) {
+        return;
     }
-    if (tool_ == Tool::ThresholdRoi &&
-        shape_start_.x() >= 0 && hover_point_.x() >= 0) {
-        const QRect roi = QRect(shape_start_, hover_point_).normalized()
-                              .intersected(image_.rect());
+    const AnnotationGesture gesture = interaction_.release();
+    if (gesture.kind == AnnotationGesture::Kind::None) {
+        return;
+    }
+    if (gesture.kind == AnnotationGesture::Kind::Rectangle) {
+        const int value = class_value_;
+        QPainter painter(&mask_);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(value, value, value));
+        painter.drawRect(gesture.rect);
+        painter.end();
+    } else if (gesture.kind == AnnotationGesture::Kind::Ellipse) {
+        apply_ellipse(gesture.rect);
+    } else if (gesture.kind == AnnotationGesture::Kind::ThresholdRoi) {
+        const QRect roi = gesture.rect.intersected(image_.rect());
         stroke_before_ = {};
-        shape_start_ = {-1, -1};
         update();
-        if (!roi.isEmpty() && threshold_roi_selected)
+        if (!roi.isEmpty() && threshold_roi_selected) {
             threshold_roi_selected(roi, image_.copy(roi));
+        }
         return;
     }
-    shape_start_ = {-1, -1};
-    if (tool_ != Tool::Ellipse) finish_edit(stroke_before_);
+    if (gesture.kind != AnnotationGesture::Kind::Ellipse) {
+        finish_edit(stroke_before_);
+    }
     stroke_before_ = {};
 }
 
 void MaskCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton && tool_ == Tool::Polygon) {
+    if (event->button() == Qt::LeftButton && interaction_.tool() == AnnotationTool::Polygon) {
         finish_polygon();
         event->accept();
         return;
     }
-    if (event->button() == Qt::LeftButton && tool_ == Tool::TransformRegion &&
+    if (event->button() == Qt::LeftButton &&
+        interaction_.tool() == AnnotationTool::TransformSelection &&
         editing_enabled_) {
         const QPoint point = image_point(event->pos());
         if (point.x() >= 0 && begin_transform_edit(point)) {
@@ -772,14 +767,15 @@ void MaskCanvas::keyPressEvent(QKeyEvent* event) {
         event->accept();
         return;
     }
-    if (tool_ == Tool::Polygon &&
+    if (interaction_.tool() == AnnotationTool::Polygon &&
         (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) {
-        if (polygon_points_.size() >= 3)
+        if (interaction_.polygon_points().size() >= 3) {
             finish_polygon();
+        }
         event->accept();
         return;
     }
-    if (tool_ == Tool::Polygon && event->key() == Qt::Key_Escape) {
+    if (interaction_.tool() == AnnotationTool::Polygon && event->key() == Qt::Key_Escape) {
         cancel_polygon();
         event->accept();
         return;
@@ -788,42 +784,59 @@ void MaskCanvas::keyPressEvent(QKeyEvent* event) {
 }
 
 void MaskCanvas::paint_at(const QPoint& point) {
-    if (point.x() < 0 || mask_.isNull()) return;
-    if (tool_ != Tool::Eraser && class_value_ <= 0) return;
+    if (point.x() < 0 || mask_.isNull()) {
+        return;
+    }
+    if (interaction_.tool() != AnnotationTool::Eraser && class_value_ <= 0) {
+        return;
+    }
     QPainter painter(&mask_);
     painter.setRenderHint(QPainter::Antialiasing, false);
     painter.setPen(Qt::NoPen);
-    const int value = tool_ == Tool::Eraser ? 0 : class_value_;
+    const int value = interaction_.tool() == AnnotationTool::Eraser ? 0 : class_value_;
     painter.setBrush(QColor(value, value, value));
-    painter.drawEllipse(point, brush_size_ / 2, brush_size_ / 2);
+    painter.drawEllipse(point, interaction_.brush_size() / 2, interaction_.brush_size() / 2);
     painter.end();
     dirty_ = true;
     rebuild_overlay();
     update();
-    if (dirty_changed) dirty_changed(true);
+    if (dirty_changed) {
+        dirty_changed(true);
+    }
 }
 
 void MaskCanvas::paint_segment(const QPoint& from, const QPoint& to) {
-    if (from.x() < 0 || to.x() < 0 || mask_.isNull()) return;
-    if (tool_ != Tool::Eraser && class_value_ <= 0) return;
-    const int value = tool_ == Tool::Eraser ? 0 : class_value_;
+    if (from.x() < 0 || to.x() < 0 || mask_.isNull()) {
+        return;
+    }
+    if (interaction_.tool() != AnnotationTool::Eraser && class_value_ <= 0) {
+        return;
+    }
+    const int value = interaction_.tool() == AnnotationTool::Eraser ? 0 : class_value_;
     QPainter painter(&mask_);
     painter.setRenderHint(QPainter::Antialiasing, false);
-    painter.setPen(QPen(QColor(value, value, value), brush_size_, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setPen(QPen(QColor(value, value, value), interaction_.brush_size(),
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.drawLine(from, to);
     painter.end();
     dirty_ = true;
     rebuild_overlay();
     update();
-    if (dirty_changed) dirty_changed(true);
+    if (dirty_changed) {
+        dirty_changed(true);
+    }
 }
 
 void MaskCanvas::fill_at(const QPoint& point) {
-    if (mask_.isNull() || point.x() < 0 || class_value_ <= 0) return;
+    if (mask_.isNull() || point.x() < 0 || class_value_ <= 0) {
+        return;
+    }
     const QImage before = mask_;
     const uchar source = mask_.constScanLine(point.y())[point.x()];
     const uchar target = static_cast<uchar>(class_value_);
-    if (source == target) return;
+    if (source == target) {
+        return;
+    }
     QList<QPoint> pending{point};
     mask_.scanLine(point.y())[point.x()] = target;
     while (!pending.isEmpty()) {
@@ -831,9 +844,13 @@ void MaskCanvas::fill_at(const QPoint& point) {
         const QPoint neighbours[] = {{current.x() - 1, current.y()}, {current.x() + 1, current.y()},
                                      {current.x(), current.y() - 1}, {current.x(), current.y() + 1}};
         for (const QPoint& next : neighbours) {
-            if (next.x() < 0 || next.y() < 0 || next.x() >= mask_.width() || next.y() >= mask_.height()) continue;
+            if (next.x() < 0 || next.y() < 0 || next.x() >= mask_.width() || next.y() >= mask_.height()) {
+                continue;
+            }
             uchar& value = mask_.scanLine(next.y())[next.x()];
-            if (value != source) continue;
+            if (value != source) {
+                continue;
+            }
             value = target;
             pending.append(next);
         }
@@ -842,134 +859,93 @@ void MaskCanvas::fill_at(const QPoint& point) {
 }
 
 bool MaskCanvas::begin_transform_edit(const QPoint& point) {
-    if (mask_.isNull() || !mask_.rect().contains(point)) return false;
+    if (mask_.isNull() || !mask_.rect().contains(point)) {
+        return false;
+    }
     const int label = mask_.constScanLine(point.y())[point.x()];
-    if (label <= 0) return false;
+    if (label <= 0) {
+        return false;
+    }
 
-    auto selection = AnnotationRegionEditService::select_connected_region(
+    std::optional<LabelRegionSelection> selection = AnnotationRegionEditService::select_connected_region(
         mask_, point, label);
-    if (!selection) return false;
+    if (!selection) {
+        return false;
+    }
     transform_region_ = std::move(selection);
     transform_base_mask_ = mask_;
     transform_drag_before_ = {};
-    transform_matrix_ = {};
-    transform_drag_matrix_ = {};
-    transform_dragging_ = false;
-    active_transform_handle_ = TransformHandle::None;
+    transform_.reset();
     setCursor(Qt::SizeAllCursor);
     update();
     return true;
 }
 
 void MaskCanvas::clear_transform_edit() {
-    const bool was_active = transform_region_.has_value() || transform_dragging_;
-    if (transform_dragging_ && !transform_drag_before_.isNull()) {
+    const bool was_active = transform_region_.has_value() || transform_.dragging();
+    if (transform_.dragging() && !transform_drag_before_.isNull()) {
         mask_ = transform_drag_before_;
         rebuild_overlay();
     }
     transform_region_.reset();
     transform_base_mask_ = {};
     transform_drag_before_ = {};
-    transform_matrix_ = {};
-    transform_drag_matrix_ = {};
-    transform_dragging_ = false;
-    active_transform_handle_ = TransformHandle::None;
-    if (tool_ == Tool::TransformRegion) setCursor(Qt::ArrowCursor);
-    if (was_active) update();
+    transform_.reset();
+    if (interaction_.tool() == AnnotationTool::TransformSelection) {
+        setCursor(Qt::ArrowCursor);
+    }
+    if (was_active) {
+        update();
+    }
 }
 
 QPolygonF MaskCanvas::transform_frame() const {
-    if (!transform_region_) return {};
+    if (!transform_region_) {
+        return {};
+    }
     const QRectF bounds = AnnotationRegionEditService::region_bounds(*transform_region_);
-    if (bounds.isEmpty()) return {};
-    QPolygonF frame;
-    for (const QPointF& point :
-         {bounds.topLeft(), bounds.topRight(), bounds.bottomRight(), bounds.bottomLeft()})
-        frame << transform_matrix_.map(point);
-    return frame;
-}
-
-QPointF MaskCanvas::rotation_handle_position() const {
-    const QPolygonF frame = transform_frame();
-    if (frame.size() != 4) return {};
-    const QPointF top_left = widget_position(frame[0]);
-    const QPointF top_right = widget_position(frame[1]);
-    const QPointF edge = top_right - top_left;
-    const qreal length = vector_length(edge);
-    if (length <= 0.0) return top_right;
-    const QPointF outward(edge.y() / length, -edge.x() / length);
-    return top_right + outward * kRotationHandleDistance;
+    if (bounds.isEmpty()) {
+        return {};
+    }
+    return transform_.frame(bounds);
 }
 
 void MaskCanvas::paint_transform_controls(QPainter& painter) const {
     const QPolygonF frame = transform_frame();
-    if (frame.size() != 4) return;
-
-    QPolygonF widget_frame;
-    for (const QPointF& point : frame) widget_frame << widget_position(point);
-    const QPointF rotation = rotation_handle_position();
-    const QPointF top = (widget_frame[0] + widget_frame[1]) / 2.0;
-    const QPointF right = (widget_frame[1] + widget_frame[2]) / 2.0;
-    const QPointF bottom = (widget_frame[2] + widget_frame[3]) / 2.0;
-    const QPointF left = (widget_frame[3] + widget_frame[0]) / 2.0;
-
-    painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(QColor("#6BD0E0"), 1.5, Qt::DashLine));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPolygon(widget_frame);
-    painter.setPen(QPen(QColor("#6BD0E0"), 1.5));
-    painter.drawLine(widget_frame[1], rotation);
-    painter.setBrush(QColor("#F4C66A"));
-    for (const QPointF& point : {widget_frame[0], widget_frame[1],
-                                 widget_frame[2], widget_frame[3],
-                                 top, right, bottom, left}) {
-        painter.drawRect(QRectF(point.x() - kTransformHandleRadius,
-                                point.y() - kTransformHandleRadius,
-                                kTransformHandleRadius * 2.0,
-                                kTransformHandleRadius * 2.0));
+    if (frame.size() != 4) {
+        return;
     }
-    painter.setBrush(QColor("#6BD0E0"));
-    painter.drawEllipse(rotation, kTransformHandleRadius + 1.0,
-                        kTransformHandleRadius + 1.0);
-    painter.restore();
+    QPolygonF widget_frame;
+    for (const QPointF& point : frame) {
+        widget_frame << widget_position(point);
+    }
+    SelectionTransformInteraction::paint_controls(painter, widget_frame);
 }
 
 MaskCanvas::TransformHandle MaskCanvas::transform_handle_at(
-    const QPointF& widget_point) const
-{
+    const QPointF& widget_point) const {
     const QPolygonF frame = transform_frame();
-    if (frame.size() != 4) return TransformHandle::None;
-
+    if (frame.size() != 4) {
+        return TransformHandle::None;
+    }
     QPolygonF widget_frame;
-    for (const QPointF& point : frame) widget_frame << widget_position(point);
-    const auto hit = [&widget_point](const QPointF& point, qreal radius) {
-        return QLineF(widget_point, point).length() <= radius;
-    };
-    const QPointF top = (widget_frame[0] + widget_frame[1]) / 2.0;
-    const QPointF right = (widget_frame[1] + widget_frame[2]) / 2.0;
-    const QPointF bottom = (widget_frame[2] + widget_frame[3]) / 2.0;
-    const QPointF left = (widget_frame[3] + widget_frame[0]) / 2.0;
-
-    if (hit(rotation_handle_position(), kTransformHandleRadius + 3.0))
-        return TransformHandle::Rotate;
-    if (hit(widget_frame[0], kTransformHandleRadius + 2.0)) return TransformHandle::TopLeft;
-    if (hit(widget_frame[1], kTransformHandleRadius + 2.0)) return TransformHandle::TopRight;
-    if (hit(widget_frame[2], kTransformHandleRadius + 2.0)) return TransformHandle::BottomRight;
-    if (hit(widget_frame[3], kTransformHandleRadius + 2.0)) return TransformHandle::BottomLeft;
-    if (hit(top, kTransformHandleRadius + 2.0)) return TransformHandle::Top;
-    if (hit(right, kTransformHandleRadius + 2.0)) return TransformHandle::Right;
-    if (hit(bottom, kTransformHandleRadius + 2.0)) return TransformHandle::Bottom;
-    if (hit(left, kTransformHandleRadius + 2.0)) return TransformHandle::Left;
-    return transform_region_contains(image_position(widget_point))
-        ? TransformHandle::Body : TransformHandle::None;
+    for (const QPointF& point : frame) {
+        widget_frame << widget_position(point);
+    }
+    return SelectionTransformInteraction::handle_at(
+        widget_point, widget_frame,
+        transform_region_contains(image_position(widget_point)));
 }
 
 bool MaskCanvas::transform_region_contains(const QPointF& image_point) const {
-    if (!transform_region_) return false;
+    if (!transform_region_) {
+        return false;
+    }
     bool invertible = false;
-    const QTransform inverse = transform_matrix_.inverted(&invertible);
-    if (!invertible) return false;
+    const QTransform inverse = transform_.matrix().inverted(&invertible);
+    if (!invertible) {
+        return false;
+    }
     const QPointF source_point = inverse.map(image_point);
     const int x = static_cast<int>(std::floor(source_point.x()));
     const int y = static_cast<int>(std::floor(source_point.y()));
@@ -977,150 +953,54 @@ bool MaskCanvas::transform_region_contains(const QPointF& image_point) const {
 }
 
 void MaskCanvas::begin_transform_drag(TransformHandle handle, const QPointF& point) {
-    if (!transform_region_ || transform_base_mask_.isNull()) return;
-    active_transform_handle_ = handle;
-    transform_drag_start_ = point;
+    if (!transform_region_ || transform_base_mask_.isNull()) {
+        return;
+    }
     transform_drag_before_ = mask_;
-    transform_drag_matrix_ = transform_matrix_;
-    transform_dragging_ = true;
+    transform_.begin_drag(handle, point);
 }
 
 void MaskCanvas::update_transform_drag(const QPointF& point) {
-    if (!transform_dragging_ || !transform_region_ || transform_base_mask_.isNull()) return;
-    const QRectF bounds = AnnotationRegionEditService::region_bounds(*transform_region_);
-    if (bounds.isEmpty()) return;
-
-    const QPointF top_left = bounds.topLeft();
-    const QPointF top_right = bounds.topRight();
-    const QPointF bottom_right = bounds.bottomRight();
-    const QPointF bottom_left = bounds.bottomLeft();
-    const QPointF top_center = (top_left + top_right) / 2.0;
-    const QPointF right_center = (top_right + bottom_right) / 2.0;
-    const QPointF bottom_center = (bottom_left + bottom_right) / 2.0;
-    const QPointF left_center = (top_left + bottom_left) / 2.0;
-    const auto map = [this](const QPointF& source) {
-        return transform_drag_matrix_.map(source);
-    };
-
-    QTransform next = transform_drag_matrix_;
-    switch (active_transform_handle_) {
-    case TransformHandle::Body: {
-        QTransform translation;
-        translation.translate(point.x() - transform_drag_start_.x(),
-                              point.y() - transform_drag_start_.y());
-        next = translation * transform_drag_matrix_;
-        break;
-    }
-    case TransformHandle::TopLeft:
-    case TransformHandle::TopRight:
-    case TransformHandle::BottomRight:
-    case TransformHandle::BottomLeft: {
-        QPointF handle;
-        QPointF anchor;
-        if (active_transform_handle_ == TransformHandle::TopLeft) {
-            handle = top_left; anchor = bottom_right;
-        } else if (active_transform_handle_ == TransformHandle::TopRight) {
-            handle = top_right; anchor = bottom_left;
-        } else if (active_transform_handle_ == TransformHandle::BottomRight) {
-            handle = bottom_right; anchor = top_left;
-        } else {
-            handle = bottom_left; anchor = top_right;
-        }
-        const QPointF mapped_anchor = map(anchor);
-        const qreal initial_distance = vector_length(map(handle) - mapped_anchor);
-        if (initial_distance <= 0.0) return;
-        const qreal factor = std::clamp(
-            vector_length(point - mapped_anchor) / initial_distance,
-            kMinimumTransformScale, kMaximumTransformScale);
-        next = transform_about(mapped_anchor, 0.0, factor, factor) *
-            transform_drag_matrix_;
-        break;
-    }
-    case TransformHandle::Top:
-    case TransformHandle::Right:
-    case TransformHandle::Bottom:
-    case TransformHandle::Left: {
-        const bool horizontal = active_transform_handle_ == TransformHandle::Left ||
-            active_transform_handle_ == TransformHandle::Right;
-        QPointF handle;
-        QPointF anchor;
-        if (active_transform_handle_ == TransformHandle::Top) {
-            handle = top_center; anchor = bottom_center;
-        } else if (active_transform_handle_ == TransformHandle::Right) {
-            handle = right_center; anchor = left_center;
-        } else if (active_transform_handle_ == TransformHandle::Bottom) {
-            handle = bottom_center; anchor = top_center;
-        } else {
-            handle = left_center; anchor = right_center;
-        }
-        const QPointF mapped_anchor = map(anchor);
-        const QPointF axis = horizontal
-            ? map(top_right) - map(top_left)
-            : map(bottom_left) - map(top_left);
-        const qreal axis_length = vector_length(axis);
-        if (axis_length <= 0.0) return;
-        const QPointF unit_axis(axis.x() / axis_length, axis.y() / axis_length);
-        const qreal denominator = dot_product(map(handle) - mapped_anchor, unit_axis);
-        if (std::abs(denominator) <= 0.0001) return;
-        const qreal factor = std::clamp(
-            dot_product(point - mapped_anchor, unit_axis) / denominator,
-            kMinimumTransformScale, kMaximumTransformScale);
-        const qreal axis_degrees = std::atan2(axis.y(), axis.x()) * kDegreesPerRadian;
-        QTransform scale;
-        scale.translate(mapped_anchor.x(), mapped_anchor.y());
-        scale.rotate(axis_degrees);
-        scale.scale(factor, 1.0);
-        scale.rotate(-axis_degrees);
-        scale.translate(-mapped_anchor.x(), -mapped_anchor.y());
-        next = scale * transform_drag_matrix_;
-        break;
-    }
-    case TransformHandle::Rotate: {
-        const QPointF center = map(bounds.center());
-        const QPointF start_vector = transform_drag_start_ - center;
-        const QPointF current_vector = point - center;
-        if (vector_length(start_vector) <= 0.0 || vector_length(current_vector) <= 0.0)
-            return;
-        const qreal start_degrees = std::atan2(start_vector.y(), start_vector.x()) *
-            kDegreesPerRadian;
-        const qreal current_degrees = std::atan2(current_vector.y(), current_vector.x()) *
-            kDegreesPerRadian;
-        next = transform_about(center,
-                               normalized_angle_delta(current_degrees - start_degrees),
-                               1.0, 1.0) * transform_drag_matrix_;
-        break;
-    }
-    case TransformHandle::None:
+    if (!transform_region_ || transform_base_mask_.isNull()) {
         return;
     }
-
-    transform_matrix_ = next;
+    const QRectF bounds = AnnotationRegionEditService::region_bounds(*transform_region_);
+    if (!transform_.update_drag(bounds, point)) {
+        return;
+    }
     mask_ = AnnotationRegionEditService::transformed_mask(
-        transform_base_mask_, *transform_region_, transform_matrix_);
+        transform_base_mask_, *transform_region_, transform_.matrix());
     rebuild_overlay();
     update();
 }
 
 void MaskCanvas::finish_transform_drag() {
-    if (!transform_dragging_) return;
-    transform_dragging_ = false;
-    active_transform_handle_ = TransformHandle::None;
+    if (!transform_.dragging()) {
+        return;
+    }
+    transform_.end_drag();
     const QImage before = transform_drag_before_;
     transform_drag_before_ = {};
     finish_edit(before);
 }
 
 void MaskCanvas::finish_edit(const QImage& before) {
-    if (before.isNull() || mask_ == before) { update(); return; }
+    if (before.isNull() || mask_ == before) {
+        update();
+        return;
+    }
     dirty_ = true;
     rebuild_overlay();
     update();
     undo_stack_->push(new MaskCommand(this, before, mask_));
-    if (dirty_changed) dirty_changed(true);
+    if (dirty_changed) {
+        dirty_changed(true);
+    }
 }
 
 void MaskCanvas::finish_polygon() {
-    if (polygon_points_.size() < 3 || stroke_before_.isNull()) {
+    const AnnotationGesture gesture = interaction_.finish_polygon();
+    if (gesture.kind != AnnotationGesture::Kind::Polygon || stroke_before_.isNull()) {
         update();
         return;
     }
@@ -1128,24 +1008,24 @@ void MaskCanvas::finish_polygon() {
     painter.setPen(Qt::NoPen);
     const int value = class_value_;
     painter.setBrush(QColor(value, value, value));
-    QPolygon polygon;
-    for (const QPoint& point : polygon_points_) polygon << point;
-    painter.drawPolygon(polygon);
+    painter.drawPolygon(gesture.polygon);
     painter.end();
     const QImage before = stroke_before_;
-    polygon_points_.clear();
     stroke_before_ = {};
     finish_edit(before);
-    if (polygon_active_changed) polygon_active_changed(false);
+    if (polygon_active_changed) {
+        polygon_active_changed(false);
+    }
 }
 
 void MaskCanvas::cancel_polygon() {
-    const bool active = !polygon_points_.isEmpty();
-    polygon_points_.clear();
+    const bool active = interaction_.polygon_active();
+    interaction_.cancel_polygon();
     stroke_before_ = {};
-    hover_point_ = {-1, -1};
     update();
-    if (active && polygon_active_changed) polygon_active_changed(false);
+    if (active && polygon_active_changed) {
+        polygon_active_changed(false);
+    }
 }
 
 void MaskCanvas::rebuild_overlay() {
@@ -1373,7 +1253,9 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
     viewport_layout->addWidget(layers_panel);
     canvas_ = new MaskCanvas(viewport_panel);
     canvas_->setMinimumWidth(560);
-    canvas_->set_tool(MaskCanvas::Tool::Pan);
+    canvas_->set_brush_size(18);
+    canvas_->set_overlay_opacity(0.34);
+    canvas_->set_tool(AnnotationTool::Pan);
     viewport_layout->addWidget(canvas_, 1);
 
     auto* classes_panel = new QFrame(content);
@@ -1445,39 +1327,40 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
     });
     connect(previous, &QToolButton::clicked, this, [this] { if (current_index_ > 0 && confirm_transition()) load_index(current_index_ - 1); });
     connect(next, &QToolButton::clicked, this, [this] { if (current_index_ + 1 < image_files_.size() && confirm_transition()) load_index(current_index_ + 1); });
-    auto select_tool = [this](MaskCanvas::Tool tool) {
+    auto select_tool = [this](AnnotationTool tool) {
         canvas_->set_tool(tool);
         canvas_->setFocus(Qt::ShortcutFocusReason);
-        if (tool == MaskCanvas::Tool::TransformRegion)
+        if (tool == AnnotationTool::TransformSelection) {
             state_->setText(
                 tr("Transform · double-click a region, then drag its body or handles"));
-        else
+        } else {
             state_->setText(canvas_->is_dirty()
                 ? tr("Mask has unsaved changes")
                 : tr("Ready"));
+        }
     };
-    connect(pan, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Pan); });
+    connect(pan, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Pan); });
     connect(transform_region, &QToolButton::clicked, canvas_, [select_tool] {
-        select_tool(MaskCanvas::Tool::TransformRegion);
+        select_tool(AnnotationTool::TransformSelection);
     });
-    connect(brush_, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Brush); });
+    connect(brush_, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Brush); });
     connect(polygon, &QToolButton::clicked, canvas_, [this] {
-        canvas_->set_tool(MaskCanvas::Tool::Polygon);
+        canvas_->set_tool(AnnotationTool::Polygon);
         canvas_->setFocus(Qt::ShortcutFocusReason);
         state_->setText(tr("Polygon · Right-click/Enter finish · Esc cancel"));
     });
-    connect(rectangle, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Rectangle); });
+    connect(rectangle, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Rectangle); });
     connect(ellipse, &QToolButton::clicked, canvas_, [select_tool] {
-        select_tool(MaskCanvas::Tool::Ellipse);
+        select_tool(AnnotationTool::Ellipse);
     });
     connect(threshold, &QToolButton::clicked, canvas_, [this] {
-        canvas_->set_tool(MaskCanvas::Tool::ThresholdRoi);
+        canvas_->set_tool(AnnotationTool::ThresholdRoi);
         canvas_->setFocus(Qt::ShortcutFocusReason);
         state_->setText(tr("Dual threshold · drag an ROI to preview"));
     });
-    connect(eraser, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Eraser); });
-    connect(fill, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Fill); });
-    connect(eyedropper, &QToolButton::clicked, canvas_, [select_tool] { select_tool(MaskCanvas::Tool::Pick); });
+    connect(eraser, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Eraser); });
+    connect(fill, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Fill); });
+    connect(eyedropper, &QToolButton::clicked, canvas_, [select_tool] { select_tool(AnnotationTool::Pick); });
     connect(zoom_out, &QToolButton::clicked, canvas_, [this] { canvas_->zoom_by(1.0 / 1.2); });
     connect(zoom_in, &QToolButton::clicked, canvas_, [this] { canvas_->zoom_by(1.2); });
     connect(zoom_fit, &QToolButton::clicked, canvas_, [this] { canvas_->reset_view(); });

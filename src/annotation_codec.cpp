@@ -137,6 +137,7 @@ public:
         document.format_id = format_id();
         document.source = canonical_path(source);
         document.source_root = root;
+        document.bucket_capacity = 1;
         document.categories = read_classes_txt(root);
 
         const QDir images(QDir(root).filePath(QStringLiteral("images")));

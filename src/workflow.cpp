@@ -27,6 +27,39 @@ TaskNodeConfig task_config_for(const std::string& task) {
     config.task = task;
     config.model_index = model->index;
     config.model_scale = model->scale;
+    config.device = {jocelin::config::DeviceType::Cpu, -1, "cpu"};
+    config.training.batch_size = 8;
+    config.training.epochs = 100;
+    config.training.learning_rate = 0.001f;
+    config.training.weight_decay = 0.0001f;
+    config.training.image_width = 512;
+    config.training.image_height = 512;
+    config.training.workers = 4;
+    config.training.optimizer = "adam";
+    config.training.scheduler = "cosine";
+    // New tasks start with every augmentation operator disabled.
+    config.training.augment.enable = {};
+    config.training.augment.probability = 0.5f;
+    config.training.augment.scale_ranges = {{0.5, 2.0}};
+    config.training.augment.crop_ratio = 0.1f;
+    config.training.augment.brightness_delta = 0.2f;
+    config.training.augment.contrast_ranges = {{0.5, 1.5}};
+    config.training.augment.saturation_ranges = {{0.5, 1.5}};
+    config.training.augment.hue_delta = 0.1f;
+    config.training.augment.noise_mean = 0.0f;
+    config.training.augment.noise_std = 0.05f;
+    config.training.augment.rotation_ranges = {{-30.0, 30.0}};
+    config.training.augment.translate_ratio = 0.1f;
+    config.training.augment.shear_degrees = 10.0f;
+    config.dataset_binding.split_settings.train_percent = 80;
+    config.dataset_binding.split_settings.validation_percent = 20;
+    config.dataset_binding.split_settings.test_percent = 0;
+    config.dataset_binding.split_settings.seed = 42;
+    config.dataset_binding.split_settings.strategy = "stratified";
+    config.dataset_binding.preprocessing.normalize = true;
+    config.dataset_binding.preprocessing.bgr_to_rgb = true;
+    config.inference_batch_size = 1;
+    config.inference_use_all_images = true;
     return config;
 }
 
@@ -57,7 +90,9 @@ int WorkflowGraph::add_node(NodeKind kind) {
     if (kind == NodeKind::TaskConfig)
         throw std::invalid_argument("Task nodes require an explicit task module");
     const int node_id = next_node_id_++;
-    nodes_.emplace(node_id, Node{node_id, kind, NodeStatus::Idle, DatasetConfig{}});
+    DatasetConfig config;
+    config.bucket_capacity = 1;
+    nodes_.emplace(node_id, Node{node_id, kind, NodeStatus::Idle, std::move(config)});
     return node_id;
 }
 

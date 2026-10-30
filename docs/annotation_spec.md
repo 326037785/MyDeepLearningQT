@@ -4,6 +4,8 @@ Annotation 是 TaskNode 对一个 Dataset sample 的任务标注。sample_id 标
 
 具体任务定义 target、validity 和编辑操作。Node 提供持久化归属。运行时 task_id 标识当前执行实例。
 
+Qt 标注工具的定义、维护与 Task 组装遵循[工具分层与迁移契约](annotation-tool-layering.md)；工具不拥有 target 或标注两态。
+
 ## 1. 身份与任务 target
 
 | 内容 | 定义 |

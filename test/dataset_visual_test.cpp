@@ -27,7 +27,6 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QPushButton>
-#include <QSplitter>
 #include <QListView>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -108,8 +107,6 @@ int main(int argc, char** argv) {
     for (int row = 0; row < list->model()->rowCount(); ++row)
         model_valid += list->model()->index(row, 0).data(studio::DatasetItemModel::ValidRole).toBool() ? 1 : 0;
     if (model_valid != 3) return 7;
-    const QString dataset_capture = qEnvironmentVariable("DATASET_UI_CAPTURE");
-    if (!dataset_capture.isEmpty() && !dialog.grab().save(dataset_capture)) return 13;
     if (studio::model_scale_label("n") != "Nano (n)" ||
         studio::model_scale_label("x") != "Extra Large (x)") return 8;
 
@@ -200,47 +197,19 @@ int main(int argc, char** argv) {
     auto* canvas = annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
     auto* annotation_list = annotation.findChild<QListWidget*>("annotationImageList");
     auto* segmentation_classes = annotation.findChild<QListWidget*>("segmentationClassList");
-    auto* annotation_context = annotation.findChild<QLabel*>("annotationContextLabel");
     auto* annotation_quality = annotation.findChild<QLabel*>("annotationQualitySummary");
     if (!canvas || !annotation_list || annotation_list->count() != 1 ||
-        annotation_list->item(0)->icon().isNull() || !segmentation_classes ||
-        !annotation_context || annotation_context->text().isEmpty())
+        annotation_list->item(0)->icon().isNull() || !segmentation_classes)
         return 11;
     if (!annotation_quality || annotation_quality->isVisible()) return 86;
-    auto* annotation_splitter = annotation.findChild<QSplitter*>("annotationContentSplitter");
-    auto* toggle_samples = annotation.findChild<QToolButton*>("annotationToggleSamplesButton");
-    auto* toggle_segmentation_classes = annotation.findChild<QToolButton*>("annotationToggleClassesButton");
-    if (!annotation_splitter || !toggle_samples || !toggle_segmentation_classes) return 56;
-    if (annotation_splitter->sizes().at(0) <= 0 || !toggle_samples->isChecked())
-        return 62;
-    toggle_samples->click();
-    QApplication::processEvents();
-    if (annotation_splitter->sizes().at(0) != 0) return 57;
-    toggle_samples->click();
-    QApplication::processEvents();
-    if (annotation_splitter->sizes().at(0) <= 0) return 58;
-    annotation.resize(900, 600);
-    QApplication::processEvents();
-    if (annotation_splitter->sizes().at(0) <= 0) return 63;
-    annotation.resize(1300, 600);
-    QApplication::processEvents();
-    if (annotation_splitter->property("responsiveMode").toString() != "wide" ||
-        annotation_splitter->sizes().at(0) <= 0 ||
-        annotation_splitter->sizes().at(2) <= 0) return 64;
     const auto* annotation_item = annotation_list->item(0);
     if (!annotation_item->text().startsWith("img_00001.png") ||
-        !annotation_item->toolTip().contains("Original name: segment.png") ||
-        !annotation_item->toolTip().contains("Sample ID: segment-sample") ||
-        !annotation_context->text().contains("img_00001.png") ||
-        !annotation_item->text().contains(QStringLiteral("✓")) ||
         annotation_item->data(Qt::UserRole).toString() != "segment-sample") return 36;
     auto* prediction_layer = annotation.findChild<QCheckBox*>("predictionLayerCheck");
     auto* heatmap_layer = annotation.findChild<QCheckBox*>("heatmapLayerCheck");
     auto* mask_layer = annotation.findChild<QCheckBox*>("maskLayerCheck");
-    auto* roi_layer = annotation.findChild<QCheckBox*>("roiLayerCheck");
     if (!prediction_layer || !prediction_layer->isEnabled() || !heatmap_layer ||
-        !heatmap_layer->isEnabled() || !mask_layer || mask_layer->isEnabled() ||
-        roi_layer)
+        !heatmap_layer->isEnabled() || !mask_layer || mask_layer->isEnabled())
         return 87;
     prediction_layer->setChecked(false);
     QApplication::processEvents();
@@ -268,7 +237,7 @@ int main(int argc, char** argv) {
     if (!edge_canvas.load(directory.filePath("images/segment.png"), edge_mask_path, &edge_error))
         return 75;
     edge_canvas.set_class_value(1);
-    edge_canvas.set_tool(studio::MaskCanvas::Tool::Rectangle);
+    edge_canvas.set_tool(studio::AnnotationTool::Rectangle);
     edge_canvas.show();
     QApplication::processEvents();
     const QPoint edge_start(160, 120);
@@ -311,11 +280,8 @@ int main(int argc, char** argv) {
     background_annotation.show();
     QApplication::processEvents();
     auto* background_list = background_annotation.findChild<QListWidget*>("annotationImageList");
-    auto* background_quality = background_annotation.findChild<QLabel*>("annotationQualitySummary");
     if (!background_list || background_list->count() != 1 ||
-        !background_list->item(0)->text().contains(QStringLiteral("✓")) ||
-        !background_list->item(0)->toolTip().contains("Annotation: Annotated") ||
-        !background_quality || background_quality->isVisible()) return 88;
+        !background_list->item(0)->text().contains(QStringLiteral("✓"))) return 88;
 
     studio::SegmentationAnnotationWidget no_class_annotation;
     no_class_annotation.resize(900, 600);
@@ -333,24 +299,8 @@ int main(int argc, char** argv) {
     auto* class_combo = no_class_annotation.findChild<QComboBox*>("segmentationClassCombo");
     auto* brush_button = no_class_annotation.findChild<QToolButton*>("segmentationBrushButton");
     auto* no_class_canvas = no_class_annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
-    auto* no_class_hint = no_class_annotation.findChild<QLabel*>("segmentationClassEmptyHint");
-    auto* no_class_quality = no_class_annotation.findChild<QLabel*>("annotationQualitySummary");
-    auto* no_class_identity = no_class_annotation.findChild<QLabel*>("segmentationClassIdentity");
     if (!no_class_list || no_class_list->count() != 1 || !class_combo || class_combo->count() != 0 ||
-        !brush_button || !brush_button->isEnabled() || !no_class_canvas || !no_class_hint || !no_class_hint->isVisible() ||
-        no_class_hint->text() != "No classes" || !no_class_quality || no_class_quality->isVisible() ||
-        !no_class_identity || no_class_identity->isVisible() || no_class_list->item(0)->text().contains('!') ||
-        no_class_canvas->cursor().shape() != Qt::OpenHandCursor) return 20;
-    for (const char* name : {
-             "segmentationRenameClassButton",
-             "segmentationDeleteClassButton",
-             "segmentationLockClassButton",
-             "segmentationMoveClassUpButton",
-             "segmentationMoveClassDownButton"})
-        if (auto* button = no_class_annotation.findChild<QToolButton*>(name); button && button->isVisible())
-            return 39;
-    const QString no_class_capture = qEnvironmentVariable("SEGMENTATION_NO_CLASS_CAPTURE");
-    if (!no_class_capture.isEmpty() && !no_class_annotation.grab().save(no_class_capture)) return 20;
+        !brush_button || !brush_button->isEnabled() || !no_class_canvas) return 20;
     std::vector<studio::AnnotationClass> emitted_classes;
     QString saved_image;
     QImage saved_mask;
@@ -417,8 +367,6 @@ int main(int argc, char** argv) {
         !ellipse_button || !ellipse_button->isEnabled() ||
         !threshold_button || !threshold_button->isEnabled() ||
         !fill_button || !fill_button->isEnabled()) return 23;
-    if (polygon_button->toolTip() != "Polygon (Alt+P)" ||
-        brush_button->toolTip() != "Brush (Alt+B)") return 40;
     auto* save_mask = no_class_annotation.findChild<QToolButton*>("segmentationSaveMaskButton");
     if (!no_class_canvas->is_dirty() || !save_mask) return 24;
     save_mask->click();
@@ -449,9 +397,6 @@ int main(int argc, char** argv) {
             auto* action = menu ? menu->findChild<QAction*>("annotationSetAsEmptyAction") : nullptr;
             if (!action) { if (menu) menu->close(); return; }
             empty_action_found = action->isEnabled();
-            for (auto* entry : menu->actions())
-                if (entry->text() == "Set as annotated" || entry->text() == "Set as unannotated")
-                    empty_action_found = false;
             QTimer::singleShot(0, [answer] {
                 if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
                     if (auto* button = dialog->button(answer)) button->click();
@@ -493,30 +438,6 @@ int main(int argc, char** argv) {
         if (std::any_of(empty_canvas.constScanLine(row),
             empty_canvas.constScanLine(row) + empty_canvas.width(), [](uchar value) { return value != 0; })) return 96;
 
-    QImage portrait(60, 100, QImage::Format_RGB888);
-    portrait.fill(QColor("#355E76"));
-    const QString portrait_path = directory.filePath("portrait.png");
-    if (!portrait.save(portrait_path)) return 65;
-    studio::SegmentationAnnotationWidget portrait_annotation;
-    portrait_annotation.resize(1300, 600);
-    portrait_annotation.set_task_dataset(
-        directory.path(),
-        {studio::TaskSampleBinding{
-            "portrait-sample", {portrait_path.toStdString()}, true,
-            {}, {}, {}, "unassigned", "unannotated", {}}},
-        {studio::AnnotationClass{
-            "foreground", 1, "foreground", "#1F8A9E",
-            true, false, true}});
-    portrait_annotation.show();
-    QApplication::processEvents();
-    auto* portrait_splitter = portrait_annotation.findChild<QSplitter*>(
-        "annotationContentSplitter");
-    if (!portrait_splitter ||
-        portrait_splitter->property("responsiveMode").toString() != "narrow" ||
-        portrait_splitter->sizes().at(0) <= 0 ||
-        portrait_splitter->sizes().at(2) != 0)
-        return 66;
-
     studio::ClassificationAnnotationWidget classification;
     classification.resize(1000, 620);
     classification.set_dataset(
@@ -546,19 +467,16 @@ int main(int argc, char** argv) {
     };
     classification.show();
     QApplication::processEvents();
-    const QString classification_capture = qEnvironmentVariable("CLASSIFICATION_CAPTURE");
-    if (!classification_capture.isEmpty() && !classification.grab().save(classification_capture)) return 33;
     auto* classification_images = classification.findChild<QListWidget*>("classificationImageList");
     auto* classification_classes = classification.findChild<QListWidget*>("classificationClassList");
     auto* classification_preview = classification.findChild<QLabel*>("classificationPreview");
-    auto* classification_context = classification.findChild<QLabel*>("classificationContextLabel");
     auto* ground_truth_button = classification.findChild<QPushButton*>("classificationGroundTruthButton");
     auto* prediction_button = classification.findChild<QPushButton*>("classificationPredictionButton");
     auto* heatmap_button = classification.findChild<QPushButton*>("classificationHeatmapButton");
     auto* review_state = classification.findChild<QLabel*>("classificationReviewState");
     if (!classification_images || classification_images->count() != 2 || !classification_classes ||
         classification_classes->count() != 2 || !classification_preview || !classification_preview->pixmap() ||
-        classification_preview->pixmap()->isNull() || !classification_context || !ground_truth_button ||
+        classification_preview->pixmap()->isNull() || !ground_truth_button ||
         !prediction_button || !heatmap_button || !review_state || !ground_truth_button->isChecked() ||
         !prediction_button->isEnabled() || !heatmap_button->isEnabled()) return 33;
     prediction_button->click();
@@ -570,22 +488,8 @@ int main(int argc, char** argv) {
     if (!heatmap_button->isChecked() || !review_state->text().contains("Heatmap") ||
         !classification_preview->pixmap() || classification_preview->pixmap()->isNull()) return 68;
     ground_truth_button->click();
-    auto* classification_splitter = classification.findChild<QSplitter*>("classificationContentSplitter");
-    auto* toggle_images = classification.findChild<QToolButton*>("classificationToggleImagesButton");
-    auto* toggle_classification_classes = classification.findChild<QToolButton*>("classificationToggleClassesButton");
-    if (!classification_splitter || !toggle_images || !toggle_classification_classes) return 59;
-    toggle_images->click();
-    toggle_classification_classes->click();
-    QApplication::processEvents();
-    if (classification_splitter->sizes().at(0) != 0 || classification_splitter->sizes().at(2) != 0) return 60;
-    toggle_images->click();
-    toggle_classification_classes->click();
-    QApplication::processEvents();
-    if (classification_splitter->sizes().at(0) <= 0 || classification_splitter->sizes().at(2) <= 0) return 61;
     const auto* classification_item = classification_images->item(0);
     if (!classification_item->text().startsWith("img_00001.png") ||
-        !classification_item->toolTip().contains("Original name: segment.png") ||
-        !classification_context->text().contains("img_00001.png") ||
         QFileInfo(classification_item->data(Qt::UserRole).toString()).absoluteFilePath() !=
             QFileInfo(directory.filePath("images/segment.png")).absoluteFilePath()) return 37;
     bool classification_empty_disabled = false;
@@ -593,10 +497,6 @@ int main(int argc, char** argv) {
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
         auto* empty = menu ? menu->findChild<QAction*>("annotationSetAsEmptyAction") : nullptr;
         classification_empty_disabled = empty && !empty->isEnabled();
-        if (menu)
-            for (auto* entry : menu->actions())
-                if (entry->text() == "Set as annotated" || entry->text() == "Set as unannotated")
-                    classification_empty_disabled = false;
         if (menu) menu->close();
     });
     QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
@@ -650,7 +550,7 @@ int main(int argc, char** argv) {
     if (!tool_canvas.load(directory.filePath("images/segment.png"), tool_mask, &stroke_error)) return 27;
     tool_canvas.show();
     QApplication::processEvents();
-    tool_canvas.set_tool(studio::MaskCanvas::Tool::Rectangle);
+    tool_canvas.set_tool(studio::AnnotationTool::Rectangle);
     QMouseEvent rectangle_press(QEvent::MouseButtonPress, QPointF(100, 75), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&tool_canvas, &rectangle_press);
     QMouseEvent rectangle_move(QEvent::MouseMove, QPointF(300, 225), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
@@ -659,7 +559,7 @@ int main(int argc, char** argv) {
     QApplication::sendEvent(&tool_canvas, &rectangle_release);
     if (!tool_canvas.save(tool_mask, &stroke_error) || qGray(QImage(tool_mask).pixel(40, 30)) != 1) return 28;
     tool_canvas.undo();
-    tool_canvas.set_tool(studio::MaskCanvas::Tool::Fill);
+    tool_canvas.set_tool(studio::AnnotationTool::Fill);
     QMouseEvent fill_press(QEvent::MouseButtonPress, QPointF(200, 150), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&tool_canvas, &fill_press);
     if (!tool_canvas.save(tool_mask, &stroke_error) || qGray(QImage(tool_mask).pixel(0, 0)) != 1) return 29;
@@ -670,7 +570,7 @@ int main(int argc, char** argv) {
             QApplication::sendEvent(&canvas, &polygon_press);
         }
     };
-    tool_canvas.set_tool(studio::MaskCanvas::Tool::Polygon);
+    tool_canvas.set_tool(studio::AnnotationTool::Polygon);
     add_polygon_points(tool_canvas);
     QMouseEvent polygon_finish_right(QEvent::MouseButtonPress, QPointF(300, 225), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
     QApplication::sendEvent(&tool_canvas, &polygon_finish_right);
@@ -688,7 +588,7 @@ int main(int argc, char** argv) {
     if (!enter_canvas.load(directory.filePath("images/segment.png"), enter_mask, &stroke_error)) return 43;
     enter_canvas.show();
     QApplication::processEvents();
-    enter_canvas.set_tool(studio::MaskCanvas::Tool::Polygon);
+    enter_canvas.set_tool(studio::AnnotationTool::Polygon);
     for (const QPointF point : {QPointF(100, 225), QPointF(200, 75)}) {
         QMouseEvent polygon_press(QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(&enter_canvas, &polygon_press);
@@ -708,7 +608,7 @@ int main(int argc, char** argv) {
     if (!escape_canvas.load(directory.filePath("images/segment.png"), escape_mask, &stroke_error)) return 45;
     escape_canvas.show();
     QApplication::processEvents();
-    escape_canvas.set_tool(studio::MaskCanvas::Tool::Polygon);
+    escape_canvas.set_tool(studio::AnnotationTool::Polygon);
     add_polygon_points(escape_canvas);
     QKeyEvent polygon_cancel(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(&escape_canvas, &polygon_cancel);
@@ -724,7 +624,7 @@ int main(int argc, char** argv) {
     if (!double_click_canvas.load(directory.filePath("images/segment.png"), double_click_mask, &stroke_error)) return 47;
     double_click_canvas.show();
     QApplication::processEvents();
-    double_click_canvas.set_tool(studio::MaskCanvas::Tool::Polygon);
+    double_click_canvas.set_tool(studio::AnnotationTool::Polygon);
     add_polygon_points(double_click_canvas);
     QMouseEvent polygon_finish_double(QEvent::MouseButtonDblClick, QPointF(300, 225), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&double_click_canvas, &polygon_finish_double);
@@ -733,7 +633,7 @@ int main(int argc, char** argv) {
 
     int picked_class = -1;
     tool_canvas.class_picked = [&picked_class](int value) { picked_class = value; };
-    tool_canvas.set_tool(studio::MaskCanvas::Tool::Pick);
+    tool_canvas.set_tool(studio::AnnotationTool::Pick);
     QMouseEvent pick_press(QEvent::MouseButtonPress, QPointF(200, 150), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&tool_canvas, &pick_press);
     const int fit_zoom = tool_canvas.zoom_percent();
@@ -929,7 +829,7 @@ int main(int argc, char** argv) {
             target.left() + image_point.x() * target.width() / move_source.width(),
             target.top() + image_point.y() * target.height() / move_source.height());
     };
-    move_canvas.set_tool(studio::MaskCanvas::Tool::TransformRegion);
+    move_canvas.set_tool(studio::AnnotationTool::TransformSelection);
     QMouseEvent select_move_region(QEvent::MouseButtonDblClick, canvas_point({3.5, 3.5}),
                                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&move_canvas, &select_move_region);
@@ -960,7 +860,7 @@ int main(int argc, char** argv) {
     if (!transform_canvas.load(move_image, transform_mask, &stroke_error)) return 76;
     transform_canvas.show();
     QApplication::processEvents();
-    transform_canvas.set_tool(studio::MaskCanvas::Tool::TransformRegion);
+    transform_canvas.set_tool(studio::AnnotationTool::TransformSelection);
     const auto select_transform_region = [&transform_canvas, &canvas_point] {
         QMouseEvent select(QEvent::MouseButtonDblClick, canvas_point({3.5, 3.5}),
                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);

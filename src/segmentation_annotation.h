@@ -1,6 +1,7 @@
 #pragma once
 
 #include "image_viewport_transform.h"
+#include "annotation_tool_interaction.h"
 #include "annotation_region_edit_service.h"
 #include "workflow.h"
 #include <common/geometry/interval.h>
@@ -38,11 +39,6 @@ class SampleBrowser;
 
 class MaskCanvas final : public QWidget {
 public:
-    enum class Tool {
-        Pan, TransformRegion, Brush, Polygon, Rectangle, Ellipse, ThresholdRoi,
-        Eraser, Fill, Pick
-    };
-
     explicit MaskCanvas(QWidget* parent = nullptr);
 
     bool load(const QString& image_path, const QString& mask_path, QString* error);
@@ -50,13 +46,13 @@ public:
     void mark_saved();
     void clear();
     bool save(const QString& mask_path, QString* error);
-    void set_brush_size(int size) { brush_size_ = size; }
+    void set_brush_size(int size) { interaction_.set_brush_size(size); }
     void set_class_value(int value) { class_value_ = value; }
     void set_class_colors(const QHash<int, QColor>& colors);
     void set_hidden_class_values(const QSet<int>& values);
     void set_editing_enabled(bool enabled) { editing_enabled_ = enabled; }
-    void set_eraser(bool eraser) { set_tool(eraser ? Tool::Eraser : Tool::Brush); }
-    void set_tool(Tool tool);
+    void set_eraser(bool eraser) { set_tool(eraser ? AnnotationTool::Eraser : AnnotationTool::Brush); }
+    void set_tool(AnnotationTool tool);
     void set_overlay_visible(bool visible) { overlay_visible_ = visible; update(); }
     void set_mask_visible(bool visible) { mask_visible_ = visible; update(); }
     void set_prediction_visible(bool visible) { prediction_visible_ = visible; update(); }
@@ -100,10 +96,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
-    enum class TransformHandle {
-        None, Body, TopLeft, TopRight, BottomRight, BottomLeft,
-        Top, Right, Bottom, Left, Rotate
-    };
+    using TransformHandle = SelectionTransformInteraction::Handle;
 
     QPoint image_point(const QPoint& widget_point) const;
     QPoint annotation_point(const QPoint& widget_point) const;
@@ -121,7 +114,6 @@ private:
     TransformHandle transform_handle_at(const QPointF& widget_point) const;
     bool transform_region_contains(const QPointF& image_point) const;
     QPolygonF transform_frame() const;
-    QPointF rotation_handle_position() const;
     void paint_transform_controls(QPainter& painter) const;
     void finish_edit(const QImage& before);
     void finish_polygon();
@@ -137,31 +129,20 @@ private:
     QImage stroke_before_;
 
     ImageViewportTransform viewport_;
-    bool panning_ = false;
     bool editing_enabled_ = true;
-    QPointF pan_last_;
-    int brush_size_ = 18;
+    ImagePanInteraction pan_;
     int class_value_ = 0;
-    Tool tool_ = Tool::Brush;
-    bool painting_ = false;
-    bool transform_dragging_ = false;
-    TransformHandle active_transform_handle_ = TransformHandle::None;
-    QPointF transform_drag_start_;
+    AnnotationToolInteraction interaction_;
+    SelectionTransformInteraction transform_;
     std::optional<LabelRegionSelection> transform_region_;
     QImage transform_base_mask_;
     QImage transform_drag_before_;
-    QTransform transform_matrix_;
-    QTransform transform_drag_matrix_;
-    QPoint stroke_last_point_{-1, -1};
-    QPoint shape_start_{-1, -1};
-    QPoint hover_point_{-1, -1};
-    QList<QPoint> polygon_points_;
     bool dirty_ = false;
     bool overlay_visible_ = true;
     bool mask_visible_ = true;
     bool prediction_visible_ = true;
     bool heatmap_visible_ = false;
-    double overlay_opacity_ = 0.34;
+    double overlay_opacity_;
     QUndoStack* undo_stack_ = nullptr;
     QHash<int, QColor> class_colors_;
     QSet<int> hidden_class_values_;

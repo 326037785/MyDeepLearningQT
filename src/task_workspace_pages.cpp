@@ -7,11 +7,11 @@
 #include "annotation_exchange.h"
 #include "classification_annotation.h"
 #include "icon_provider.h"
+#include "image_result_canvas.h"
 #include "model_presentation.h"
 #include "model_spec_catalog.h"
 #include "sample_presentation.h"
 #include "sample_browser.h"
-#include "segmentation_annotation.h"
 #include "project_model_browser.h"
 #include "task_dataset_binding.h"
 #include "ui_metrics.h"
@@ -286,19 +286,6 @@ protected:
 };
 
 namespace {
-
-QHash<int, QColor> canvas_class_colors(const TaskDatasetBinding& binding) {
-    QHash<int, QColor> colors;
-    for (const auto& value : binding.classes) {
-        if (!value.active || value.mask_value <= 0) continue;
-        QColor color(QString::fromStdString(value.color));
-        if (!color.isValid())
-            color = QColor(QString::fromStdString(default_class_color(value.mask_value)));
-        colors.insert(value.mask_value, color);
-    }
-    return colors;
-}
-
 
 QLabel* title_label(const QString& text, QWidget* parent) {
     auto* label = new QLabel(text, parent);
@@ -1876,13 +1863,9 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     viewport_layout->addWidget(layers_panel);
     canvas_stack_ = new QStackedWidget(viewport);
     canvas_stack_->setObjectName("inferenceCanvasStack");
-    segmentation_canvas_ = new MaskCanvas(canvas_stack_);
+    segmentation_canvas_ = new ImageResultCanvas(canvas_stack_);
     segmentation_canvas_->setObjectName("inferenceSegmentationCanvas");
-    segmentation_canvas_->set_editing_enabled(false);
-    segmentation_canvas_->set_overlay_visible(false);
-    segmentation_canvas_->set_mask_visible(false);
     segmentation_canvas_->set_prediction_visible(true);
-    segmentation_canvas_->set_heatmap_visible(false);
     segmentation_canvas_->set_overlay_opacity(0.42);
     classification_canvas_ = new ClassificationCanvas(canvas_stack_);
     classification_canvas_->setObjectName("inferenceClassificationCanvas");
@@ -2279,11 +2262,10 @@ void InferenceWorkspace::refresh_canvas() {
         classification_canvas_->set_heatmap_visible(overlay_layer_->isChecked());
     } else {
         QString error;
-        if (!segmentation_canvas_->load(image_path, {}, &error)) {
+        if (!segmentation_canvas_->load(image_path, &error)) {
             segmentation_canvas_->clear();
             return;
         }
-        segmentation_canvas_->set_class_colors(canvas_class_colors(service_->binding()));
         segmentation_canvas_->set_prediction_overlay({});
     }
 
@@ -2612,13 +2594,9 @@ ResultsWorkspace::ResultsWorkspace(QWidget* parent) : QWidget(parent) {
     viewport_layout->addWidget(layers_panel);
     canvas_stack_ = new QStackedWidget(viewport);
     canvas_stack_->setObjectName("resultsCanvasStack");
-    segmentation_canvas_ = new MaskCanvas(canvas_stack_);
+    segmentation_canvas_ = new ImageResultCanvas(canvas_stack_);
     segmentation_canvas_->setObjectName("resultsSegmentationCanvas");
-    segmentation_canvas_->set_editing_enabled(false);
-    segmentation_canvas_->set_overlay_visible(false);
-    segmentation_canvas_->set_mask_visible(false);
     segmentation_canvas_->set_prediction_visible(true);
-    segmentation_canvas_->set_heatmap_visible(false);
     segmentation_canvas_->set_overlay_opacity(0.42);
     classification_canvas_ = new ClassificationCanvas(canvas_stack_);
     classification_canvas_->setObjectName("resultsClassificationCanvas");
@@ -2867,11 +2845,10 @@ void ResultsWorkspace::refresh_sample_detail() {
     }
 
     QString error;
-    if (!segmentation_canvas_->load(source, {}, &error)) {
+    if (!segmentation_canvas_->load(source, &error)) {
         segmentation_canvas_->clear();
         return;
     }
-    segmentation_canvas_->set_class_colors(canvas_class_colors(service_->binding()));
     segmentation_canvas_->set_prediction_overlay(prediction_overlay_from_result(*sg));
 }
 

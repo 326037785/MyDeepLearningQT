@@ -154,6 +154,9 @@ void ModelActions::import_model(int node_id) {
         config.tool_type = jocelin::config::tool_type_from_string(task.task);
         config.model_index = task.model_index;
         config.model_scale = jocelin::config::model_scale_from_string(task.model_scale);
+        config.model_embed_dim = 768;
+        config.model_depth = 12;
+        config.model_num_heads = 12;
         config.image_width = task.training.image_width;
         config.image_height = task.training.image_height;
         config.normalize = task_service.binding().preprocessing.normalize;
