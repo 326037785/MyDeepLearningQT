@@ -328,6 +328,19 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
     try { reopened.open_project(project.project_file()); } catch (const std::runtime_error&) { rejected = true; }
     require(rejected, "reopen resolved a model from a different Node");
     studio::ProjectStorage::write_atomic(model_file, saved_models);
+    require(QFile::remove(model_file), "cannot remove inference owner's ModelList fixture");
+    studio::ProjectManager missing_list_project;
+    const auto missing_list = missing_list_project.open_project(project.project_file());
+    require(std::any_of(missing_list.begin(), missing_list.end(), [first](const auto& issue) {
+        return issue.node_id == first && issue.model_id.isEmpty();
+    }) && studio::TaskWorkspaceService(missing_list_project.active_workflow().document.graph, first)
+        .task().runtime.results.size() == 3 &&
+        studio::ProjectStorage::read(QDir(alternate_dir).filePath("result.json")) == alternate_json,
+        "missing catalog deleted or rejected orphaned inference");
+    missing_list_project.save_project();
+    require(!QFileInfo::exists(model_file), "save silently recreated a missing catalog with unresolved inference");
+    missing_list_project.open_project(project.project_file());
+    studio::ProjectStorage::write_atomic(model_file, saved_models);
     const auto additional = restored.add_model(*restored.find_model("model_1"));
     auto remaining = *restored.inference_result("model_1", "libtorch_fp32");
     remaining.model_id = additional.id;
@@ -348,6 +361,19 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
         studio::ProjectStorage::read(QString::fromStdString(std::get<jocelin::result::sg::SgResult>(copied->samples.front().result).mask_path)) ==
             studio::ProjectStorage::read(QDir(alternate_dir).filePath("sample_mask.png")),
         "Save As failed to relocate Node inference assets");
+    reopened.remove_models(first, {"model_1"}, "libtorch_alternate");
+    require(!restored.inference_result("model_1", "libtorch_alternate") && !QDir(alternate_dir).exists() &&
+        restored.inference_result("model_1", "libtorch_fp32") && QDir(first_dir).exists() &&
+        studio::ProjectStorage::read(QDir(peer_dir).filePath("result.json")) == peer_json,
+        "weight deletion crossed inference branch or Node boundaries");
+    const QString copied_model_list = QDir(copy.node_models_directory(first)).filePath("model_list.json");
+    require(QFile::remove(copied_model_list), "cannot remove copied ModelList");
+    copy.open_project(copy.project_file());
+    copy.remove_models(first);
+    copy.open_project(copy.project_file());
+    require(studio::TaskWorkspaceService(copy.active_workflow().document.graph, first).task().runtime.results.empty() &&
+        !QDir(QFileInfo(copy.node_models_directory(first)).absolutePath() + "/inference").exists(),
+        "missing ModelList cleanup did not persist removal of orphaned inference");
     require(restored.remove_model("model_1") && restored.task().runtime.results.size() == 1 &&
         restored.task().runtime.results.front().model_id == additional.id && !QDir(first_dir).exists() && !QDir(alternate_dir).exists(),
         "model delete did not remove exactly its inference directory and records");
@@ -483,6 +509,62 @@ void model_list_ownership_roundtrip(const studio::ProjectModel& prototype) {
         studio::TaskWorkspaceService(reopened.active_workflow().document.graph, first).find_model("model_3"),
         "invalid Node ModelList was accepted or replaced the open Project");
     studio::ProjectStorage::write_atomic(path, valid);
+    require(reopened.open_project(project.project_file()).empty(), "valid model assets reported missing");
+    const auto* checked_model = studio::TaskWorkspaceService(
+        reopened.active_workflow().document.graph, second).find_model("model_1");
+    const QString training_path = QString::fromStdString(checked_model->weights.front().path);
+    const QString converted_path = QString::fromStdString(checked_model->weights.back().path);
+    require(QFile::remove(converted_path), "cannot remove converted asset fixture");
+    auto missing = reopened.open_project(project.project_file());
+    require(missing.size() == 1 && missing.front().node_id == second &&
+        missing.front().model_id == "model_1" && missing.front().weight_ids == QStringList{"onnx_fp16"} &&
+        !missing.front().all_weights_missing && studio::ProjectStorage::read(path) == valid && !reopened.is_dirty(),
+        "missing weight did not open readably without changing the catalog");
+    require(QFile::remove(training_path), "cannot remove training asset fixture");
+    missing = reopened.open_project(project.project_file());
+    require(missing.size() == 1 && missing.front().all_weights_missing,
+        "entirely missing model was not diagnosed");
+    require(QFile::remove(path), "cannot remove ModelList fixture");
+    missing = reopened.open_project(project.project_file());
+    require(missing.size() == 1 && missing.front().model_id.isEmpty() &&
+        studio::TaskWorkspaceService(reopened.active_workflow().document.graph, second).models().empty() &&
+        !QFileInfo::exists(path), "missing ModelList did not open empty without being recreated");
+    studio::ProjectStorage::write_atomic(path, "{broken");
+    rejected = false;
+    try { reopened.open_project(project.project_file()); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "corrupt ModelList was treated as missing");
+    model = QJsonDocument::fromJson(valid).object().value("models").toArray()[0].toObject();
+    model["creation_mode"] = "import";
+    models = {model};
+    invalid = QJsonDocument::fromJson(valid).object();
+    invalid["models"] = models;
+    studio::ProjectStorage::write_atomic(path, QJsonDocument(invalid).toJson());
+    rejected = false;
+    try { reopened.open_project(project.project_file()); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "illegal lifecycle metadata was treated as missing assets");
+    studio::ProjectStorage::write_atomic(path, valid);
+    studio::ProjectStorage::write_atomic(training_path, "owned weight");
+    studio::ProjectStorage::write_atomic(converted_path, "derived weight");
+    reopened.open_project(project.project_file());
+    const auto status = studio::TaskWorkspaceService(reopened.active_workflow().document.graph, second)
+        .find_model("model_1")->training_status;
+    reopened.remove_models(second, {"model_1"}, "libtorch_fp32");
+    require(reopened.open_project(project.project_file()).empty(), "training branch deletion did not reopen");
+    const auto* retained = studio::TaskWorkspaceService(reopened.active_workflow().document.graph, second).find_model("model_1");
+    require(retained && retained->weights.size() == 1 && retained->weights.front().id == "onnx_fp16" &&
+        retained->weights.front().parent_weight_id.empty() && retained->training_status == status &&
+        !QFileInfo::exists(training_path) && QFileInfo::exists(converted_path),
+        "training branch deletion changed status or removed its independent child");
+    reopened.remove_models(second, {"model_1"}, "onnx_fp16");
+    reopened.open_project(project.project_file());
+    require(studio::TaskWorkspaceService(reopened.active_workflow().document.graph, second)
+        .find_model("model_1")->weights.empty(), "empty model row did not survive reopen");
+    reopened.remove_models(second, {"model_1"});
+    require(!QDir(QFileInfo(converted_path).absolutePath()).exists() &&
+        studio::TaskWorkspaceService(reopened.active_workflow().document.graph, first).find_model("model_3"),
+        "model removal did not clean assets in only its owning Node");
 }
 
 void annotation_persistence_roundtrip() {

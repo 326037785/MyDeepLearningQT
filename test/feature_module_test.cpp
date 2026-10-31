@@ -20,6 +20,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImage>
+#include <QInputDialog>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
@@ -31,6 +32,7 @@
 #include <QWidget>
 #include <iostream>
 #include <stdexcept>
+#include <ATen/Parallel.h>
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -226,6 +228,7 @@ int main(int argc, char** argv) try {
     weight.id = "weights";
     weight.path = weight_path.toStdString();
     weight.created_at = "2026-10-29T00:00:00Z";
+    model.created_at = weight.created_at;
     model.weights.push_back(weight);
     const auto added = service.add_model(model);
     project.mark_active_dirty();
@@ -253,6 +256,99 @@ int main(int argc, char** argv) try {
             changes == 0 && !project.is_dirty(), "model export changed data or lost bundle metadata");
     // The copy-only weight fixture must fail in the CPU worker, without running a real model.
     execution_failure_contract(project, workspace, node, added, host);
+    // Exercise real CPU checkpoint completion through the Qt job boundary.
+    at::set_num_threads(1);
+    service.synchronize();
+    service.add_class("foreground");
+    service.set_segmentation_sample_empty("sample");
+    service.set_sample_split("sample", "train");
+    service.task().training.image_width = service.task().training.image_height = 64;
+    service.task().training.batch_size = 1;
+    service.task().training.workers = 0;
+    studio::ExecutionModule execution(project, workspace, &host);
+    execution.log = [](const QString&) {};
+    execution.show_log = [] {};
+    execution.editing_changed = [](bool) {};
+    execution.runtime_status = [](const QString&, const char*) {};
+    QTimer training_dialogs;
+    QString training_error;
+    QObject::connect(&training_dialogs, &QTimer::timeout, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            dialog->setTextValue("CPU");
+            dialog->accept();
+        } else if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            training_error = message->text();
+            message->accept();
+        }
+    });
+    training_dialogs.start(5);
+    QString paused_model;
+    QString stopped_model;
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        service.task().training.epochs = scenario == 2 ? 1 : 100;
+        QEventLoop finished;
+        execution.changed = [&] { finished.quit(); };
+        execution.status = [&](const QString& text, int) {
+            if (scenario == 1 && text.startsWith("Training epoch ")) {
+                execution.stop();
+            }
+        };
+        studio::TrainingLaunchRequest request;
+        if (scenario == 4) {
+            request.mode = "resume";
+            request.model_id = paused_model;
+        }
+        execution.start_training(node, request);
+        require(training_error.isEmpty() && execution.is_running(), "CPU training did not start");
+        if (scenario == 0) {
+            execution.stop();
+        } else if (scenario >= 3) {
+            execution.pause();
+        }
+        finished.exec();
+        const auto* row = service.find_model(QString::fromStdString(service.task().runtime.training_model_id));
+        require(row, "training completion lost its ModelEntry");
+        const auto* checkpoint = jocelin::model::find_training_weight(*row);
+        if (scenario < 2) {
+            require(row->training_status == jocelin::model::ModelTrainingStatus::Stopped,
+                "Stop changed the model lifecycle state");
+            if (scenario == 0) {
+                require(row->completed_epochs == 0 && !checkpoint, "early Stop fabricated a checkpoint");
+            } else {
+                require(row->completed_epochs >= 1 && checkpoint && QFileInfo(QString::fromStdString(checkpoint->path)).isFile() &&
+                    QFileInfo(QString::fromStdString(checkpoint->path)).fileName() == "best.pt",
+                    "Stop after an epoch failed to register best.pt");
+                stopped_model = QString::fromStdString(row->id);
+            }
+        } else {
+            const bool completed = scenario == 2;
+            require(row->training_status == (completed ? jocelin::model::ModelTrainingStatus::Completed
+                                                       : jocelin::model::ModelTrainingStatus::Paused) && checkpoint &&
+                QFileInfo(QString::fromStdString(checkpoint->path)).fileName() == (completed ? "best.pt" : "last.pt"),
+                "Completed or Paused selected the wrong checkpoint");
+            if (scenario == 3) {
+                paused_model = QString::fromStdString(row->id);
+            } else if (scenario == 4) {
+                require(QString::fromStdString(row->id) == paused_model && row->completed_epochs >= 2,
+                    "Resume did not continue the paused ModelEntry");
+            }
+        }
+        studio::ProjectManager verified;
+        verified.open_project(project.project_file());
+    }
+    studio::TrainingLaunchRequest resume_stopped;
+    resume_stopped.mode = "resume";
+    resume_stopped.model_id = stopped_model;
+    execution.start_training(node, resume_stopped);
+    require(!execution.is_running() && !training_error.isEmpty(), "Stopped model accepted Resume");
+    training_error.clear();
+    QEventLoop inferred;
+    execution.changed = [&] { inferred.quit(); };
+    execution.start_inference(node, {stopped_model, "libtorch_fp32", jocelin::config::cpu_device()});
+    require(execution.is_running() && training_error.isEmpty(), "Stopped checkpoint could not start inference");
+    inferred.exec();
+    require(service.inference_result(stopped_model, "libtorch_fp32"), "Stopped model did not produce inference results");
+    training_dialogs.stop();
     std::cout << "Standalone feature modules passed\n";
     return 0;
 } catch (const std::exception& error) {

@@ -273,7 +273,54 @@ void ProjectModule::openProject(const QString& requested_path) {
     if (path.isEmpty()) return;
     before_switch();
     try {
-        project_.open_project(path);
+        const auto missing = project_.open_project(path);
+        if (!missing.empty()) {
+            QStringList details;
+            for (const auto& issue : missing) {
+                const QString owner = tr("Workflow %1 / TaskNode %2").arg(issue.workflow_id).arg(issue.node_id);
+                if (issue.model_id.isEmpty()) {
+                    details.push_back(tr("%1: model_list.json is missing; the ModelList is empty.").arg(owner));
+                } else {
+                    details.push_back(tr("%1 / model %2: missing weights %3%4")
+                        .arg(owner, issue.model_id, issue.weight_ids.join(", "),
+                             issue.all_weights_missing ? tr(" (all model weights are missing)") : QString{}));
+                }
+                details.append(issue.paths);
+            }
+            QMessageBox prompt(QMessageBox::Warning, tr("Missing model assets"),
+                tr("Model assets no longer exist. Existing inference results depend on these models.\n\n"
+                   "Clean up the missing weights and their inference results? Models whose weights are all missing "
+                   "will be deleted. A missing ModelList will remain empty and its orphaned inference results "
+                   "will be cleared.\n\nCancel keeps Project data unchanged; unavailable weights cannot be used for training or inference."),
+                QMessageBox::Yes | QMessageBox::Cancel, &shell_);
+            prompt.setDefaultButton(QMessageBox::Cancel);
+            prompt.setInformativeText(details.join('\n'));
+            if (prompt.exec() == QMessageBox::Yes) {
+                const size_t active = project_.active_index();
+                try {
+                    for (const auto& issue : missing) {
+                        for (size_t index = 0; index < project_.workflows().size(); ++index) {
+                            if (project_.workflows()[index].id == issue.workflow_id) {
+                                project_.set_active_index(index);
+                                break;
+                            }
+                        }
+                        if (issue.model_id.isEmpty()) {
+                            project_.remove_models(issue.node_id);
+                        } else if (issue.all_weights_missing) {
+                            project_.remove_models(issue.node_id, {issue.model_id});
+                        } else {
+                            for (const QString& weight_id : issue.weight_ids) {
+                                project_.remove_models(issue.node_id, {issue.model_id}, weight_id);
+                            }
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    QMessageBox::warning(&shell_, tr("Cannot clean up model assets"), QString::fromUtf8(error.what()));
+                }
+                project_.set_active_index(active);
+            }
+        }
         after_switch();
         show_workflow();
         updateRecentProjects(project_.project_file());

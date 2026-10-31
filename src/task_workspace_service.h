@@ -52,6 +52,7 @@ public:
     const jocelin::model::ModelEntry* find_model(const QString& id) const;
     jocelin::model::ModelEntry add_model(jocelin::model::ModelEntry model);
     bool remove_model(const QString& id);
+    bool remove_model_weight(const QString& model_id, const QString& weight_id);
     void clear_models();
     const InferenceResultSet* inference_result(const QString& model_id, const QString& weight_id) const;
     void select_inference_result(const QString& model_id, const QString& weight_id);

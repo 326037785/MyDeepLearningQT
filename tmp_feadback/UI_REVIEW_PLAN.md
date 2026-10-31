@@ -33,34 +33,29 @@ The model list is navigation:
 
 ### Repository and model selection
 
-The repository and training-source compatibility are different layers.
+**ModelList ownership**: Each TaskNode owns one Core ModelList. The current
+Workflow and Node locate that list; the TaskNode's task type constrains its rows.
+Rows may use different capacities and model indices. Import creates a ModelEntry,
+and conversion adds a ModelWeight branch to that entry.
 
-Repository:
+**Training source**: The user chooses New, Inherit, Transfer or Resume. New,
+Inherit and Transfer create a model row. Resume continues a Paused row with a
+valid LibTorch training checkpoint and compatible model, class and training state.
 
-- each task type owns one Project Model repository;
-- same-task models remain in that repository even when capacity/network differs;
-- Import / Export / Delete operate on repository assets;
-- import rejects a different task type but accepts another capacity.
+**Inference selection**: The user selects a ModelEntry and weight_id in the current
+TaskNode. The selected model supplies its capacity, model index and input dimensions.
+Qt checks the weight file, device and runtime before execution.
 
-Training:
+**Model deletion**: The application removes the selected ModelEntry, its assets
+and all inference for its model_id. Weight deletion removes one branch, its assets
+and inference for its model_id + weight_id. Other branches and results remain.
+Qt refreshes selection and ProjectManager saves the ModelList and Workflow references.
 
-- only models with a compatible task/capacity/weight family can be chosen as the training source;
-- source selection is exclusive;
-- no selected source model means train a new model;
-- one selected source model means initialize from that model;
-- same class schema means continue/resume training;
-- different class schema means transfer learning;
-- Resume additionally requires compatible input shape, optimizer state and epoch state;
-- do not show separate `Transfer` or `Continue` buttons.
-
-Inference:
-
-- any model in the current task repository can be selected;
-- the selected model/checkpoint supplies inference capacity, network/model index and input dimensions;
-- filesystem checkpoint browsing remains a secondary external-model path;
-- do not add a separate textual inference mode selector.
-
-A Project Model that is no longer useful can be deleted from the project inventory.
+**Missing model assets**: ProjectManager opens the Project readably and returns
+diagnostics. A missing model_list.json gives its TaskNode an empty ModelList and
+retained inference references. Qt asks before cleaning up missing weights, fully
+unavailable models or orphaned inference. Cancel preserves Project data and files.
+The loader reports corrupt JSON and invalid metadata as errors.
 
 ## 3. Inference layout
 
@@ -91,8 +86,15 @@ Training runtime actions must reflect the real worker lifecycle:
 
 - starting a run cannot launch a second run;
 - while running, only valid runtime actions remain available;
-- Pause / Resume continues the same run;
-- Stop is terminal.
+**Paused**: Core saves a complete epoch checkpoint. Qt registers last.pt for
+Resume and Infer.
+
+**Completed**: Qt registers best.pt for Infer.
+
+**Stopped**: Core ends the run at a batch boundary and retains completed-epoch
+checkpoints. Qt registers an available best.pt for Infer and keeps the Stopped
+status. An early Stop leaves an empty weight collection. Resume accepts Paused
+models with valid LibTorch training checkpoints.
 
 ## 5. Results
 

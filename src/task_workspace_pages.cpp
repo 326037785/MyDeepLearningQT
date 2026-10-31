@@ -1230,6 +1230,11 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->delete_models_requested = [this](const QStringList& ids) {
         if (delete_models_requested) delete_models_requested(ids);
     };
+    model_browser_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
+        if (delete_model_weight_requested) {
+            delete_model_weight_requested(model_id, weight_id);
+        }
+    };
     model_browser_->clear_models_requested = [this] {
         if (clear_models_requested) clear_models_requested();
     };
@@ -1893,6 +1898,11 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     };
     model_browser_->delete_models_requested = [this](const QStringList& ids) {
         if (delete_models_requested) delete_models_requested(ids);
+    };
+    model_browser_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
+        if (delete_model_weight_requested) {
+            delete_model_weight_requested(model_id, weight_id);
+        }
     };
     model_browser_->clear_models_requested = [this] {
         if (clear_models_requested) clear_models_requested();

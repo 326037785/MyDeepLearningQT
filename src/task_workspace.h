@@ -60,6 +60,7 @@ public:
     std::function<void(int node_id)> import_model_requested;
     std::function<void(int node_id, const QString&)> export_model_requested;
     std::function<void(int node_id, const QStringList&)> delete_models_requested;
+    std::function<void(int node_id, const QString&, const QString&)> delete_model_weight_requested;
     std::function<void(int node_id)> clear_models_requested;
     std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
     std::function<void(const QString&)> status;

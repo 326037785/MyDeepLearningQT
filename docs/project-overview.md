@@ -73,7 +73,27 @@ Import creates a row in the receiving Node. Core matches external LibTorch/PyTor
 
 `runtime.training_model_id` refers to the row controlled by the current TaskNode. Training progress and checkpoint ownership stay with that row. Export copies selected model assets outward.
 
-Deleting a model removes its row, controlled-training association and associated Inference records. It also deletes that Node's `inference/<model_id>/` directory. Clear removes the Node's models and Inference records, including its whole `inference/` directory. Other Nodes remain independent.
+**Model deletion**: The application removes the ModelEntry, its model assets,
+controlled-training association, all inference records for its model_id and
+`inference/<model_id>/`.
+
+**Weight deletion**: The application removes one ModelWeight, its assets and the
+inference records and directory for its model_id + weight_id. It preserves other
+branches and the model training status, clears parent_weight_id on direct children
+and permits an empty model row.
+
+**Clear ModelList**: The application removes the current TaskNode's models,
+model assets, inference records and inference/ directory. ProjectManager saves the
+ModelList and Workflow references; Qt refreshes selection. Other Nodes retain their assets.
+
+**Paused**: Qt registers last.pt for Resume and Infer. Resume requires a valid
+LibTorch training checkpoint in the Paused model.
+
+**Completed**: Qt registers best.pt for Infer.
+
+**Stopped**: Core ends the run at a batch boundary and retains checkpoints from
+complete epochs. Qt registers an available best.pt for Infer and keeps the Stopped
+status. Stopping before the first completed epoch leaves the weight collection empty.
 
 ## Inference and result selection
 
@@ -110,7 +130,20 @@ Workflow configuration saves Task bindings and model/weight result references. M
 
 ProjectManager coordinates these modules. Ordinary save prepares serialization before writing. Each file uses QSaveFile replacement, and the Project entry is written last. Atomicity is per file. See [project_spec.md](project_spec.md).
 
-Project open restores Nodes, bindings, result assets and each Node's ModelList. It checks result associations against that Node's models and weights. Result directories and output artifact paths must remain within their branch. Invalid references and missing referenced assets produce loading errors. Detached bindings retain their paths and Annotation until reconnection.
+**Project open**: ProjectManager restores Nodes, bindings, result assets and each
+Node's ModelList. It checks result associations within the owning Node and checks
+artifact paths within their branch. Detached bindings retain paths and Annotation.
+
+**Missing model assets**: ProjectManager returns diagnostics for missing weights
+and fully unavailable models while preserving ModelList entries and inference.
+A missing model_list.json opens with an empty Node ModelList and retained inference
+references. Qt asks the user to clean up the missing dependencies through the
+ordinary model/weight deletion path. Cancel preserves Project data and files.
+Ordinary save preserves a missing catalog while orphaned inference references remain.
+
+**Invalid model metadata**: ProjectManager rejects malformed JSON, invalid fields,
+duplicate identities and invalid lifecycle metadata. Other asset and reference
+validation follows the owning module's rules.
 
 Save As copies Project assets and relocates internal resource paths. Workflow, Node, sample, model and weight ids remain stable. External resource references remain external.
 

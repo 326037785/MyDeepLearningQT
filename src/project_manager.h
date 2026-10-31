@@ -7,6 +7,7 @@
 #include <inference/inference_service.h>
 
 #include <QString>
+#include <QStringList>
 
 #include <cstddef>
 #include <vector>
@@ -31,12 +32,22 @@ struct ProjectWorkflow {
 using ProjectModelClass = jocelin::model::ModelClass;
 using ProjectModel = jocelin::model::ModelEntry;
 
+// Open-time diagnostics only; ModelList remains owned by its TaskNode.
+struct MissingModelAssets {
+    QString workflow_id;
+    int node_id = 0;
+    QString model_id; // Empty when model_list.json itself is missing.
+    QStringList weight_ids;
+    QStringList paths;
+    bool all_weights_missing = false;
+};
+
 class ProjectManager {
 public:
     ProjectManager();
 
     void new_project(const QString& name = "Untitled Project");
-    void open_project(const QString& project_file);
+    std::vector<MissingModelAssets> open_project(const QString& project_file);
     void save_project(const QString& root_directory = {});
     void save_project_as(const QString& name, const QString& parent_directory);
 
@@ -48,6 +59,7 @@ public:
     void set_project_description(const QString& description);
     void mark_active_dirty();
     QString node_models_directory(int node_id) const;
+    void remove_models(int node_id, const QStringList& model_ids = {}, const QString& weight_id = {});
     // Saves cleared references before removing only these connected Tasks' assets.
     void clear_dataset_dependents(const std::vector<int>& dataset_node_ids);
     QString prepare_inference_directory(int node_id, const QString& model_id, const QString& weight_id) const;

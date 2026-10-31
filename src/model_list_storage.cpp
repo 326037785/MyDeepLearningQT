@@ -9,6 +9,7 @@
 #include <QJsonParseError>
 
 #include <cmath>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -26,17 +27,32 @@ void require_exact_fields(
     for (const char* field : fields) {
         const QString name = QString::fromLatin1(field);
         expected.insert(name);
-        if (!object.contains(name))
+        if (!object.contains(name)) {
             throw std::runtime_error(
                 (context + ": missing field '" +
                  name + "'").toStdString());
+        }
+        const QJsonValue value = object.value(name);
+        const bool array = name == "models" || name == "weights" || name == "classes" || name == "supported_devices";
+        const bool real = name == "training_loss" || name == "metric";
+        const bool integer = name == "next_number" || name == "number" || name == "model_index" ||
+            name == "image_width" || name == "image_height" || name == "completed_epochs" ||
+            name == "best_epoch" || name == "onnx_opset" || name == "mask_value";
+        if ((array && !value.isArray()) ||
+            ((real || integer) && (!value.isDouble() || !std::isfinite(value.toDouble()))) ||
+            (integer && (std::floor(value.toDouble()) != value.toDouble() ||
+                value.toDouble() < std::numeric_limits<int>::min() || value.toDouble() > std::numeric_limits<int>::max())) ||
+            (!array && !real && !integer && !value.isString())) {
+            throw std::runtime_error((context + ": invalid field '" + name + "'").toStdString());
+        }
     }
     for (auto iterator = object.begin();
          iterator != object.end(); ++iterator) {
-        if (expected.count(iterator.key()) == 0)
+        if (expected.count(iterator.key()) == 0) {
             throw std::runtime_error(
                 (context + ": unexpected field '" +
                  iterator.key() + "'").toStdString());
+        }
     }
 }
 
@@ -128,6 +144,10 @@ jocelin::model::ModelList ModelListStorage::load(
                 weight.input_signature = weight_object.value("input_signature").toString().toStdString();
                 weight.output_signature = weight_object.value("output_signature").toString().toStdString();
                 weight.target_architecture = weight_object.value("target_architecture").toString().toStdString();
+                if (!QDateTime::fromString(QString::fromStdString(weight.created_at), Qt::ISODate).isValid() ||
+                    weight.onnx_opset < 0) {
+                    throw std::runtime_error("Task model weight metadata is invalid");
+                }
                 model.weights.push_back(std::move(weight));
             }
             model.creation_mode = jocelin::model::model_creation_mode_from_string(
@@ -150,14 +170,10 @@ jocelin::model::ModelList ModelListStorage::load(
                 !model_ids.insert(QString::fromStdString(model.id)).second ||
                 !model_numbers.insert(model.number).second)
                 throw std::runtime_error("Task model metadata is invalid");
-            const bool requires_weight =
-                model.training_status == jocelin::model::ModelTrainingStatus::Paused ||
-                model.training_status == jocelin::model::ModelTrainingStatus::Completed ||
-                model.training_status == jocelin::model::ModelTrainingStatus::Imported;
-            if ((requires_weight && !jocelin::model::find_training_weight(model)) ||
-                ((model.creation_mode == jocelin::model::ModelCreationMode::Import) !=
-                 (model.training_status == jocelin::model::ModelTrainingStatus::Imported)))
+            if ((model.creation_mode == jocelin::model::ModelCreationMode::Import) !=
+                (model.training_status == jocelin::model::ModelTrainingStatus::Imported)) {
                 throw std::runtime_error("Task model lifecycle metadata is invalid");
+            }
             if (!object.value("classes").isArray())
                 throw std::runtime_error("Task model classes are invalid");
             for (const auto class_value : object.value("classes").toArray()) {
@@ -174,6 +190,10 @@ jocelin::model::ModelList ModelListStorage::load(
                     throw std::runtime_error("Task model class metadata is invalid");
                 model.classes.push_back(std::move(item));
             }
+            // Validate branch identities, roles and lineage without probing files.
+            // Missing assets are diagnosed by ProjectManager after structural load.
+            jocelin::model::ModelList validation;
+            validation.add(model);
             models.push_back(std::move(model));
         }
         if (!model_numbers.empty() &&

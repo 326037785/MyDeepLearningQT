@@ -211,13 +211,18 @@ void validate_inference_results(const WorkflowGraph& graph, const QString& workf
     for (const auto& [node_id, node] : graph.nodes()) {
         if (node.kind != NodeKind::TaskConfig) continue;
         const auto& task = std::get<TaskNodeConfig>(node.config);
+        const bool missing_model_list = task.model_list.entries().empty() &&
+            !QFileInfo::exists(QDir(root).filePath("nodes/" + workflow_id + "/" +
+                QString::number(node_id) + "/models/model_list.json"));
         std::set<std::pair<std::string, std::string>> keys;
         for (const auto& result : task.runtime.results) {
             const auto* model = task.model_list.find(result.model_id);
             const auto* weight = model ? jocelin::model::find_weight(*model, result.weight_id) : nullptr;
-            if (!weight || jocelin::config::to_string(weight->format) != result.weight_format ||
-                !keys.emplace(result.model_id, result.weight_id).second)
+            if ((!weight && !missing_model_list) ||
+                (weight && jocelin::config::to_string(weight->format) != result.weight_format) ||
+                !keys.emplace(result.model_id, result.weight_id).second) {
                 throw std::runtime_error("inference result must reference a unique model/weight in its TaskNode");
+            }
             const auto expected = QDir(root).filePath("nodes/" + workflow_id + "/" +
                 inference_result_directory(node_id, result.model_id, result.weight_id));
             if (QDir::cleanPath(QString::fromStdString(result.result_directory)) != QDir::cleanPath(expected))
@@ -266,7 +271,7 @@ void ProjectManager::new_project(const QString& name) {
     metadata_dirty_ = false;
 }
 
-void ProjectManager::open_project(const QString& project_file_path) {
+std::vector<MissingModelAssets> ProjectManager::open_project(const QString& project_file_path) {
     QFileInfo info(project_file_path);
     const QString file_path = info.isDir() ? QDir(project_file_path).filePath(ProjectFileName) : info.absoluteFilePath();
     QJsonParseError parse_error;
@@ -299,6 +304,7 @@ void ProjectManager::open_project(const QString& project_file_path) {
     if (!QDateTime::fromString(metadata.created_at, Qt::ISODate).isValid())
         throw std::runtime_error("project creation timestamp is invalid");
     std::vector<ProjectWorkflow> workflows;
+    std::vector<MissingModelAssets> missing_assets;
     for (const auto value : root.value("workflows").toArray()) {
         if (!value.isObject()) throw std::runtime_error("invalid project workflow entry");
         const auto object = value.toObject();
@@ -321,13 +327,33 @@ void ProjectManager::open_project(const QString& project_file_path) {
         for (const auto& [node_id, node] : workflow.document.graph.nodes()) {
             if (node.kind != NodeKind::TaskConfig) continue;
             auto& task = std::get<TaskNodeConfig>(workflow.document.graph.node(node_id).config);
-            task.model_list = ModelListStorage::load(
-                QDir(root_directory).filePath("nodes/" + id + "/" + QString::number(node_id)),
-                root_directory);
+            const QString node_directory = QDir(root_directory).filePath(
+                "nodes/" + id + "/" + QString::number(node_id));
+            const QString model_list_path = QDir(node_directory).filePath("models/model_list.json");
+            if (QFileInfo::exists(model_list_path)) {
+                task.model_list = ModelListStorage::load(node_directory, root_directory);
+            } else {
+                task.model_list = {};
+                missing_assets.push_back({id, node_id, {}, {}, {model_list_path}, false});
+            }
             const auto task_type = jocelin::config::tool_type_from_string(task.task);
-            for (const auto& model : task.model_list.entries())
-                if (model.task != task_type)
+            for (const auto& model : task.model_list.entries()) {
+                if (model.task != task_type) {
                     throw std::runtime_error("model task does not match the owning TaskNode");
+                }
+                MissingModelAssets missing{id, node_id, QString::fromStdString(model.id), {}, {}, false};
+                for (const auto& weight : model.weights) {
+                    const QString path = QString::fromStdString(weight.path);
+                    if (!QFileInfo(path).isFile()) {
+                        missing.weight_ids.push_back(QString::fromStdString(weight.id));
+                        missing.paths.push_back(path);
+                    }
+                }
+                if (!missing.weight_ids.isEmpty()) {
+                    missing.all_weights_missing = missing.weight_ids.size() == static_cast<int>(model.weights.size());
+                    missing_assets.push_back(std::move(missing));
+                }
+            }
             TaskWorkspaceService(workflow.document.graph, node_id).refresh_quality();
         }
         validate_inference_results(workflow.document.graph, id, root_directory);
@@ -343,6 +369,29 @@ void ProjectManager::open_project(const QString& project_file_path) {
     root_directory_ = root_directory;
     active_index_ = 0;
     metadata_dirty_ = false;
+    return missing_assets;
+}
+
+void ProjectManager::remove_models(int node_id, const QStringList& model_ids, const QString& weight_id) {
+    auto& graph = active_workflow().document.graph;
+    TaskWorkspaceService service(graph, node_id,
+        has_storage() ? QFileInfo(node_models_directory(node_id)).absolutePath() : QString{});
+    if (!weight_id.isEmpty()) {
+        if (model_ids.size() != 1) {
+            throw std::runtime_error("weight deletion requires exactly one model");
+        }
+        service.remove_model_weight(model_ids.front(), weight_id);
+    } else if (model_ids.isEmpty()) {
+        service.clear_models();
+    } else {
+        for (const QString& id : model_ids) {
+            service.remove_model(id);
+        }
+    }
+    mark_active_dirty();
+    if (has_storage()) {
+        save_project();
+    }
 }
 
 void ProjectManager::clear_dataset_dependents(const std::vector<int>& dataset_node_ids) {
@@ -393,9 +442,15 @@ void ProjectManager::save_project(const QString& root_directory) {
             for (const auto& model : task.model_list.entries())
                 if (model.task != task_type)
                     throw std::runtime_error("model task does not match the owning TaskNode");
-            serialized_models.emplace_back(
-                QDir(root).filePath("nodes/" + workflow.id + "/" + QString::number(node_id)),
-                ModelListStorage::serialize(task.model_list, root));
+            const QString node_directory = QDir(root).filePath(
+                "nodes/" + workflow.id + "/" + QString::number(node_id));
+            // Preserve unresolved references after the user declines cleanup.
+            // Writing an empty catalog here would make the next open reject them.
+            if (!task.model_list.entries().empty() || task.runtime.results.empty() ||
+                QFileInfo::exists(QDir(node_directory).filePath("models/model_list.json"))) {
+                serialized_models.emplace_back(node_directory,
+                    ModelListStorage::serialize(task.model_list, root));
+            }
         }
         for (auto& [file, data] : serialized.inference_assets)
             serialized_regions.emplace_back(

@@ -707,6 +707,75 @@ int main(int argc, char** argv) try {
         studio::ProjectStorage::read(independent_inference + "/marker") != "peer")
         throw std::runtime_error("Node model clear touched another Node or failed to persist");
 
+    auto& peer_task = std::get<studio::TaskNodeConfig>(managed.active_workflow().document.graph.node(independent_node_id).config);
+    auto* peer_model = peer_task.model_list.find("model_1");
+    const QString peer_weight_path = QString::fromStdString(peer_model->weights.front().path);
+    auto converted_weight = peer_model->weights.front();
+    converted_weight.id = "onnx_fp32";
+    converted_weight.format = jocelin::config::WeightType::Onnx;
+    converted_weight.role = jocelin::model::WeightRole::Inference;
+    converted_weight.parent_weight_id = "libtorch_fp32";
+    converted_weight.path = QDir(independent_asset).filePath("model.onnx").toStdString();
+    studio::ProjectStorage::write_atomic(QString::fromStdString(converted_weight.path), "onnx fixture");
+    peer_task.model_list.add_weight("model_1", converted_weight);
+    auto peer_result = old_result;
+    peer_result.result_directory = independent_inference.toStdString();
+    auto& peer_value = std::get<jocelin::result::cls::ClsResult>(peer_result.samples.front().result);
+    peer_value.save_dir = peer_result.result_directory;
+    peer_value.heatmap_path.clear();
+    peer_task.runtime.results = {peer_result};
+    managed.save_project();
+    const QString peer_catalog = QDir(managed.node_models_directory(independent_node_id)).filePath("model_list.json");
+    const QByteArray catalog_before = studio::ProjectStorage::read(peer_catalog);
+    const QString workflow_path = QDir(managed.root_directory()).filePath("workflows/workflow_1.json");
+    const QByteArray workflow_before = studio::ProjectStorage::read(workflow_path);
+    if (!QFile::remove(peer_weight_path)) {
+        throw std::runtime_error("cannot remove a registered weight fixture");
+    }
+    bool cleanup = false;
+    int missing_prompts = 0;
+    QTimer missing_dialogs;
+    QObject::connect(&missing_dialogs, &QTimer::timeout, [&] {
+        if (auto* files = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+            files->selectFile(import_project.project_file());
+            QMetaObject::invokeMethod(files, "accept", Qt::DirectConnection);
+        } else if (auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (message->windowTitle() == "Missing model assets") {
+                ++missing_prompts;
+                message->button(cleanup ? QMessageBox::Yes : QMessageBox::Cancel)->click();
+            } else {
+                import_error = message->text();
+                message->accept();
+            }
+        }
+    });
+    for (bool accept_cleanup : {false, true}) {
+        cleanup = accept_cleanup;
+        missing_dialogs.start(10);
+        import_window.findChild<QAction*>("openProjectAction")->trigger();
+        missing_dialogs.stop();
+        if (!cleanup && (studio::ProjectStorage::read(peer_catalog) != catalog_before ||
+            studio::ProjectStorage::read(workflow_path) != workflow_before || !QDir(independent_inference).exists())) {
+            throw std::runtime_error("cancelled missing-asset cleanup modified Project data");
+        }
+    }
+    managed.open_project(import_project.project_file());
+    peer_model = std::get<studio::TaskNodeConfig>(managed.active_workflow().document.graph.node(independent_node_id).config)
+        .model_list.find("model_1");
+    if (missing_prompts != 2 || !import_error.isEmpty() || !peer_model || peer_model->weights.size() != 1 ||
+        peer_model->weights.front().id != "onnx_fp32" || QDir(independent_inference).exists()) {
+        throw std::runtime_error("confirmed missing training weight cleanup lost another branch or retained inference");
+    }
+    // The normal Qt single-weight command also persists a valid empty model row.
+    confirm_model_change.start(10);
+    import_workspace->delete_model_weight_requested(independent_node_id, "model_1", "onnx_fp32");
+    confirm_model_change.stop();
+    managed.open_project(import_project.project_file());
+    if (!std::get<studio::TaskNodeConfig>(managed.active_workflow().document.graph.node(independent_node_id).config)
+        .model_list.find("model_1")->weights.empty()) {
+        throw std::runtime_error("Qt weight deletion did not persist an empty model row");
+    }
+
     const int next_node_before_clear = scene->model()->next_node_id();
     QTimer::singleShot(0, [] {
         if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))

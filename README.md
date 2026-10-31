@@ -25,17 +25,22 @@ explicit installation. It does not compile backend sources or invoke the CLI.
 - training and inference settings;
 - `TaskDatasetBinding` sample selection, class schema, annotations, split,
   preprocessing and derived runtime quality findings;
-- result references and active/paused/completed run state.
+- result references and running/paused/stopped/completed/failed/imported model state.
 
-Completed and imported models, their lineage, and LibTorch/ONNX/OpenVINO/TensorRT
-weight branches are held by each TaskNode's own Core `ModelList`. Training and
-Inference use that Node's list. Its active training id references a row within the
-same list; pause/resume checkpoint ownership stays on that row
-instead of becoming a second inventory or user-facing raw checkpoint catalog.
+**ModelList**: Each TaskNode owns one Core ModelList containing its models,
+lineage and LibTorch/ONNX/OpenVINO/TensorRT weight branches. Training and Inference
+use that list. The active training id and checkpoint refer to the same model row.
 
-There is one current project structure. Loading is strict: unsupported or
-malformed structures are rejected instead of guessed, converted, or routed
-through alternate representations.
+**Training completion**: Paused registers last.pt for Resume and Infer. Completed
+registers best.pt for Infer. Stopped ends the run and registers an available best.pt
+from completed epochs for Infer. Resume accepts Paused models with valid LibTorch
+training checkpoints. Stopping before the first completed epoch leaves an empty
+weight collection.
+
+**Project loading**: ProjectManager rejects malformed structures and metadata.
+Missing weight files produce diagnostics while the Project opens readably.
+A missing model_list.json opens its TaskNode with an empty ModelList and retained
+inference references. Qt asks before cleaning up missing dependencies.
 
 ## Binding and result ownership
 

@@ -52,6 +52,8 @@ public:
         export_->setObjectName("projectModelExportAction");
         delete_ = management_menu_->addAction(tr("Delete selected models…"));
         delete_->setObjectName("projectModelDeleteAction");
+        delete_weight_menu_ = management_menu_->addMenu(tr("Delete weight…"));
+        delete_weight_menu_->setObjectName("projectModelDeleteWeightMenu");
         management_menu_->addSeparator();
         clear_ = management_menu_->addAction(tr("Clear all models…"));
         clear_->setObjectName("projectModelClearAction");
@@ -122,9 +124,27 @@ public:
         });
         connect(table_->viewport(), &QWidget::customContextMenuRequested, this,
                 [this](const QPoint& position) {
-            if (!management_actions_enabled_) return;
-            if (auto* item = table_->itemAt(position); item && !item->isSelected())
+            if (!management_actions_enabled_) {
+                return;
+            }
+            if (auto* item = table_->itemAt(position); item && !item->isSelected()) {
                 table_->setCurrentItem(item);
+            }
+            delete_weight_menu_->clear();
+            const auto* model = current_model();
+            if (model) {
+                const QString model_id = QString::fromStdString(model->id);
+                for (const auto& weight : model->weights) {
+                    const QString weight_id = QString::fromStdString(weight.id);
+                    QAction* action = delete_weight_menu_->addAction(
+                        QString::fromStdString(jocelin::config::to_string(weight.format)) + " / " + weight_id);
+                    connect(action, &QAction::triggered, this, [this, model_id, weight_id] {
+                        if (delete_model_weight_requested) {
+                            delete_model_weight_requested(model_id, weight_id);
+                        }
+                    });
+                }
+            }
             update_detail();
             management_menu_->exec(table_->viewport()->mapToGlobal(position));
         });
@@ -337,6 +357,7 @@ public:
     std::function<void()> import_requested;
     std::function<void(const QString&)> export_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
 
 private:
@@ -403,6 +424,7 @@ private:
         const auto* model = current_model();
         export_->setEnabled(model != nullptr);
         delete_->setEnabled(model != nullptr);
+        delete_weight_menu_->setEnabled(model && !model->weights.empty());
         clear_->setEnabled(!models_.empty());
         if (!model) {
             model_name_->setText(tr("No model selected"));
@@ -444,6 +466,7 @@ private:
     QLabel* weights_ = nullptr;
     QToolButton* details_ = nullptr;
     QMenu* management_menu_ = nullptr;
+    QMenu* delete_weight_menu_ = nullptr;
     QAction* import_ = nullptr;
     QAction* export_ = nullptr;
     QAction* delete_ = nullptr;

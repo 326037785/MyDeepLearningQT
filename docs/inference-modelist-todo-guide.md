@@ -24,7 +24,17 @@ TaskNode
 
 TaskNodeConfig 持有 Core 的 `jocelin::model::ModelList`。Training、Inference 和 Results 通过当前 TaskNode 访问同一份清单。
 
-一行 ModelEntry 表示一次独立训练或外部导入形成的逻辑模型。New、Inherit、Transfer 分别创建模型行。Pause、Resume 继续同一未结束训练。权重转换在所属模型行中增加 ModelWeight branch，并记录 parent_weight_id。
+**ModelEntry**：一行表示一次独立训练或外部导入形成的逻辑模型。New、Inherit、Transfer 分别创建模型行，Pause、Resume 延续同一模型行。模型行可以保留空权重集合。
+
+**ModelWeight**：一个 branch 表示一份权重。权重转换向所属模型行添加 branch，并通过 parent_weight_id 记录来源。
+
+**Paused**：Core 在完整 epoch 结束并保存 checkpoint 后返回。Qt 登记 last.pt，用户可以 Resume 和 Infer。
+
+**Completed**：Core 完成训练。Qt 登记 best.pt，用户可以 Infer。
+
+**Stopped**：Core 在 batch boundary 终止本次训练，以完整 epoch 为 checkpoint 边界。完成过完整 epoch 时，Core 整理 best.pt 和 last.pt，Qt 登记有效 best.pt 供 Infer 使用；首个 epoch 完成前停止时，模型保持 Stopped，权重集合保持为空。
+
+**Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Core 恢复训练状态，从下一个 epoch 继续。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
 
 TaskNode 的任务类型决定清单范围。各行可以有不同的 model_index、model_scale、输入尺寸和类别 schema。具体操作检查所选模型的兼容性。
 
@@ -73,7 +83,17 @@ nodes/<workflow_id>/<node_id>/
 
 model_list.json 保存 models 和 next_number。Workflow 保存 binding，以及结果的 model_id、weight_id 引用。完整结果写入对应 branch 的 result.json。
 
-打开 Project 后恢复各 Node 的 ModelList。结果只与所属 Node 的 Model、Weight 核对。目录和输出 artifact 必须位于该 branch 内。UI 按当前选择加载结果。
+**正常加载**：ProjectManager 读取合法 model_list.json，核对当前 TaskNode 的 Model、Weight 和 inference 引用。结果目录和输出 artifact 位于对应 branch 内。UI 按当前选择加载结果。
+
+**权重缺失**：ProjectManager 保留 ModelEntry、ModelWeight 和 inference 引用，向 Qt 返回缺失的 model_id、weight_id 和路径。模型的全部 weight 文件缺失时，诊断将该模型标为完全失效。Project 进入可读状态，Qt 按权重文件可用性开放训练和推理操作。
+
+**清单缺失**：ProjectManager 为该 TaskNode 创建空 ModelList，保留 inference 引用，并向 Qt 报告 model_list.json 缺失。
+
+**清单非法**：ProjectManager 拒绝加载 JSON 损坏、字段非法、ID 冲突或生命周期元数据非法的 model_list.json，并报告具体错误。
+
+**清理确认**：Project 打开成功后，Qt 汇总缺失项并提示“模型资产已经不存在，现有推理结果依赖这些模型”。用户确认后，Qt 按第 9 节的删除规则清理并保存；用户取消后，Project 保留当前数据和文件。
+
+**缺失清单的保存**：用户保留孤立 inference 引用时，普通保存保留 model_list.json 的缺失状态；用户确认清理后，Project 保存空 ModelList。
 
 Save As 保留 Workflow、Node、sample、Model 和 Weight 身份，重定位内部资源路径。外部资源沿用外部引用。保存与路径规则见 [project_spec.md](project_spec.md)。
 
@@ -127,10 +147,16 @@ Rebind validation 只判断绑定是否相同。文件缺失、损坏输入和�
 
 Annotation package import 显式提供接收 Task 的新类别和标注。它保留该 Task 的 split_settings 和 preprocessing。其他当前连接的 Task 清除旧 samples 和 Inference，保留自己的类别配置，再同步新 samples。
 
-## 9. 删除 Model 与 Clear ModelList
+## 9. 模型与权重删除
 
-删除 Model row 时，移除该 Node 中该 Model 的推理记录，删除 `inference/<model_id>/`。清空 ModelList 时，移除该 Node 的全部推理记录，删除整个 inference/。被删除模型的 training_model_id 关联同时清除。
+**删除 ModelEntry**：应用删除模型行、模型资产、该 model_id 的全部 inference records 和 inference/<model_id>/，并清除对应 training_model_id。
 
-这些操作只使用当前 TaskNode 的存储目录。其他 Node 的 ModelList、Annotation 和 Inference 保持不变。
+**删除 ModelWeight**：应用删除该 weight branch、对应资产、model_id + weight_id 的 inference records 和 inference/<model_id>/<weight_id>/。其他 branch 及其结果继续保留。应用清空直接子 branch 的 parent_weight_id，保留模型原训练状态；删完全部权重后，模型行保留空权重集合。
+
+**清空 ModelList**：应用删除当前 TaskNode 的全部模型行、模型资产、inference records 和 inference/，并清除 training_model_id。
+
+**缺失资产清理**：缺失单个 weight 时，应用执行单个 ModelWeight 删除；模型的全部 weight 文件缺失时，应用删除整个 ModelEntry；model_list.json 缺失时，应用保持空 ModelList，并清理该 TaskNode 下失去模型引用的全部 inference。
+
+**删除收尾**：ProjectManager 协调当前 TaskNode 的删除与保存，Qt 更新当前 Model/Weight selection。ModelList 和 Workflow 引用共同记录删除结果，其他 TaskNode 保留各自资产。
 
 相关定义见 [project-overview.md](project-overview.md)。Annotation 的任务语义见 [annotation_spec.md](annotation_spec.md)。

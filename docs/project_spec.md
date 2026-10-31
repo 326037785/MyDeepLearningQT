@@ -54,13 +54,27 @@ ProjectManager 保存运行时根目录、活动 Workflow 索引和未保存标�
 
 普通保存先完成各 Workflow、Region、结果、ModelList、训练编号和项目入口的序列化及校验。随后写入 Node 资产和模块文档，最后写入项目入口。每个文件使用 QSaveFile 原子替换。准备失败不写文件；写入阶段的原子性以单个文件为范围。
 
-打开 Project 时恢复 Node 身份、连接和 binding snapshot，创建新的运行时 task_id。各 TaskNode 恢复自己的 ModelList。模型任务类型必须与所属 TaskNode 一致。结果引用只与该 Node 的 Model、Weight 核对。缺失字段、未知字段、非法引用和缺失的引用资产均报告错误。
+**正常打开**：ProjectManager 恢复 Node 身份、连接、binding snapshot、ModelList 和 inference，创建新的运行时 task_id。模型任务类型与所属 TaskNode 一致，结果引用使用该 Node 的 model_id + weight_id。
+
+**权重缺失**：ProjectManager 加载合法清单并保留 inference，向 Qt 报告缺失的 model、weight 和路径。全部 weight 文件缺失的模型列为完全失效模型。Project 进入可读状态。
+
+**清单缺失**：ProjectManager 为该 TaskNode 创建空 ModelList，保留已加载的 inference 引用，并报告 model_list.json 缺失。
+
+**加载错误**：ProjectManager 拒绝 JSON 损坏、字段非法、ID 冲突、生命周期元数据非法的清单，并报告错误。其他引用和资产继续遵循各自模块的校验规则。
 
 Detached Task 保留 snapshot、Annotation、Inference 和 ModelList。它不依赖任何历史 DataNode。重连时先比较 sample_id 集合、完整有序 image_paths 和 bucket_capacity。一致后才连接并同步。Quality 检查在具备当前连接和运行时路径时执行。
 
 ## 4. 结果提交与清理
 
 单个 inference branch 使用临时目录准备新文件。成功后提交 result.json、artifacts 和 Workflow 引用，再更新内存。推理或提交失败保留当前有效记录和文件。其他 branch 保持不变。
+
+**模型删除**：ProjectManager 协调 ModelEntry 或单个 ModelWeight 的删除，保存 ModelList 和 Workflow 引用。TaskNode 的现有删除逻辑清理对应模型资产和 inference，Qt 更新 selection。
+
+**缺失资产确认**：Project 打开成功后，Qt 汇总缺失项并说明模型资产与现有推理结果的依赖。用户确认后，应用复用模型删除逻辑：单个 weight 清理对应 branch，完全失效 model 清理整行，清单缺失清理该 TaskNode 的孤立 inference。
+
+**取消清理**：Project 保留当前数据、文件和 inference 引用，Qt 根据文件可用性控制训练和推理入口。缺失清单仍关联孤立 inference 时，普通保存保留清单的缺失状态。
+
+**职责**：TaskNode 持有 ModelList 和 Inference，ProjectManager 协调加载与持久化，Qt 负责提示和用户确认，Core 提供模型容器和计算能力。
 
 DataNode 删除或替换需要用户确认。清理对象只取自当前 edge。先清除受影响 Task 的 samples 和 Inference 引用并成功保存，再删除其 annotations/、inference/。Classes、split_settings、preprocessing、其他 Task 配置、ModelList 和 weights 保留。文件删除失败报告具体路径。
 

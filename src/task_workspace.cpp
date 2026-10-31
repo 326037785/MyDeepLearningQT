@@ -126,6 +126,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     training_->delete_models_requested = [this](const QStringList& model_ids) {
         if (delete_models_requested) delete_models_requested(node_id_, model_ids);
     };
+    training_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
+        if (delete_model_weight_requested) {
+            delete_model_weight_requested(node_id_, model_id, weight_id);
+        }
+    };
     training_->clear_models_requested = [this] {
         if (clear_models_requested) clear_models_requested(node_id_);
     };
@@ -137,6 +142,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     };
     inference_->delete_models_requested = [this](const QStringList& model_ids) {
         if (delete_models_requested) delete_models_requested(node_id_, model_ids);
+    };
+    inference_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
+        if (delete_model_weight_requested) {
+            delete_model_weight_requested(node_id_, model_id, weight_id);
+        }
     };
     inference_->clear_models_requested = [this] {
         if (clear_models_requested) clear_models_requested(node_id_);
@@ -341,8 +351,14 @@ void TaskWorkspace::refresh_models() {
     if (training_) training_->set_models(models);
     if (inference_) inference_->set_models(models);
     if (results_) results_->set_models(models);
-    if (service_ && !service_->find_model(service_->selected_model_id()))
-        service_->select_inference_model(models.empty() ? QString{} : QString::fromStdString(models.front().id));
+    if (service_) {
+        const auto* selected = service_->find_model(service_->selected_model_id());
+        if (!selected) {
+            service_->select_inference_model(models.empty() ? QString{} : QString::fromStdString(models.front().id));
+        } else if (!jocelin::model::find_weight(*selected, service_->selected_weight_id().toStdString())) {
+            service_->select_inference_model(service_->selected_model_id());
+        }
+    }
     if (inference_) inference_->synchronize_result_selection();
     if (results_) results_->refresh();
     refresh_inference_result();

@@ -6,10 +6,12 @@
 #include "classification_annotation_state.h"
 #include "segmentation_annotation_state.h"
 #include "project_storage.h"
+#include "workflow_document.h"
 
 #include <common/config/ai_config.h>
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QImageReader>
@@ -172,26 +174,103 @@ jocelin::model::ModelEntry TaskWorkspaceService::add_model(jocelin::model::Model
 }
 
 bool TaskWorkspaceService::remove_model(const QString& id) {
-    if (!find_model(id)) return false;
+    const auto* model = find_model(id);
+    if (!model) {
+        return false;
+    }
     if (!node_directory_.isEmpty()) {
         if (id.contains('/') || id.contains('\\') || id.contains(':') ||
-            ProjectStorage::validated_relative_path(id, "model") != id)
+            ProjectStorage::validated_relative_path(id, "model") != id) {
             throw std::runtime_error("model id must be one directory component");
+        }
+        const QString assets = QString::fromStdString(model->asset_directory);
+        const QString relative = QDir(QDir(node_directory_).filePath("models")).relativeFilePath(assets);
+        if (relative == "." || relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
+            throw std::runtime_error(("model assets must belong to this TaskNode: " + assets).toStdString());
+        }
+        if (QDir(assets).exists() && !QDir(assets).removeRecursively()) {
+            throw std::runtime_error(("cannot remove model assets: " + assets).toStdString());
+        }
         const auto directory = QDir(node_directory_).filePath("inference/" + id);
-        if (QDir(directory).exists() && !QDir(directory).removeRecursively())
-            throw std::runtime_error("cannot remove the model's Node-owned inference directory");
+        if (QDir(directory).exists() && !QDir(directory).removeRecursively()) {
+            throw std::runtime_error(("cannot remove model inference directory: " + directory).toStdString());
+        }
     }
-    if (!task().model_list.remove(id.toStdString())) return false;
-    if (task().runtime.training_model_id == id.toStdString())
+    if (!task().model_list.remove(id.toStdString())) {
+        return false;
+    }
+    if (task().runtime.training_model_id == id.toStdString()) {
         task().runtime.training_model_id.clear();
+    }
     auto& results = task().runtime.results;
     results.erase(std::remove_if(results.begin(), results.end(),
         [&id](const auto& result) { return result.model_id == id.toStdString(); }), results.end());
-    if (selected_model_id_ == id) select_inference_result({}, {});
+    if (selected_model_id_ == id) {
+        select_inference_result({}, {});
+    }
+    return true;
+}
+
+bool TaskWorkspaceService::remove_model_weight(const QString& model_id, const QString& weight_id) {
+    const auto* model = find_model(model_id);
+    const auto* weight = model ? jocelin::model::find_weight(*model, weight_id.toStdString()) : nullptr;
+    if (!weight) {
+        return false;
+    }
+    if (!node_directory_.isEmpty()) {
+        const QString branch = QDir(node_directory_).filePath("../" +
+            inference_result_directory(node_id_, model_id.toStdString(), weight_id.toStdString()));
+        const QString path = QString::fromStdString(weight->path);
+        const QString relative = QDir(QDir(node_directory_).filePath("models")).relativeFilePath(path);
+        if (relative == "." || relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
+            throw std::runtime_error(("weight assets must belong to this TaskNode: " + path).toStdString());
+        }
+        QStringList assets{path};
+        if (weight->format == jocelin::config::WeightType::OpenVino && QFileInfo(path).suffix() == "xml") {
+            assets.push_back(QFileInfo(path).path() + "/" + QFileInfo(path).completeBaseName() + ".bin");
+        }
+        if (weight->role == jocelin::model::WeightRole::Training) {
+            assets.push_back(QDir(QFileInfo(path).absolutePath()).filePath("best.pt"));
+            assets.push_back(QDir(QFileInfo(path).absolutePath()).filePath("last.pt"));
+        }
+        assets.removeDuplicates();
+        for (const QString& asset : assets) {
+            bool referenced = false;
+            for (const auto& entry : models()) {
+                for (const auto& other : entry.weights) {
+                    if ((entry.id != model_id.toStdString() || other.id != weight_id.toStdString()) &&
+                        QDir::cleanPath(QString::fromStdString(other.path)) == QDir::cleanPath(asset)) {
+                        referenced = true;
+                    }
+                }
+            }
+            if (!referenced && QFileInfo::exists(asset) && !QFile::remove(asset)) {
+                throw std::runtime_error(("cannot remove weight asset: " + asset).toStdString());
+            }
+        }
+        if (QDir(branch).exists() && !QDir(branch).removeRecursively()) {
+            throw std::runtime_error(("cannot remove weight inference directory: " + branch).toStdString());
+        }
+    }
+    task().model_list.remove_weight(model_id.toStdString(), weight_id.toStdString());
+    auto& results = task().runtime.results;
+    results.erase(std::remove_if(results.begin(), results.end(), [&](const auto& result) {
+        return result.model_id == model_id.toStdString() && result.weight_id == weight_id.toStdString();
+    }), results.end());
+    if (selected_model_id_ == model_id && selected_weight_id_ == weight_id) {
+        select_inference_model(model_id);
+    }
     return true;
 }
 
 void TaskWorkspaceService::clear_models() {
+    QStringList ids;
+    for (const auto& model : models()) {
+        ids.push_back(QString::fromStdString(model.id));
+    }
+    for (const QString& id : ids) {
+        remove_model(id);
+    }
     if (!node_directory_.isEmpty()) {
         const auto directory = QDir(node_directory_).filePath("inference");
         if (QDir(directory).exists() && !QDir(directory).removeRecursively())

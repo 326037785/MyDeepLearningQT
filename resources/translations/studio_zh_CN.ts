@@ -569,6 +569,21 @@ This cannot be recovered.</source>
       <translation>无法删除项目文件夹：
 %1</translation>
     </message>
+    <message><source>Workflow %1 / TaskNode %2</source><translation>工作流 %1 / 任务节点 %2</translation></message>
+    <message><source>%1: model_list.json is missing; the ModelList is empty.</source><translation>%1：model_list.json 已丢失，模型清单为空。</translation></message>
+    <message><source>%1 / model %2: missing weights %3%4</source><translation>%1 / 模型 %2：权重 %3 已丢失%4</translation></message>
+    <message><source> (all model weights are missing)</source><translation>（模型的全部权重均已丢失）</translation></message>
+    <message><source>Missing model assets</source><translation>模型资产缺失</translation></message>
+    <message><source>Model assets no longer exist. Existing inference results depend on these models.
+
+Clean up the missing weights and their inference results? Models whose weights are all missing will be deleted. A missing ModelList will remain empty and its orphaned inference results will be cleared.
+
+Cancel keeps Project data unchanged; unavailable weights cannot be used for training or inference.</source><translation>模型资产已经不存在，现有推理结果依赖这些模型。
+
+是否清理缺失的权重及对应推理结果？全部权重缺失的模型将被删除。模型清单缺失时保持为空，并清理该任务节点下失去模型引用的推理结果。
+
+取消将保持项目数据不变；缺失的权重不可用于训练或推理。</translation></message>
+    <message><source>Cannot clean up model assets</source><translation>无法清理模型资产</translation></message>
   </context>
   <context>
     <name>studio::SaveProjectAsDialog</name>

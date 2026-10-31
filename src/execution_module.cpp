@@ -159,11 +159,13 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
             result.end_state == jocelin::training::TrainingEndState::Paused;
         const bool completed = error.isEmpty() &&
             result.end_state == jocelin::training::TrainingEndState::Completed;
+        const bool stopped = error.isEmpty() &&
+            result.end_state == jocelin::training::TrainingEndState::Stopped;
         const std::string weight_path = paused
             ? result.last_model_path
-            : completed ? result.best_model_path : std::string{};
-        if ((paused || completed) && !weight_path.empty() &&
-            QFileInfo::exists(QString::fromStdString(weight_path))) {
+            : (completed || stopped) ? result.best_model_path : std::string{};
+        if ((paused || completed || stopped) && !weight_path.empty() &&
+            QFileInfo(QString::fromStdString(weight_path)).isFile()) {
             const auto created_at =
                 QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
             if (auto* weight = jocelin::model::find_training_weight(*model)) {

@@ -118,7 +118,7 @@ Project open restores Node IDs and connections, creates fresh runtime Task IDs, 
 
 `quality_issues` contains runtime diagnostics derived from Dataset binding, current input resources and task target checks. For connected Tasks, Project recovery rebuilds these findings after restoring bindings and resolving paths; Workflow sample records omit this field. Diagnostics carried by the temporary import representation remain within the import flow.
 
-Malformed JSON, invalid references and missing referenced assets report errors through strict loading. Task-specific semantic checks determine target validity. Identity rules are documented in [node_identity.md](node_identity.md); task rules are in [annotation_spec.md](annotation_spec.md).
+**Annotation loading**: The loader reports malformed JSON, invalid annotation references and missing referenced Region assets. Task-specific semantic checks determine target validity. Model asset loading follows [Project rules](project_spec.md). Identity rules appear in [node_identity.md](node_identity.md); task rules appear in [annotation_spec.md](annotation_spec.md).
 
 ## Import representation
 

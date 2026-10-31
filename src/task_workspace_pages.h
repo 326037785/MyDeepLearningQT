@@ -112,6 +112,7 @@ public:
     std::function<void()> import_model_requested;
     std::function<void(const QString&)> export_model_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
     std::function<void()> changed;
 
@@ -179,6 +180,7 @@ public:
     std::function<void()> import_model_requested;
     std::function<void(const QString&)> export_model_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
     std::function<void()> changed;
 

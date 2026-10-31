@@ -34,6 +34,9 @@ void ModelActions::mount(NodeWorkspace& workspace) {
     workspace.import_model_requested = [this](int id) { import_model(id); };
     workspace.export_model_requested = [this](int id, const QString& model) { export_model(id, model); };
     workspace.delete_models_requested = [this](int id, const QStringList& models) { delete_models(id, models); };
+    workspace.delete_model_weight_requested = [this](int id, const QString& model, const QString& weight) {
+        delete_models(id, {model}, weight);
+    };
     workspace.clear_models_requested = [this](int id) { clear_models(id); };
 }
 
@@ -415,58 +418,47 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
     }
 }
 
-void ModelActions::delete_models(int node_id, const QStringList& model_ids) {
+void ModelActions::delete_models(int node_id, const QStringList& model_ids, const QString& weight_id) {
     if (!project_.has_storage() || model_ids.isEmpty()) return;
 
     TaskWorkspaceService service(project_.active_workflow().document.graph, node_id, QFileInfo(project_.node_models_directory(node_id)).absolutePath());
-    const QString models_root = project_.node_models_directory(node_id);
     QStringList valid_model_ids;
     QStringList model_names;
-    QStringList model_directories;
     for (const auto& model_id : model_ids) {
         const auto* model = service.find_model(model_id);
-        if (!model) continue;
-
-        const QString model_directory = QString::fromStdString(model->asset_directory);
-        const QString relative = QDir(models_root).relativeFilePath(model_directory);
-        if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
-            QMessageBox::warning(
-                dialog_parent_, tr("Cannot delete models"),
-                tr("A selected model is not stored inside this TaskNode's models directory:\n%1")
-                    .arg(model_directory));
-            return;
+        if (!model || (!weight_id.isEmpty() && !jocelin::model::find_weight(*model, weight_id.toStdString()))) {
+            continue;
         }
         valid_model_ids.push_back(model_id);
         model_names.push_back(QString::fromStdString(model->name));
-        model_directories.push_back(model_directory);
     }
-    if (valid_model_ids.isEmpty()) return;
+    if (valid_model_ids.isEmpty()) {
+        return;
+    }
 
+    const QString prompt = weight_id.isEmpty()
+        ? tr("Permanently delete %1 selected model(s)?\n\n%2\n\nTheir model assets and all associated inference results will be deleted.")
+            .arg(valid_model_ids.size()).arg(model_names.join("\n"))
+        : tr("Permanently delete weight %1 from %2?\n\nOnly this weight's assets and inference results will be deleted.")
+            .arg(weight_id, model_names.join("\n"));
     if (QMessageBox::question(
             dialog_parent_, tr("Delete selected models"),
-            tr("Permanently delete %1 selected model(s)?\n\n%2\n\nAll files for these models will be deleted and cannot be recovered.")
-                .arg(valid_model_ids.size())
-                .arg(model_names.join("\n")),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            prompt,
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
         return;
-
-    for (const auto& model_directory : model_directories) {
-        if (QDir(model_directory).exists() && !QDir(model_directory).removeRecursively()) {
-            QMessageBox::warning(
-                dialog_parent_, tr("Cannot delete models"),
-                tr("Cannot delete model directory:\n%1").arg(model_directory));
-            return;
-        }
     }
     try {
-        for (const auto& model_id : valid_model_ids) service.remove_model(model_id);
-        project_.mark_active_dirty();
-        project_.save_project();
-        if (models_changed) models_changed();
+        project_.remove_models(node_id, valid_model_ids, weight_id);
+        if (models_changed) {
+            models_changed();
+        }
         status(
-            tr("%1 model(s) deleted").arg(valid_model_ids.size()), 5000);
+            weight_id.isEmpty() ? tr("%1 model(s) deleted").arg(valid_model_ids.size())
+                                : tr("Weight deleted: %1").arg(weight_id), 5000);
     } catch (const std::exception& error) {
-        if (models_changed) models_changed();
+        if (models_changed) {
+            models_changed();
+        }
         QMessageBox::warning(
             dialog_parent_, tr("Cannot save model deletion"), QString::fromUtf8(error.what()));
     }
@@ -477,45 +469,23 @@ void ModelActions::clear_models(int node_id) {
     TaskWorkspaceService service(project_.active_workflow().document.graph, node_id, QFileInfo(project_.node_models_directory(node_id)).absolutePath());
     if (service.models().empty()) return;
 
-    const QString models_root = project_.node_models_directory(node_id);
-    QStringList model_directories;
-    model_directories.reserve(static_cast<int>(service.models().size()));
-    for (const auto& model : service.models()) {
-        const QString model_directory = QString::fromStdString(model.asset_directory);
-        const QString relative = QDir(models_root).relativeFilePath(model_directory);
-        if (relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
-            QMessageBox::warning(
-                dialog_parent_, tr("Cannot clear models"),
-                tr("A model is not stored inside this TaskNode's models directory:\n%1")
-                    .arg(model_directory));
-            return;
-        }
-        model_directories.push_back(model_directory);
-    }
-
     if (QMessageBox::question(
             dialog_parent_, tr("Clear Task models"),
-            tr("Permanently delete all %1 Task models?\n\nAll model asset directories will be deleted and cannot be recovered.")
+            tr("Permanently delete all %1 Task models?\n\nAll model assets and inference results will be deleted.")
                 .arg(service.models().size()),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
         return;
-
-    for (const auto& model_directory : model_directories) {
-        if (QDir(model_directory).exists() && !QDir(model_directory).removeRecursively()) {
-            QMessageBox::warning(
-                dialog_parent_, tr("Cannot clear models"),
-                tr("Cannot delete model directory:\n%1").arg(model_directory));
-            return;
-        }
     }
     try {
-        service.clear_models();
-        project_.mark_active_dirty();
-        project_.save_project();
-        if (models_changed) models_changed();
+        project_.remove_models(node_id);
+        if (models_changed) {
+            models_changed();
+        }
         status(tr("Task ModelList cleared"), 5000);
     } catch (const std::exception& error) {
-        if (models_changed) models_changed();
+        if (models_changed) {
+            models_changed();
+        }
         QMessageBox::warning(
             dialog_parent_, tr("Cannot save ModelList clear"), QString::fromUtf8(error.what()));
     }
