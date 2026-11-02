@@ -145,7 +145,8 @@ void ExecutionModule::training_warning(const QString& message) {
     warning->open();
 }
 
-void ExecutionModule::training_completed(const jocelin::training::TrainingResult& result, const QString& error) {
+void ExecutionModule::training_completed(const jocelin::training::TrainingResult& result, const QString& job_error) {
+    QString error = job_error;
     auto* model = TaskWorkspaceService(graph(), active_training_node_id_).find_model(active_training_model_id_);
     if (model) {
         model->completed_epochs = result.completed_epochs;
@@ -164,6 +165,10 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
         const std::string weight_path = paused
             ? result.last_model_path
             : (completed || stopped) ? result.best_model_path : std::string{};
+        if ((paused || completed) && !QFileInfo(QString::fromStdString(weight_path)).isFile()) {
+            error = tr("Training ended without an available checkpoint: %1")
+                .arg(QString::fromStdString(weight_path));
+        }
         if ((paused || completed || stopped) && !weight_path.empty() &&
             QFileInfo(QString::fromStdString(weight_path)).isFile()) {
             const auto created_at =

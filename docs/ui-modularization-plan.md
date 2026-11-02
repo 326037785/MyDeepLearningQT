@@ -30,7 +30,7 @@
 | [MainWindow::buildUi](../src/main_window.cpp) | 约 1050 行，混合窗口装配、视图构建和业务操作。 | 必须迁移职责及成员所有权，不能只增加 buildXxx 辅助函数。 |
 | 模型操作回调 | 导入约 302 行；导出、删除、清空分别约 71、56、48 行。 | 优先移出交互、格式解析、Core 调用、资产写入和提交过程。 |
 | MainWindow 构造函数 | 还包含场景事件和训练/推理 Job 回调。 | 与 buildUi 一起审查，避免复杂度转移到另一个大入口。 |
-| 首选项回调 | 对话框构造和设置保存内联在 buildUi。 | 适合先提取对话框并复用既有语言设置逻辑。 |
+| 首选项命令 | SettingsModule 创建 Preferences... 菜单。 | Language 子菜单与 Auto-save annotations 勾选项并列，沿用既有设置存储。 |
 | [NodeWorkspace](../src/node_workspace.h) | 已通过明确的请求回调连接操作。 | 可以保留现有边界，逐步更换接收方；不要求一次性改写所有回调。 |
 | [任务目录](../src/task_module_catalog.h)、[工作流类型](../src/workflow.h)、[序列化](../src/workflow_document.cpp) | 存在固定任务目录、节点枚举和 SG/CL 分支。 | UI 注册接口不能自动解决任意新任务或节点的接入。 |
 
@@ -60,7 +60,7 @@
 | 工作流标签、画布、节点库、属性、概览及 Dataset 变更确认 | [WorkflowModule](../src/workflow_module.h)，复用 WorkflowScene、PropertiesEditor 和 NodeWorkspace；对应视图及交互留在工作流模块。 |
 | 模型导入/导出/删除/清空 | [ModelActions](../src/model_actions.h) 内的命名操作，通过现有 NodeWorkspace 请求回调接入；复用既有 domain 和 Core 接口。 |
 | 训练/推理启动、进度及完成处理 | [ExecutionModule](../src/execution_module.h)，迁入既有 Job 和执行身份字段，复用 TaskWorkspaceService。 |
-| 首选项交互与语言设置 | [SettingsModule](../src/settings_module.h)，本地创建 action、语言选择器和对话框，沿用 ui_language。 |
+| 首选项交互与语言设置 | [SettingsModule](../src/settings_module.h) 创建 Preferences... 菜单、Language 子菜单和标注自动保存勾选项，工具栏复用同一菜单。 |
 | 活动与诊断日志、训练日志查看 | [ActivityLog](../src/activity_log.h)，写入会话文件，自行创建菜单 action 和独立弹窗；训练日志保留原 runs 路径。 |
 
 MainWindow::buildUi 现为约 80 行的 shell 控件创建和模块装配；主窗口实现由约 2600 行收缩至约 240 行。业务操作 lambda 迁入上述模块的命名函数，装配处只保留短连接。
@@ -142,7 +142,7 @@ DLL 阶段候选机制为 Qt 接口与 QPluginLoader。实施前再确定接口�
 | 2026-10-30 | P4 收尾验收 | 视图构造和标签操作已归入所属模块的命名方法；补齐直接项目入口、标签操作及异步完成期间的运行限制；活动日志落盘并按需弹窗查看。 | `cmake --build --preset gpu-vs2022-release` 成功，0 错误；`ctest --preset gpu-vs2022-release --timeout 180` 12/12 通过（86.41 秒）；Release 白名单、git diff --check、126 条翻译占位符检查通过。 |
 | 2026-10-30 | 日志目录修正 | 用户指出 AppData 位于 C 盘；会话日志改到 EXE 同级的 logs/，当前构建位于 E 盘。Release 检查仅额外允许该目录中符合会话命名的日志文件；增加目录断言。 | 主程序及 3 个相关测试目标构建成功，0 错误；main_window_integration、shell_ui_contract、feature_module_contract 共 3/3 通过（42.32 秒）；Release 检查和 git diff --check 通过；原 AppData 日志目录仍不存在。 |
 
-首轮验证补充了两类边界证据：shell_ui_contract 用测试组件挂载命令、页面和 Dock，并验证命令随所属对象释放；feature_module_contract 在没有 MainWindow 的宿主中验证设置取消、模型导入取消、非法 manifest 拒绝以及模型导出文件和元数据。
+**模块验证**：shell_ui_contract 用测试组件挂载命令、页面和 Dock，并验证命令随所属对象释放。feature_module_contract 在独立宿主中验证首选项菜单挂载、模型导入取消、非法 manifest 拒绝以及模型导出文件和元数据。
 
 本轮进一步验证运行期间的直接首页操作、最近项目命令、标签切换/关闭/重命名和刷新限制，以及限制解除后的正常操作。执行模块使用非法权重夹具触发真实 CPU 推理失败，核对启动期间的 busy 查询、重复启动拒绝、失败后的状态恢复和单次通知。测试权重是拷贝夹具；没有额外运行真实模型的成功 GPU 训练/推理任务。
 

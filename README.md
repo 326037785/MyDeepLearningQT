@@ -126,10 +126,18 @@ templates are available under File > New from Template. Recent projects can be
 opened from the menu or by double-clicking a row on the home page.
 
 Choose English or Simplified Chinese from the home toolbar or Settings >
-Preferences. The selection is saved and takes effect after restarting. Chinese
+Preferences... > Language. The selection is saved and takes effect after
+restarting. Chinese
 currently covers the home page, menus, and project dialogs; task workspaces
 remain in English. The Qt Linguist catalog is
 `resources/translations/studio_zh_CN.ts`; the build compiles and embeds it.
+
+**Preferences**: Settings > Preferences... contains a Language submenu and a
+peer Auto-save annotations checkable item. The toolbar Settings button opens
+the same menu. Auto-save defaults to off, takes effect immediately and remembers
+the user's choice. SG commits the current annotation through its existing Save
+action when the user switches samples. Project saving writes the committed data
+through the existing persistence flow.
 
 Diagnostics are written as UTF-8 session files under `logs/` beside the executable
 (`MyDeepLearningQT/Release/logs` in the current build). Activity logs follow the

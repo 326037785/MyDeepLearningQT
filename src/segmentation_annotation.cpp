@@ -40,6 +40,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSaveFile>
+#include <QSettings>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -89,16 +90,30 @@ bool matches_intervals(double value,
 
 class ThresholdDialog final : public QDialog {
 public:
-    explicit ThresholdDialog(const QImage& roi, QWidget* parent = nullptr)
+    ThresholdDialog(const QImage& roi, int& low_threshold, int& high_threshold,
+                    bool& keep_outside, bool& remember, QWidget* parent = nullptr)
         : QDialog(parent), source_(roi.convertToFormat(QImage::Format_Grayscale8))
     {
         setWindowTitle(tr("Dual-threshold binarization"));
+        setWindowFlag(Qt::WindowContextHelpButtonHint, false);
         setModal(true);
         setMinimumWidth(440);
         auto* root = new QVBoxLayout(this);
-        root->addWidget(new QLabel(
+        QLabel* introduction = new QLabel(
             tr("Preview the selected ROI, then confirm how pixels are assigned to the current class."),
-            this));
+            this);
+        introduction->setWordWrap(true);
+        QToolButton* help = new QToolButton(this);
+        help->setObjectName("thresholdHelp");
+        help->setIcon(style()->standardIcon(QStyle::SP_MessageBoxQuestion));
+        help->setAutoRaise(true);
+        help->setAccessibleName(tr("Threshold help"));
+        help->setToolTip(tr("Selected pixels become the current class; other pixels inside the ROI become background. "
+                            "Cancel leaves the mask unchanged."));
+        QHBoxLayout* header = new QHBoxLayout;
+        header->addWidget(introduction, 1);
+        header->addWidget(help, 0, Qt::AlignTop);
+        root->addLayout(header);
         preview_ = new QLabel(this);
         preview_->setObjectName("thresholdPreview");
         preview_->setProperty("imagePreview", true);
@@ -112,29 +127,38 @@ public:
         high_->setObjectName("thresholdHigh");
         low_->setRange(0, 255);
         high_->setRange(0, 255);
-        low_->setValue(64);
-        high_->setValue(192);
+        low_->setValue(low_threshold);
+        high_->setValue(high_threshold);
         mode_ = new QComboBox(this);
         mode_->setObjectName("thresholdMode");
         mode_->addItem(tr("Keep values inside [low, high]"), false);
         mode_->addItem(tr("Keep values outside [low, high]"), true);
+        mode_->setCurrentIndex(keep_outside ? 1 : 0);
         form->addRow(tr("Low threshold"), low_);
         form->addRow(tr("High threshold"), high_);
         form->addRow(tr("Selection"), mode_);
         root->addLayout(form);
-        auto* note = new QLabel(
-            tr("Selected pixels become the current class; other pixels inside the ROI become background. "
-               "Cancel leaves the mask unchanged."),
-            this);
-        note->setProperty("meta", true);
-        note->setWordWrap(true);
-        root->addWidget(note);
         auto* buttons = new QDialogButtonBox(
             QDialogButtonBox::Cancel | QDialogButtonBox::Ok, this);
         apply_button_ = buttons->button(QDialogButtonBox::Ok);
         apply_button_->setText(tr("Apply"));
-        root->addWidget(buttons);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        QCheckBox* remember_box = new QCheckBox(tr("Keep thresholds and direction"), this);
+        remember_box->setObjectName("thresholdRememberParameters");
+        remember_box->setToolTip(tr("Reuse these thresholds and inside/outside selection for the next sample."));
+        remember_box->setChecked(remember);
+        QHBoxLayout* footer = new QHBoxLayout;
+        footer->addWidget(remember_box);
+        footer->addStretch();
+        footer->addWidget(buttons);
+        root->addLayout(footer);
+        connect(buttons, &QDialogButtonBox::accepted, this,
+                [this, remember_box, &low_threshold, &high_threshold, &keep_outside, &remember] {
+            remember = remember_box->isChecked();
+            low_threshold = remember ? low_->value() : 64;
+            high_threshold = remember ? high_->value() : 192;
+            keep_outside = remember && keep_outside_range();
+            accept();
+        });
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(low_, qOverload<int>(&QSpinBox::valueChanged), this,
                 [this](int) { refresh_preview(); });
@@ -1406,7 +1430,8 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
                 : tr("Ready"));
     };
     canvas_->threshold_roi_selected = [this](const QRect& roi, const QImage& image) {
-        ThresholdDialog dialog(image, this);
+        ThresholdDialog dialog(image, threshold_low_, threshold_high_,
+                               threshold_outside_, remember_thresholds_, this);
         if (dialog.exec() == QDialog::Accepted) {
             canvas_->apply_threshold_roi(
                 roi, dialog.intervals(), dialog.keep_outside_range());
@@ -1987,11 +2012,21 @@ void SegmentationAnnotationWidget::refresh_sample_status() {
 }
 
 bool SegmentationAnnotationWidget::confirm_transition() {
-    if (!canvas_ || !canvas_->is_dirty()) return true;
-    const auto answer = QMessageBox::warning(this, tr("Unsaved mask"), tr("Save the current mask before continuing?"),
+    if (!canvas_ || !canvas_->is_dirty()) {
+        return true;
+    }
+    if (QSettings(QSettings::IniFormat, QSettings::UserScope, "Jocelin", "DeepLearningStudio")
+            .value("annotation/autoSave", false).toBool()) {
+        return save_current();
+    }
+    const QMessageBox::StandardButton answer = QMessageBox::warning(this, tr("Unsaved mask"), tr("Save the current mask before continuing?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-    if (answer == QMessageBox::Cancel) return false;
-    if (answer == QMessageBox::Save) { save_current(); return !canvas_->is_dirty(); }
+    if (answer == QMessageBox::Cancel) {
+        return false;
+    }
+    if (answer == QMessageBox::Save) {
+        return save_current();
+    }
     return true;
 }
 

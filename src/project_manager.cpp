@@ -660,8 +660,11 @@ void ProjectManager::commit_inference_result(int node_id, const QString& model_i
                 // Core's per-image metadata accompanies the same branch artifacts.
                 QJsonParseError error;
                 const auto document = QJsonDocument::fromJson(ProjectStorage::read(file), &error);
-                if (error.error != QJsonParseError::NoError || !document.isObject())
-                    throw std::runtime_error("invalid staged inference metadata");
+                if (error.error != QJsonParseError::NoError || !document.isObject()) {
+                    throw std::runtime_error(QStringLiteral("invalid staged inference metadata: %1\n%2")
+                        .arg(file, error.error != QJsonParseError::NoError
+                            ? error.errorString() : QStringLiteral("JSON root must be an object")).toStdString());
+                }
                 auto metadata = document.object();
                 for (auto it = metadata.begin(); it != metadata.end(); ++it) {
                     if (!it.value().isString()) continue;

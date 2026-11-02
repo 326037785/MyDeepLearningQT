@@ -680,6 +680,65 @@ int main(int argc, char** argv) {
     });
     no_class_canvas->threshold_roi_selected(QRect(0, 0, 16, 8), threshold_source);
     if (!interval_dialog_checked) return 93;
+    studio::SegmentationAnnotationWidget remembered_annotation;
+    studio::TaskSampleBinding first_threshold_sample;
+    first_threshold_sample.sample_id = "threshold-first";
+    first_threshold_sample.image_paths = {directory.filePath("train.png").toStdString()};
+    studio::TaskSampleBinding second_threshold_sample;
+    second_threshold_sample.sample_id = "threshold-second";
+    second_threshold_sample.image_paths = {directory.filePath("val.png").toStdString()};
+    remembered_annotation.set_task_dataset(directory.path(),
+        {first_threshold_sample, second_threshold_sample},
+        {{"threshold-class", 1, "foreground", "#00ff00", true, false, true}});
+    auto* remembered_canvas = remembered_annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
+    auto* remembered_samples = remembered_annotation.findChild<QListWidget*>("annotationImageList");
+    if (!remembered_canvas || !remembered_samples) {
+        return 100;
+    }
+    for (int step = 0; step < 4; ++step) {
+        remembered_canvas->mark_saved();
+        remembered_samples->setCurrentRow(step % 2);
+        bool settings_checked = false;
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog) {
+                return;
+            }
+            auto* low = dialog->findChild<QSpinBox*>("thresholdLow");
+            auto* high = dialog->findChild<QSpinBox*>("thresholdHigh");
+            auto* mode = dialog->findChild<QComboBox*>("thresholdMode");
+            auto* remember = dialog->findChild<QCheckBox*>("thresholdRememberParameters");
+            auto* buttons = dialog->findChild<QDialogButtonBox*>();
+            if (!low || !high || !mode || !remember || !buttons) {
+                dialog->reject();
+                return;
+            }
+            const bool defaults = step == 0 || step == 3;
+            settings_checked = low->value() == (defaults ? 64 : 30) &&
+                high->value() == (defaults ? 192 : 160) &&
+                mode->currentData().toBool() == !defaults && remember->isChecked() == !defaults;
+            if (step == 0) {
+                low->setValue(30);
+                high->setValue(160);
+                mode->setCurrentIndex(1);
+                remember->setChecked(true);
+            } else {
+                remember->setChecked(false);
+            }
+            if (step == 0 || step == 2) {
+                buttons->button(QDialogButtonBox::Ok)->click();
+            } else {
+                low->setValue(70);
+                high->setValue(190);
+                mode->setCurrentIndex(0);
+                dialog->reject();
+            }
+        });
+        remembered_canvas->threshold_roi_selected(QRect(0, 0, 16, 8), threshold_source);
+        if (!settings_checked) {
+            return 101;
+        }
+    }
     studio::MaskCanvas threshold_canvas;
     threshold_canvas.set_class_value(3);
     if (!threshold_canvas.load(

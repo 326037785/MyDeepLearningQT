@@ -34,6 +34,12 @@ Classification 的 Set as empty 不可用。SG 的 Set as empty 要求用户确�
 
 普通空白编辑提交保持 Unannotated。未修改的、已确认纯背景 target 保留 Annotated。
 
+**标注自动保存**：Settings → Preferences... 将此勾选项与 Language 菜单并列。用户勾选后，SG 在切换 sample 时沿用现有保存入口提交当前标注，并继续切换。关闭时，SG 通过保存、放弃、取消提示处理当前编辑。应用默认关闭此项，记住用户选择，并立即应用设置。Project 沿用现有保存流程写入文件。
+
+**阈值参数记忆**：双阈值分割的 Keep thresholds and direction 勾选项保存低阈值、高阈值和区间内外选择。同一标注组件在后续 sample 中复用最近一次 Apply 确认的参数。取消弹窗保留已确认参数；取消勾选并 Apply 后，下次使用 64、192 和区间内选择。
+
+**阈值帮助**：弹窗右上角的问号图标通过悬停提示说明像素赋值规则。选中像素使用当前类别，ROI 内其他像素使用背景；Cancel 保留当前 mask。
+
 ## 4. 持久化与生命周期
 
 Workflow 的 TaskNode 配置保存 sample 和 Annotation。CL 保存 class_id。SG 通过 region_file 引用 `nodes/<workflow_id>/<node_id>/annotations/` 内的 Region 文件。空 Regions 使用空引用，由 annotation_state 区分纯背景和未完成 target。

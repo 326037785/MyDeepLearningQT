@@ -150,17 +150,8 @@ int main(int argc, char** argv) try {
     QToolBar toolbar;
     studio::SettingsModule settings(&host);
     settings.mount(menu, toolbar);
-    require(menu.actions().size() == 1, "settings did not contribute its action");
-    bool cancelled = false;
-    QTimer::singleShot(0, [&] {
-        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        if (!dialog) return;
-        auto* language = dialog->findChild<QComboBox*>("languageSelector");
-        if (language) { language->setCurrentIndex(language->findData("zh_CN")); cancelled = true; }
-        dialog->reject();
-    });
-    menu.actions().front()->trigger();
-    require(cancelled && studio::ui_language() == "en", "standalone settings cancellation changed preferences");
+    require(menu.actions().size() == 1 && menu.actions().front()->menu(),
+            "settings did not contribute its preferences menu");
 
     studio::ProjectManager project;
     project.new_project("Module test");

@@ -251,11 +251,12 @@ std::vector<ValidationIssue> WorkflowGraph::validate_for_execution() const {
             const auto& config = std::get<DatasetConfig>(node_value.config);
             const bool has_valid_item = std::any_of(config.items.begin(), config.items.end(),
                 [](const DatasetConfig::Item& item) { return item.valid; });
-            if (config.directory.empty() && !has_valid_item)
+            if (config.directory.empty() && !has_valid_item) {
                 issues.push_back({node_id, -1, "dataset has no valid imported images"});
-            else if (!config.directory.empty() &&
-                     !std::filesystem::is_directory(config.directory))
+            } else if (!config.directory.empty() &&
+                       !std::filesystem::is_directory(std::filesystem::u8path(config.directory))) {
                 issues.push_back({node_id, -1, "dataset directory does not exist"});
+            }
             if (config.bucket_capacity != 1)
                 issues.push_back({node_id, -1, "standard sg/cls datasets require bucket capacity 1"});
         } else if (node_value.kind == NodeKind::TaskConfig) {

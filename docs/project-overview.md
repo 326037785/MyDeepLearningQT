@@ -147,6 +147,11 @@ validation follows the owning module's rules.
 
 Save As copies Project assets and relocates internal resource paths. Workflow, Node, sample, model and weight ids remain stable. External resource references remain external.
 
+**Resource paths**: Qt manages paths as QString and exchanges UTF-8 strings with
+Core. Core returns UTF-8 weight paths and writes UTF-8 inference metadata. Qt
+parses staged JSON strictly and reports the metadata filename and parser error
+when validation fails.
+
 ## Core task data and computation
 
 Core owns the task representations in AiMetaData, including bucket inputs, annotation, ROI, exclusion regions, class labels, selection, splits and annotation state. Qt owns drawing, viewport state and display rows. Persistent business data remains in the TaskNode binding. See [ai_metadata.md](ai_metadata.md) and [annotation-import-and-storage.md](annotation-import-and-storage.md).
@@ -162,3 +167,8 @@ Qt sends task filtering inputs through InferenceRequest::config. Core produces t
 Training validation uses Mean IoU for SG and Accuracy for CL. Inference consumes Core's task metrics, including Precision, Recall and F1. Label-dependent metrics require valid supervision. An unavailable metric remains unavailable. Qt does not recalculate metrics.
 
 Core's pipeline exceptions carry execution errors to Qt. Pause, Stop and Completed are training lifecycle outcomes. Extension rules are in [adding-modules.md](adding-modules.md).
+
+**Checkpoint availability**: Qt registers an existing checkpoint from TrainingResult.
+Paused and Completed require their selected checkpoint; an unavailable checkpoint
+produces one failure diagnostic for the model state, training run and activity log.
+Stopped keeps its completed-epoch weight availability rules.

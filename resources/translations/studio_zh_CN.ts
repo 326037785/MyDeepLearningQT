@@ -636,6 +636,14 @@ Cancel keeps Project data unchanged; unavailable weights cannot be used for trai
   <context>
     <name>studio::SettingsModule</name>
     <message>
+      <source>Auto-save annotations</source>
+      <translation>标注自动保存</translation>
+    </message>
+    <message>
+      <source>Save the current annotation when switching samples.</source>
+      <translation>切换样本时保存当前标注。</translation>
+    </message>
+    <message>
       <location filename="../../src/settings_module.cpp" line="21" />
       <source>Preferences...</source>
       <translation>首选项...</translation>

@@ -205,6 +205,10 @@ private:
     std::vector<ResultReference> inference_results_;
     QStringList image_files_;
     int current_index_ = -1;
+    int threshold_low_ = 64;
+    int threshold_high_ = 192;
+    bool threshold_outside_ = false;
+    bool remember_thresholds_ = false;
     SampleBrowser* images_ = nullptr;
     QListWidget* class_list_ = nullptr;
     QSplitter* content_splitter_ = nullptr;

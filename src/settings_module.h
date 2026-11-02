@@ -3,7 +3,7 @@
 #include <QCoreApplication>
 #include <QObject>
 
-class QAction;
+class QActionGroup;
 class QComboBox;
 class QMenu;
 class QToolBar;
@@ -17,10 +17,10 @@ public:
     explicit SettingsModule(QWidget* parent);
     void mount(QMenu& menu, QToolBar& toolbar);
 private:
-    void show_preferences();
     void save_language(const QString& language);
     QWidget* dialog_parent_;
-    QAction* preferences_;
+    QMenu* preferences_;
+    QActionGroup* language_choices_;
     QComboBox* language_;
 };
 

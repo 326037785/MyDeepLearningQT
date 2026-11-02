@@ -42,34 +42,29 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-void change_language(studio::MainWindow& window, const char* language, bool accept) {
-    auto* action = window.findChild<QAction*>("preferencesAction");
-    require(action, "preferences action is missing");
-    bool visited = false;
+void change_language(studio::MainWindow& window, const char* language) {
+    QMenu* menu = window.findChild<QMenu*>("preferencesLanguageMenu");
+    require(menu, "language menu is missing");
+    QAction* choice = nullptr;
+    for (QAction* action : menu->actions()) {
+        if (action->data().toString() == language) {
+            choice = action;
+            break;
+        }
+    }
+    require(choice, "language choice was unavailable");
     bool notice = false;
     QTimer driver;
     QObject::connect(&driver, &QTimer::timeout, [&] {
-        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        if (!dialog) return;
-        if (dialog->objectName() == "preferencesDialog") {
-            auto* selector = dialog->findChild<QComboBox*>("languageSelector");
-            if (!selector) { dialog->reject(); return; }
-            const int index = selector->findData(language);
-            if (index < 0) { dialog->reject(); return; }
-            visited = true;
-            selector->setCurrentIndex(index);
-            if (accept) dialog->accept();
-            else dialog->reject();
-        } else if (auto* message = qobject_cast<QMessageBox*>(dialog)) {
+        if (QMessageBox* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
             notice = true;
             message->accept();
         }
     });
     driver.start(5);
-    action->trigger();
+    choice->trigger();
     driver.stop();
-    require(visited, "language selector was unavailable");
-    require(!accept || notice, "language restart notice was not shown");
+    require(notice, "language restart notice was not shown");
 }
 
 void module_command_boundaries(studio::MainWindow& window, const QString& project_file) {
@@ -280,7 +275,7 @@ int main(int argc, char** argv) try {
         studio::RecentProjectStore().remove(demo.project_file());
         home->refresh_recent_projects();
 
-        change_language(window, "zh_CN", true);
+        change_language(window, "zh_CN");
         require(studio::ui_language() == "zh_CN",
                 "language choice was not saved");
         auto* shortcut = window.findChild<QComboBox*>("homeLanguageSelector");
@@ -291,10 +286,7 @@ int main(int argc, char** argv) try {
         shortcut->setCurrentIndex(shortcut->findData("en"));
         require(studio::ui_language() == "en",
                 "language shortcut did not save the choice");
-        change_language(window, "zh_CN", true);
-        change_language(window, "en", false);
-        require(studio::ui_language() == "zh_CN",
-                "cancel changed the saved language");
+        change_language(window, "zh_CN");
     }
 
     QTranslator qt_translator;
