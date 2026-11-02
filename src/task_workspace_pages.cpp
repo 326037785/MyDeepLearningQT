@@ -8,6 +8,7 @@
 #include "classification_annotation.h"
 #include "icon_provider.h"
 #include "image_result_canvas.h"
+#include "inference_filter_panel.h"
 #include "model_presentation.h"
 #include "model_spec_catalog.h"
 #include "sample_presentation.h"
@@ -15,6 +16,7 @@
 #include "project_model_browser.h"
 #include "resource_monitor.h"
 #include "task_dataset_binding.h"
+#include "task_inference_filter.h"
 #include "ui_metrics.h"
 
 #include <checkpoint/checkpoint_catalog.h>
@@ -1926,6 +1928,13 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     models_layout->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
                                       ThemeTokens::Space2, ThemeTokens::Space2);
     models_layout->setSpacing(ThemeTokens::Space1);
+    filter_panel_ = new InferenceFilterPanel(models);
+    filter_panel_->applied = [this] {
+        if (changed) {
+            changed();
+        }
+    };
+    models_layout->addWidget(filter_panel_);
     model_browser_ = new ProjectModelBrowser(models);
     model_browser_->setObjectName("inferenceProjectModelBrowser");
     model_browser_->set_model_check_selection(true);
@@ -2070,7 +2079,29 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
 }
 
 void InferenceWorkspace::set_service(TaskWorkspaceService* service) {
+    if (service_ == service) {
+        refresh();
+        return;
+    }
+
+    filter_panel_->set_config(nullptr);
+    filter_panel_->set_content(nullptr);
     service_ = service;
+    if (!service_) {
+        refresh();
+        return;
+    }
+
+    const TaskInferenceFilterSpec* spec = find_inference_filter_spec(service_->task().task);
+    if (!spec) {
+        refresh();
+        return;
+    }
+
+    std::unique_ptr<InferenceFilterContent> content = spec->create_content();
+    filter_panel_->set_content(std::move(content));
+    jocelin::config::AiConfig& config = service_->task().inference_config;
+    filter_panel_->set_config(&config);
     refresh();
 }
 
@@ -2538,6 +2569,7 @@ void InferenceWorkspace::request_start() {
 void InferenceWorkspace::set_busy(bool busy) {
     busy_ = busy;
     update_command_presentation();
+    filter_panel_->setEnabled(!busy);
     model_browser_->setEnabled(!busy);
     images_->setEnabled(!busy);
     sample_split_filter_->setEnabled(!busy);

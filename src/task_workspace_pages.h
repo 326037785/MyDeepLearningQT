@@ -28,6 +28,8 @@ class QToolButton;
 
 namespace studio {
 
+class InferenceFilterPanel;
+
 class ClassificationCanvas;
 class ImageResultCanvas;
 class LossChart;
@@ -201,6 +203,7 @@ private:
     TaskWorkspaceService* service_ = nullptr;
     std::vector<ProjectModel> models_;
     ProjectModelBrowser* model_browser_ = nullptr;
+    InferenceFilterPanel* filter_panel_ = nullptr;
     QListWidget* images_ = nullptr;
     QComboBox* sample_split_filter_ = nullptr;
     QLineEdit* sample_search_ = nullptr;

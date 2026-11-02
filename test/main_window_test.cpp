@@ -365,10 +365,46 @@ int main(int argc, char** argv) try {
     route_workspace.set_service(&route_service);
     route_service.task().model_list.restore({route_model}, 2);
     route_workspace.set_models({route_model});
+    QLineEdit* pixel = route_workspace.findChild<QLineEdit*>("sgFilterPixelConfidence");
+    QPushButton* apply_filter = route_workspace.findChild<QPushButton*>("inferenceFilterApply");
+    QToolButton* filter_toggle = route_workspace.findChild<QToolButton*>("inferenceFilterToggle");
+    if (!pixel || !apply_filter || !filter_toggle) {
+        throw std::runtime_error("SG filter editor missing");
+    }
+    filter_toggle->click();
+    int filter_changes = 0;
+    route_workspace.changed = [&filter_changes] { ++filter_changes; };
+    pixel->setText("0.625");
+    apply_filter->click();
+    if (filter_changes != 1 || route_service.task().inference_config.confidence_threshold != 0.625f) {
+        throw std::runtime_error("SG filter did not apply to its TaskNode");
+    }
     // All three model browsers follow their TaskNode, including same-type Nodes.
     studio::WorkflowGraph model_graph = *scene->model();
     const int second_model_node = model_graph.add_task_node({"sg"});
     model_graph.connect(1, 0, second_model_node, 0);
+    studio::TaskWorkspaceService second_filter_service(model_graph, second_model_node);
+    second_filter_service.task().inference_config.confidence_threshold = 0.25f;
+    pixel->setText("0.8");
+    route_workspace.set_service(&second_filter_service);
+    pixel = route_workspace.findChild<QLineEdit*>("sgFilterPixelConfidence");
+    if (!pixel || pixel->text().toDouble() != 0.25) {
+        throw std::runtime_error("SG filter retained another Node's draft");
+    }
+    pixel->setText("0.375");
+    apply_filter->click();
+    if (second_filter_service.task().inference_config.confidence_threshold != 0.375f ||
+        route_service.task().inference_config.confidence_threshold != 0.625f) {
+        throw std::runtime_error("SG filter mixed TaskNode configurations");
+    }
+    const int classification_node = model_graph.add_task_node({"cls"});
+    studio::TaskWorkspaceService classification_filter_service(model_graph, classification_node);
+    route_workspace.set_service(&classification_filter_service);
+    route_workspace.set_service(&route_service);
+    pixel = route_workspace.findChild<QLineEdit*>("sgFilterPixelConfidence");
+    if (!pixel || pixel->text().toDouble() != 0.625) {
+        throw std::runtime_error("SG filter did not restore the owning Node's settings");
+    }
     std::get<studio::TaskNodeConfig>(model_graph.node(2).config).model_list.restore({route_model}, 2);
     auto independent_model = route_model;
     independent_model.name = "Independent Node model";

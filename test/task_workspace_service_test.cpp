@@ -190,6 +190,13 @@ int main(int argc, char** argv) try {
     inference_weight.id = "libtorch_fp32";
     inference_weight.path = "same-task-medium.pt";
     inference_model.weights.push_back(inference_weight);
+    task.inference_config.confidence_threshold = 0.625f;
+    task.inference_config.min_component_confidence = 0.875;
+    task.inference_config.min_region_area = 37;
+    task.inference_config.max_region_area = 9007199254740993LL;
+    task.inference_config.aspect_ratio_range = {0.125, 3.25};
+    task.inference_config.morphological_refine = false;
+    task.inference_config.morph_iterations = 7;
     const auto inference_request =
         service.build_inference_request(
             jocelin::config::cpu_device(), inference_model, inference_weight);
@@ -198,9 +205,18 @@ int main(int argc, char** argv) try {
         inference_request.config.image_width != 640 ||
         inference_request.config.image_height != 480 ||
         inference_request.config.num_classes != 4 ||
+        inference_request.config.confidence_threshold != 0.625f ||
+        inference_request.config.min_component_confidence != 0.875 ||
+        inference_request.config.min_region_area != 37 ||
+        inference_request.config.max_region_area != 9007199254740993LL ||
+        inference_request.config.aspect_ratio_range.low != 0.125 ||
+        inference_request.config.aspect_ratio_range.high != 3.25 ||
+        inference_request.config.morphological_refine ||
+        inference_request.config.morph_iterations != 7 ||
         inference_request.weight_path != "same-task-medium.pt" ||
-        inference_request.image_paths.empty())
+        inference_request.image_paths.empty()) {
         return 33;
+    }
 
     const auto omitted = std::find_if(
         request.samples.samples.begin(),
@@ -226,8 +242,17 @@ int main(int argc, char** argv) try {
         decoded_task.dataset_binding.classes[1].id != road_id ||
         decoded_task.dataset_binding.classes[1].mask_value != road_mask ||
         decoded_task.dataset_binding.split_settings.seed != 271828 ||
-        !decoded_task.dataset_binding.samples.front().split_manual)
+        !decoded_task.dataset_binding.samples.front().split_manual ||
+        decoded_task.inference_config.confidence_threshold != 0.625f ||
+        decoded_task.inference_config.min_component_confidence != 0.875 ||
+        decoded_task.inference_config.min_region_area != 37 ||
+        decoded_task.inference_config.max_region_area != 9007199254740993LL ||
+        decoded_task.inference_config.aspect_ratio_range.low != 0.125 ||
+        decoded_task.inference_config.aspect_ratio_range.high != 3.25 ||
+        decoded_task.inference_config.morphological_refine ||
+        decoded_task.inference_config.morph_iterations != 7) {
         return 14;
+    }
 
     // A one-image dataset shares its sole train sample with an automatically
     // derived validation split rather than refusing to train.

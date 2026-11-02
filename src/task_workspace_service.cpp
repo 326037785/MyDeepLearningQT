@@ -965,7 +965,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     }
     if (images.empty()) throw std::runtime_error("select at least one valid Task image for inference");
 
-    jocelin::config::AiConfig backend;
+    jocelin::config::AiConfig backend = config.inference_config;
     backend.tool_type = model.task;
     backend.runtime_mode = jocelin::config::RuntimeMode::Infer;
     backend.model_index = model.model_index;
@@ -990,15 +990,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.std[0] = 0.229f;
     backend.std[1] = 0.224f;
     backend.std[2] = 0.225f;
-    backend.confidence_threshold = 0.5f;
-    backend.min_region_area = 1;
-    backend.max_region_area = std::numeric_limits<int64_t>::max();
-    backend.aspect_ratio_range = {0.0, std::numeric_limits<double>::max()};
-    backend.min_component_confidence = 0.0;
-    backend.cls_confidence_threshold = 0.0;
-    backend.morphological_refine = true;
     backend.morph_kernel_size = 5;
-    backend.morph_iterations = 1;
 
     jocelin::inference::InferenceRequest request;
     request.config = backend;

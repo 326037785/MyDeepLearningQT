@@ -808,6 +808,43 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
     return runtime;
 }
 
+QJsonObject sg_filter_to_json(const jocelin::config::AiConfig& filter) {
+    return {
+        {"confidence_threshold", filter.confidence_threshold},
+        {"min_component_confidence", filter.min_component_confidence},
+        {"min_region_area", filter.min_region_area},
+        {"max_region_area", QString::number(static_cast<qlonglong>(filter.max_region_area))},
+        {"aspect_ratio_range", QJsonArray{filter.aspect_ratio_range.low, filter.aspect_ratio_range.high}},
+        {"morphological_refine", filter.morphological_refine},
+        {"morph_iterations", filter.morph_iterations}};
+}
+
+void sg_filter_from_json(const QJsonObject& filter, jocelin::config::AiConfig& settings) {
+    const QString context = "Task SG filter";
+    require_exact_fields(filter,
+        {"confidence_threshold", "min_component_confidence", "min_region_area", "max_region_area",
+         "aspect_ratio_range", "morphological_refine", "morph_iterations"}, context);
+    const double confidence = required_number(filter, "confidence_threshold", context);
+    if (std::abs(confidence) > std::numeric_limits<float>::max()) {
+        invalid_document(context, "confidence_threshold exceeds the float range");
+    }
+    settings.confidence_threshold = static_cast<float>(confidence);
+    settings.min_component_confidence = required_number(filter, "min_component_confidence", context);
+    settings.min_region_area = required_integer(filter, "min_region_area", context);
+    bool area_valid = false;
+    settings.max_region_area = required_string(filter, "max_region_area", context).toLongLong(&area_valid);
+    if (!area_valid) {
+        invalid_document(context, "max_region_area must be an int64 string");
+    }
+    const QJsonArray range = required_array(filter, "aspect_ratio_range", context);
+    if (range.size() != 2 || !range[0].isDouble() || !range[1].isDouble()) {
+        invalid_document(context, "aspect_ratio_range must contain two numbers");
+    }
+    settings.aspect_ratio_range = {range[0].toDouble(), range[1].toDouble()};
+    settings.morphological_refine = required_bool(filter, "morphological_refine", context);
+    settings.morph_iterations = required_integer(filter, "morph_iterations", context);
+}
+
 QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByteArray>>& region_assets,
     std::vector<std::pair<QString, QByteArray>>& inference_assets) {
     if (node.kind == NodeKind::DatasetInput) {
@@ -842,7 +879,7 @@ QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByt
         QJsonArray inference_images;
         for (const auto& name : config.inference_images)
             inference_images.append(QString::fromStdString(name));
-        return {
+        QJsonObject task_object{
             {"task", QString::fromStdString(config.task)},
             {"model_index", config.model_index},
             {"model_scale", QString::fromStdString(config.model_scale)},
@@ -868,6 +905,13 @@ QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByt
                 {"scheduler", QString::fromStdString(training.scheduler)},
                 {"augment", augment_to_json(training.augment)},
                 {"output_directory", QString::fromStdString(training.output_directory)}}}};
+        if (config.task == "sg") {
+            task_object.insert("sg_filter", sg_filter_to_json(config.inference_config));
+        } else if (config.task == "cls") {
+            task_object.insert("cls_filter", QJsonObject{
+                {"cls_confidence_threshold", config.inference_config.cls_confidence_threshold}});
+        }
+        return task_object;
     }
     throw std::runtime_error("unsupported node kind");
 }
@@ -925,8 +969,11 @@ void config_from_json(Node& node, const QJsonObject& object, const QString& node
         node.config = std::move(config);
     } else if (node.kind == NodeKind::TaskConfig) {
         const QString context = "Task config";
+        QJsonObject task_fields = object;
+        task_fields.remove("sg_filter");
+        task_fields.remove("cls_filter");
         require_exact_fields(
-            object,
+            task_fields,
             {"task", "model_index", "model_scale",
              "device", "inference_batch_size",
              "inference_output_directory",
@@ -949,6 +996,21 @@ void config_from_json(Node& node, const QJsonObject& object, const QString& node
                 object, "task", context).toStdString();
         const auto* module = find_task_module(config.task);
         if (!module || !module->available) invalid_document(context, "unsupported Task type");
+        if (object.contains("sg_filter")) {
+            if (config.task != "sg") {
+                invalid_document(context, "sg_filter requires an SG Task");
+            }
+            sg_filter_from_json(required_object(object, "sg_filter", context), config.inference_config);
+        }
+        if (object.contains("cls_filter")) {
+            if (config.task != "cls") {
+                invalid_document(context, "cls_filter requires a CL Task");
+            }
+            const QJsonObject filter = required_object(object, "cls_filter", context);
+            require_exact_fields(filter, {"cls_confidence_threshold"}, "Task CL filter");
+            config.inference_config.cls_confidence_threshold =
+                required_number(filter, "cls_confidence_threshold", "Task CL filter");
+        }
         config.model_index =
             required_integer(
                 object, "model_index", context);

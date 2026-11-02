@@ -219,6 +219,35 @@ int main() {
     const auto sg_serialized = studio::serialize_workflow(graph, positions);
     write_assets(sg_serialized, sg_assets.path());
     const auto sg_decoded = studio::parse_workflow(sg_serialized.json, sg_assets.path());
+    const jocelin::config::AiConfig defaults;
+    const jocelin::config::AiConfig& restored_filter =
+        std::get<studio::TaskNodeConfig>(sg_decoded.graph.node(node_id).config).inference_config;
+    if (restored_filter.max_region_area != defaults.max_region_area ||
+        restored_filter.aspect_ratio_range.high != defaults.aspect_ratio_range.high) {
+        return 57;
+    }
+    QJsonObject legacy = QJsonDocument::fromJson(sg_serialized.json).object();
+    QJsonArray legacy_nodes = legacy.value("nodes").toArray();
+    QJsonObject legacy_task = legacy_nodes.at(1).toObject();
+    QJsonObject legacy_config = legacy_task.value("config").toObject();
+    legacy_config.remove("sg_filter");
+    legacy_task["config"] = legacy_config;
+    legacy_nodes[1] = legacy_task;
+    legacy["nodes"] = legacy_nodes;
+    const studio::WorkflowDocument legacy_decoded =
+        studio::parse_workflow(QJsonDocument(legacy).toJson(), sg_assets.path());
+    const jocelin::config::AiConfig& legacy_filter =
+        std::get<studio::TaskNodeConfig>(legacy_decoded.graph.node(node_id).config).inference_config;
+    if (legacy_filter.confidence_threshold != defaults.confidence_threshold ||
+        legacy_filter.min_component_confidence != defaults.min_component_confidence ||
+        legacy_filter.min_region_area != defaults.min_region_area ||
+        legacy_filter.max_region_area != defaults.max_region_area ||
+        legacy_filter.aspect_ratio_range.low != defaults.aspect_ratio_range.low ||
+        legacy_filter.aspect_ratio_range.high != defaults.aspect_ratio_range.high ||
+        legacy_filter.morphological_refine != defaults.morphological_refine ||
+        legacy_filter.morph_iterations != defaults.morph_iterations) {
+        return 58;
+    }
     const auto& restored = std::get<jocelin::result::sg::SgResult>(
         std::get<studio::TaskNodeConfig>(sg_decoded.graph.node(node_id).config)
             .runtime.results.front().samples.front().result);

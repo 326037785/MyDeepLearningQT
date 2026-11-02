@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/config/ai_config.h>
 #include <common/config/augment.h>
 #include <common/geometry/run.h>
 #include <common/config/runtime_route.h>
@@ -159,6 +160,7 @@ struct TaskNodeConfig {
     std::string inference_output_directory;
     bool inference_use_all_images = true;
     std::vector<std::string> inference_images;
+    jocelin::config::AiConfig inference_config;
     TaskDatasetBinding dataset_binding;
     jocelin::model::ModelList model_list;
     TaskRuntimeState runtime;

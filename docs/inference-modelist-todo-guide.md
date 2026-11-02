@@ -62,6 +62,25 @@ ResultReference 保存 source_sample_id 和 Core typed Result。一个 bucket �
 
 Inference 的样本列表可按已分配的 split 和样本名称、路径或 ID 筛选。Ctrl/Shift 选择时只推理筛选结果中的选中图片；没有选中项时推理全部匹配图片。筛选不会修改 Task 的样本 Use 或 split。SG 推理保存 mask、color mask、heatmap 和结果数据，原图与结果的叠加在显示时生成，不额外保存 overlay 图片。
 
+### Inference Filter
+
+Filter 的 Task 类型由当前 Node 确定。配置保存在该 TaskNode 的 Core `AiConfig` 中，切换 Node 时读取对应 Node 已确认的配置。Reset 只将编辑值恢复为 Core 默认值；Apply 将编辑值写回当前 Node，用于下一次 Infer，不重新处理已有结果。
+
+| Task | 控件 | `AiConfig` 字段 |
+| --- | --- | --- |
+| SG | Pixel confidence | `confidence_threshold` |
+| SG | Region confidence | `min_component_confidence` |
+| SG | Region area | `min_region_area`、`max_region_area` |
+| SG | Aspect ratio | `aspect_ratio_range` |
+| SG | Morphology、Iterations | `morphological_refine`、`morph_iterations` |
+| CL | Confidence | `cls_confidence_threshold` |
+
+单值范围由控件约束，SG 的 Area 和 Aspect ratio 最小值不得大于最大值。关闭 Morphology 时禁用 Iterations。Qt 将当前配置传入 `InferenceRequest::config`；Core 的 `SgResult::process()` 或 `ClsResult::process()` 负责参数语义和过滤计算。
+
+Workflow 分别以 `sg_filter` 和 `cls_filter` 保存对应 Task 的字段；旧 Workflow 缺少该对象时使用 Core 默认值。SG 的 `max_region_area` 使用 int64 字符串保存，`aspect_ratio_range` 保存为最小值和最大值的数组。
+
+`InferenceWorkspace` 根据当前 Task 从 [Task Filter 组合表](../src/task_inference_filter.cpp)取得对应的 `InferenceFilterContent`，并绑定当前 Node 的配置。各 Task content 只负责自己的控件和字段映射；[InferenceFilterPanel](../src/inference_filter_panel.h)负责折叠、Apply、Reset、错误显示和内容挂载。content 创建时由 `std::unique_ptr` 持有，加入 Qt 控件树后由 Qt 父对象管理。新增 Task Filter 时提供自己的 content 并加入组合表。
+
 ## 4. 单个 branch 的替换
 
 再次推理只更新所选 model_id + weight_id 的 latest result。
