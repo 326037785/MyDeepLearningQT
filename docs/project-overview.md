@@ -101,7 +101,9 @@ Inference belongs to a TaskNode. Within that Node, `model_id + weight_id` identi
 
 `ResultReference` associates source_sample_id with a complete Core ClsResult or SgResult. The Core image path distinguishes image records within a bucket. Qt keeps the typed result and its application association together.
 
-Annotation, Inference and Results share the TaskWorkspaceService model/weight selection. Annotation contains a view of the current Node's ModelList and a branch selector. Clicking a model changes model_id. Choosing a branch changes weight_id.
+Annotation, Inference and Results share the TaskWorkspaceService model/weight selection. Annotation's right-side inspector combines the Task's Classes, its ModelList view and a current-sample Results view. In Annotation, a model row and its format cell select an existing model_id and weight_id; changing the selected branch does not create or convert a weight.
+
+**ModelList deletion**: Each format cell supplies its currently selected weight_id. Checking individual cells makes the upper delete button remove only these selected branches, retaining model rows and other branches. Explicit Select all makes that button clear the current TaskNode's complete ModelList, including all branches, empty model rows, model details and inference results. Changing an individual branch selection returns to branch deletion. The context menu deletes the current branch or its complete ModelEntry. Deletion confirms the targets and uses the existing ModelEntry/ModelWeight cleanup paths.
 
 All result views use the current TaskNode and exact selected pair. A branch without a result shows an empty result state and clears the prediction overlay. It does not display another branch's result. Runtime availability controls execution, while saved branch results remain selectable for viewing.
 

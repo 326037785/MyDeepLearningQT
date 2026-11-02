@@ -34,6 +34,9 @@ void ModelActions::mount(NodeWorkspace& workspace) {
     workspace.import_model_requested = [this](int id) { import_model(id); };
     workspace.export_model_requested = [this](int id, const QString& model) { export_model(id, model); };
     workspace.delete_models_requested = [this](int id, const QStringList& models) { delete_models(id, models); };
+    workspace.delete_model_weights_requested = [this](int id, const ModelWeightSelection& weights) {
+        delete_models(id, {}, {}, weights);
+    };
     workspace.delete_model_weight_requested = [this](int id, const QString& model, const QString& weight) {
         delete_models(id, {model}, weight);
     };
@@ -418,12 +421,30 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
     }
 }
 
-void ModelActions::delete_models(int node_id, const QStringList& model_ids, const QString& weight_id) {
-    if (!project_.has_storage() || model_ids.isEmpty()) return;
+void ModelActions::delete_models(int node_id, const QStringList& model_ids, const QString& weight_id,
+                                 const ModelWeightSelection& weights) {
+    if (!project_.has_storage() || (model_ids.isEmpty() && weights.empty())) {
+        return;
+    }
 
     TaskWorkspaceService service(project_.active_workflow().document.graph, node_id, QFileInfo(project_.node_models_directory(node_id)).absolutePath());
     QStringList valid_model_ids;
     QStringList model_names;
+    QStringList weight_names;
+    ModelWeightSelection valid_weights;
+    for (const auto& [model_id, selected_weight_id] : weights) {
+        const auto* model = service.find_model(model_id);
+        if (!model || !jocelin::model::find_weight(*model, selected_weight_id.toStdString()) ||
+            std::find(valid_weights.begin(), valid_weights.end(), std::make_pair(model_id, selected_weight_id)) != valid_weights.end()) {
+            continue;
+        }
+        valid_weights.emplace_back(model_id, selected_weight_id);
+        weight_names.push_back(QString::fromStdString(model->name) + " / " + selected_weight_id);
+        if (!valid_model_ids.contains(model_id)) {
+            valid_model_ids.push_back(model_id);
+            model_names.push_back(QString::fromStdString(model->name));
+        }
+    }
     for (const auto& model_id : model_ids) {
         const auto* model = service.find_model(model_id);
         if (!model || (!weight_id.isEmpty() && !jocelin::model::find_weight(*model, weight_id.toStdString()))) {
@@ -436,24 +457,28 @@ void ModelActions::delete_models(int node_id, const QStringList& model_ids, cons
         return;
     }
 
-    const QString prompt = weight_id.isEmpty()
+    const QString prompt = !valid_weights.empty()
+        ? tr("Permanently delete %1 selected weight branch(es)?\n\n%2\n\nTheir assets and inference results will be deleted. Model rows and other branches will be retained.")
+            .arg(valid_weights.size()).arg(weight_names.join("\n"))
+        : weight_id.isEmpty()
         ? tr("Permanently delete %1 selected model(s)?\n\n%2\n\nTheir model assets and all associated inference results will be deleted.")
             .arg(valid_model_ids.size()).arg(model_names.join("\n"))
         : tr("Permanently delete weight %1 from %2?\n\nOnly this weight's assets and inference results will be deleted.")
             .arg(weight_id, model_names.join("\n"));
     if (QMessageBox::question(
-            dialog_parent_, tr("Delete selected models"),
+            dialog_parent_, !valid_weights.empty() || !weight_id.isEmpty() ? tr("Delete Weight") : tr("Delete Model"),
             prompt,
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
         return;
     }
     try {
-        project_.remove_models(node_id, valid_model_ids, weight_id);
+        project_.remove_models(node_id, valid_model_ids, weight_id, valid_weights);
         if (models_changed) {
             models_changed();
         }
         status(
-            weight_id.isEmpty() ? tr("%1 model(s) deleted").arg(valid_model_ids.size())
+            !valid_weights.empty() ? tr("%1 weight branch(es) deleted").arg(valid_weights.size())
+                : weight_id.isEmpty() ? tr("%1 model(s) deleted").arg(valid_model_ids.size())
                                 : tr("Weight deleted: %1").arg(weight_id), 5000);
     } catch (const std::exception& error) {
         if (models_changed) {

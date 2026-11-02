@@ -14,7 +14,8 @@ public:
     void mount(NodeWorkspace& workspace);
     void import_model(int node_id);
     void export_model(int node_id, const QString& model_id);
-    void delete_models(int node_id, const QStringList& model_ids, const QString& weight_id = {});
+    void delete_models(int node_id, const QStringList& model_ids, const QString& weight_id = {},
+                       const ModelWeightSelection& weights = {});
     void clear_models(int node_id);
     std::function<void(const QString&)> log;
     std::function<void(const QString&, int)> status;

@@ -19,6 +19,7 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 | src/project_manager.cpp | Project save/open, resource paths and persistence coordination |
 | src/annotation_codec.* and src/annotation_exchange.* | External annotation decoding, mapping and export |
 | Annotation widgets and src/task_workspace_pages.cpp | Editing, display and operation requests |
+| src/resource_monitor.cpp | Read-only system resource display shared by Training and Inference |
 | src/task_workspace.cpp | Task page composition and shared result selection |
 | src/main_window.cpp | Application shell: feature composition, page/Dock mounting, window layout and status presentation |
 | src/project_module.cpp | Project commands, home page and metadata panel, using ProjectManager |
@@ -29,6 +30,8 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 | src/activity_log.cpp | UTF-8 session log files, menu action and a separate log viewer |
 
 Widgets keep viewport, drawing and selection state. Authoritative samples, classes, splits and results remain with the TaskNode. Core request construction belongs to TaskWorkspaceService.
+
+The Training and Inference resource panel displays system-wide CPU and RAM use on Windows, and NVIDIA GPU utilization and VRAM through the driver NVML when its headers and library are available. It samples only while visible and does not store resource history in the Project.
 
 Annotation tool definitions and gesture maintenance belong outside concrete Task widgets. A Task chooses applicable tools and owns target edits, undo history, validity and persistence; tool code only supplies interaction results. See the [annotation tool layering contract](annotation-tool-layering.md) before adding a task editor or a drawing tool.
 

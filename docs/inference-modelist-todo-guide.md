@@ -52,9 +52,15 @@ ModelList 是结果选择入口：
 - 切换 Model 或 Weight 后，立即刷新该坐标对应的结果。
 - 所选 branch 无结果时，显示空结果并清除 inference overlay。
 
+Annotation 右侧使用 Classes、Models、Results 三个 Tab 组合现有视图。类别仍由任务标注组件维护，Models 使用当前 TaskNode 的 ModelList；Results 仅检查当前样本的推理结果，完整结果管理仍在第六阶段。Models 的格式单元格显示已有权重：没有权重显示 `—`，单个权重显示精度，多个权重在单元格内选择。选择只切换已有 `weight_id`，不转换精度、不创建模型或训练记录。
+
 格式列用于分组。结果定位不依赖 weight_format、最近运行顺序或目录扫描。查看已保存结果不要求推理 executor 可用；执行仍受设备和 runtime 约束。
 
+顶部“全选”选择当前 TaskNode 的整个 ModelList；随后删除会清除所有模型行、全部权重 branch（包括同格式未显示的其他 branch）、空模型行及相关推理结果，详情随之清空。单独勾选格式单元格时仅删除该单元格当前选中的权重，保留模型行和其他 branch；修改单个 branch 的选择后退出整表全选。只有空模型行时仍可全选清理。
+
 ResultReference 保存 source_sample_id 和 Core typed Result。一个 bucket 内的图片记录由 Core image_path 区分。
+
+Inference 的样本列表可按已分配的 split 和样本名称、路径或 ID 筛选。Ctrl/Shift 选择时只推理筛选结果中的选中图片；没有选中项时推理全部匹配图片。筛选不会修改 Task 的样本 Use 或 split。SG 推理保存 mask、color mask、heatmap 和结果数据，原图与结果的叠加在显示时生成，不额外保存 overlay 图片。
 
 ## 4. 单个 branch 的替换
 
@@ -148,6 +154,10 @@ Rebind validation 只判断绑定是否相同。文件缺失、损坏输入和�
 Annotation package import 显式提供接收 Task 的新类别和标注。它保留该 Task 的 split_settings 和 preprocessing。其他当前连接的 Task 清除旧 samples 和 Inference，保留自己的类别配置，再同步新 samples。
 
 ## 9. 模型与权重删除
+
+**单元格删除**：Training 和 Inference 的 ModelList 上方提供全选勾选框和删除按钮。全选选择或取消选择全部单元格，部分选择显示半选状态。上方删除按各单元格当前选中的 weight_id 清理对应 branch，保留模型行和其他 branch。行内勾选继续指定训练或推理使用的单个模型。
+
+**右键删除**：权重单元格的右键菜单提供删除单元格和删除整行。删除单元格清理当前选中的 branch；删除整行清理该 ModelEntry 的全部 branch。删除操作先确认，再复用既有资产和 inference 清理流程。
 
 **删除 ModelEntry**：应用删除模型行、模型资产、该 model_id 的全部 inference records 和 inference/<model_id>/，并清除对应 training_model_id。
 

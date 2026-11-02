@@ -1009,9 +1009,8 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     request.targets = std::move(targets);
     request.segmentation_result.save_dir = output;
     request.segmentation_result.save_option =
-        jocelin::result::sg::SaveOption::ResultWithHeatmapOverlay;
+        jocelin::result::sg::SaveOption::ResultWithHeatmap;
     request.segmentation_result.save_color_mask = true;
-    request.segmentation_result.overlay_alpha = 0.45f;
     request.classification_result.save_dir = output;
     return request;
 }

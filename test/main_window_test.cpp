@@ -409,7 +409,10 @@ int main(int argc, char** argv) try {
         result_task.runtime.results.push_back(result);
     }
     owned_workspace.bind(&model_graph, 2);
-    auto* annotation_branch = owned_workspace.findChild<QComboBox*>("annotationWeightBranch");
+    auto* annotation_models = owned_workspace.findChild<QWidget*>("annotationProjectModelBrowser");
+    auto* annotation_model_rows = annotation_models ? annotation_models->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
+    auto* annotation_branch = annotation_model_rows && annotation_model_rows->topLevelItemCount() > 0
+        ? qobject_cast<QComboBox*>(annotation_model_rows->itemWidget(annotation_model_rows->topLevelItem(0), 1)) : nullptr;
     auto* result_branch = owned_workspace.findChild<QComboBox*>("resultsWeightBranch");
     auto* inference_branch = owned_workspace.findChild<QComboBox*>("inferenceWeightBranch");
     auto* result_table = owned_workspace.findChild<QTableWidget*>("taskResultsTable");
@@ -423,7 +426,12 @@ int main(int argc, char** argv) try {
     if (!annotation_branch || !result_branch || !inference_branch || !result_table || !infer_canvas || !annotation_canvas)
         throw std::runtime_error("branch result selectors or previews missing");
     for (const auto& branch : {QString("libtorch_alternate"), QString("libtorch_fp32"), QString("no_result")}) {
-        annotation_branch->setCurrentIndex(annotation_branch->findData(branch));
+        const int index = annotation_branch->findData(branch);
+        if (index < 0) {
+            throw std::runtime_error("Annotation weight branch is missing from its model cell");
+        }
+        annotation_branch->setCurrentIndex(index);
+        QMetaObject::invokeMethod(annotation_branch, "activated", Qt::DirectConnection, Q_ARG(int, index));
         const bool available = branch != "no_result";
         if (result_branch->currentData().toString() != branch || inference_branch->currentData().toString() != branch || result_table->rowCount() != (available ? 1 : 0) ||
             infer_canvas->has_prediction_overlay() != available || annotation_canvas->has_prediction_overlay() != available ||
@@ -433,8 +441,6 @@ int main(int argc, char** argv) try {
     inference_branch->setCurrentIndex(inference_branch->findData("libtorch_alternate"));
     if (result_branch->currentData().toString() != "libtorch_alternate" || result_table->rowCount() != 1)
         throw std::runtime_error("Inference branch selection did not update Results");
-    auto* annotation_models = owned_workspace.findChild<QWidget*>("annotationProjectModelBrowser");
-    auto* annotation_model_rows = annotation_models ? annotation_models->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
     if (!annotation_model_rows || annotation_model_rows->topLevelItemCount() != 2)
         throw std::runtime_error("Annotation has no Node ModelList row selector");
     annotation_model_rows->setCurrentItem(annotation_model_rows->topLevelItem(1));
@@ -484,8 +490,7 @@ int main(int argc, char** argv) try {
         return 77;
     inference_images->item(0)->setSelected(true);
     application.processEvents();
-    if (inference_start->text() == all_action_text ||
-        inference_scope->text() == all_scope_text ||
+    if (inference_scope->text() == all_scope_text ||
         !task_config.inference_use_all_images ||
         !task_config.inference_images.empty())
         return 31;

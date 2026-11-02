@@ -13,6 +13,7 @@
 #include "sample_presentation.h"
 #include "sample_browser.h"
 #include "project_model_browser.h"
+#include "resource_monitor.h"
 #include "task_dataset_binding.h"
 #include "ui_metrics.h"
 
@@ -31,6 +32,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -1230,6 +1232,11 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->delete_models_requested = [this](const QStringList& ids) {
         if (delete_models_requested) delete_models_requested(ids);
     };
+    model_browser_->delete_model_weights_requested = [this](const ModelWeightSelection& weights) {
+        if (delete_model_weights_requested) {
+            delete_model_weights_requested(weights);
+        }
+    };
     model_browser_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
         if (delete_model_weight_requested) {
             delete_model_weight_requested(model_id, weight_id);
@@ -1245,10 +1252,13 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
         if (!rebuilding_ && service_) service_->select_inference_model(id);
         update_model_compatibility();
     };
-    models_layout->addWidget(model_browser_, 1);
+    models_layout->addWidget(model_browser_, 3);
     source_status_ = helper_label({}, models_panel);
     source_status_->setObjectName("trainingModelCompatibility");
     models_layout->addWidget(source_status_);
+    ResourceMonitorWidget* resources = new ResourceMonitorWidget(models_panel);
+    resources->setObjectName("trainingResourceMonitor");
+    models_layout->addWidget(resources, 1);
 
     split->addWidget(workspace_scroll_);
     split->addWidget(monitor);
@@ -1259,7 +1269,7 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     split->setCollapsible(0, true);
     split->setCollapsible(2, true);
     split->setHandleWidth(11);
-    split->setSizes({290, 1100, 0});
+    split->setSizes({290, 900, 380});
     split->handle(1)->setObjectName("trainingConfigurationHandle");
     split->handle(1)->setProperty("collapsePanelIndex", 0);
     split->handle(1)->setProperty("restoreWidth", 290);
@@ -1840,9 +1850,40 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     sample_header->addWidget(scope_summary_);
     sample_header->addStretch();
     samples_layout->addLayout(sample_header);
+
+    QWidget* filter_bar = new QWidget(samples);
+    filter_bar->setObjectName("inferenceSampleFilterBar");
+    QHBoxLayout* filter_layout = new QHBoxLayout(filter_bar);
+    filter_layout->setContentsMargins(0, 0, 0, 0);
+    filter_layout->setSpacing(ThemeTokens::Space1);
+    QFont filter_font = filter_bar->font();
+    filter_font.setPixelSize(11);
+    sample_split_filter_ = new QComboBox(filter_bar);
+    sample_split_filter_->setObjectName("inferenceSampleSplitFilter");
+    sample_split_filter_->setFont(filter_font);
+    sample_split_filter_->setFixedHeight(24);
+    sample_split_filter_->setMinimumWidth(90);
+    sample_split_filter_->setMaximumWidth(110);
+    sample_split_filter_->addItem(tr("All splits"), "all");
+    sample_split_filter_->addItem(tr("Train"), "train");
+    sample_split_filter_->addItem(tr("Validation"), "validation");
+    sample_split_filter_->addItem(tr("Test"), "test");
+    sample_split_filter_->addItem(tr("Unassigned"), "unassigned");
+    sample_split_filter_->setToolTip(tr("Filter by assigned sample split."));
+    sample_search_ = new QLineEdit(filter_bar);
+    sample_search_->setObjectName("inferenceSampleSearch");
+    sample_search_->setFont(filter_font);
+    sample_search_->setFixedHeight(24);
+    sample_search_->setMinimumWidth(0);
+    sample_search_->setPlaceholderText(tr("Find samples"));
+    sample_search_->setClearButtonEnabled(true);
+    filter_layout->addWidget(sample_split_filter_);
+    filter_layout->addWidget(sample_search_, 1);
+    samples_layout->addWidget(filter_bar);
+
     images_ = new QListWidget(samples);
     images_->setToolTip(
-        tr("Select images to limit the inference scope. No selection means all images; use Ctrl or Shift for multi-selection."));
+        tr("Select images to limit the inference scope. No selection means all matching images; use Ctrl or Shift for multi-selection."));
     images_->setObjectName("inferenceImageList");
     images_->setIconSize(QSize(56, 42));
     images_->setTextElideMode(Qt::ElideMiddle);
@@ -1899,6 +1940,11 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->delete_models_requested = [this](const QStringList& ids) {
         if (delete_models_requested) delete_models_requested(ids);
     };
+    model_browser_->delete_model_weights_requested = [this](const ModelWeightSelection& weights) {
+        if (delete_model_weights_requested) {
+            delete_model_weights_requested(weights);
+        }
+    };
     model_browser_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
         if (delete_model_weight_requested) {
             delete_model_weight_requested(model_id, weight_id);
@@ -1915,7 +1961,10 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     };
     model_browser_->selection_changed = select_model;
     model_browser_->checked_model_changed = select_model;
-    models_layout->addWidget(model_browser_, 1);
+    models_layout->addWidget(model_browser_, 3);
+    ResourceMonitorWidget* resources = new ResourceMonitorWidget(models);
+    resources->setObjectName("inferenceResourceMonitor");
+    models_layout->addWidget(resources, 1);
 
     split->addWidget(samples);
     split->addWidget(viewport);
@@ -1970,6 +2019,41 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
             [this](int) {
         if (!rebuilding_) { commit_result_selection(); update_command_presentation(); }
     });
+    const auto apply_sample_filter = [this] {
+        if (rebuilding_) {
+            return;
+        }
+        const QSignalBlocker blocker(images_);
+        const QString split = sample_split_filter_->currentData().toString();
+        const QString query = sample_search_->text().trimmed();
+        QListWidgetItem* first_visible = nullptr;
+        for (int index = 0; index < images_->count(); ++index) {
+            QListWidgetItem* item = images_->item(index);
+            const bool matches_split = split == "all" || item->data(Qt::UserRole + 1).toString() == split;
+            const bool matches_query = query.isEmpty() ||
+                item->text().contains(query, Qt::CaseInsensitive) ||
+                item->data(Qt::UserRole).toString().contains(query, Qt::CaseInsensitive) ||
+                item->data(Qt::UserRole + 2).toString().contains(query, Qt::CaseInsensitive);
+            const bool visible = matches_split && matches_query;
+            item->setHidden(!visible);
+            if (visible && !first_visible) {
+                first_visible = item;
+            } else if (!visible) {
+                item->setSelected(false);
+            }
+        }
+        if (!first_visible) {
+            images_->setCurrentRow(-1, QItemSelectionModel::NoUpdate);
+        } else if (!images_->currentItem() || images_->currentItem()->isHidden()) {
+            images_->setCurrentItem(first_visible, QItemSelectionModel::NoUpdate);
+        }
+        refresh_canvas();
+        update_command_presentation();
+    };
+    connect(sample_split_filter_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [apply_sample_filter](int) { apply_sample_filter(); });
+    connect(sample_search_, &QLineEdit::textChanged, this,
+            [apply_sample_filter](const QString&) { apply_sample_filter(); });
     connect(images_, &QListWidget::itemSelectionChanged, this, [this] {
         update_command_presentation();
     });
@@ -2027,11 +2111,15 @@ void InferenceWorkspace::refresh() {
     const std::set<std::string> selected(
         task.inference_images.begin(), task.inference_images.end());
     const auto& samples = service_->binding().samples;
+    const QString split_filter = sample_split_filter_->currentData().toString();
+    const QString query = sample_search_->text().trimmed();
     for (int sample_index = 0;
          sample_index < static_cast<int>(samples.size());
          ++sample_index) {
         const auto& sample = samples[static_cast<size_t>(sample_index)];
-        if (!sample.selected) continue;
+        if (!sample.selected) {
+            continue;
+        }
         const QString display_name = image_display_name(sample_index, sample);
         const QString tooltip = sample_image_tooltip(
             display_name, sample, annotation_label(sample));
@@ -2045,26 +2133,45 @@ void InferenceWorkspace::refresh() {
                       .arg(image_index + 1)
                       .arg(sample.image_paths.size())
                 : display_name;
-            auto* item = new QListWidgetItem(item_text, images_);
+            QListWidgetItem* item = new QListWidgetItem(item_text, images_);
             item->setData(Qt::UserRole, QString::fromStdString(path));
+            item->setData(Qt::UserRole + 1, QString::fromStdString(normalized_split(sample.split)));
+            item->setData(Qt::UserRole + 2, QString::fromStdString(sample.sample_id));
             item->setToolTip(tooltip);
             QImageReader reader(QString::fromStdString(path));
             reader.setAutoTransform(true);
             reader.setScaledSize(QSize(112, 84));
             const QImage thumbnail = reader.read();
-            if (!thumbnail.isNull())
+            if (!thumbnail.isNull()) {
                 item->setIcon(QPixmap::fromImage(thumbnail));
-            if (!task.inference_use_all_images &&
-                selected.count(path) != 0)
+            }
+            const bool matches_split = split_filter == "all" ||
+                item->data(Qt::UserRole + 1).toString() == split_filter;
+            const bool matches_query = query.isEmpty() ||
+                item->text().contains(query, Qt::CaseInsensitive) ||
+                item->data(Qt::UserRole).toString().contains(query, Qt::CaseInsensitive) ||
+                item->data(Qt::UserRole + 2).toString().contains(query, Qt::CaseInsensitive);
+            const bool visible = matches_split && matches_query;
+            item->setHidden(!visible);
+            if (visible && !task.inference_use_all_images && selected.count(path) != 0) {
                 item->setSelected(true);
+            }
         }
     }
     set_runtime_state(state_, QString::fromStdString(task.runtime.inference_status));
-    if (images_->currentRow() < 0 && images_->count() > 0) {
-        auto* current = images_->selectedItems().isEmpty()
-            ? images_->item(0)
-            : images_->selectedItems().front();
-        images_->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+    if (!images_->currentItem() || images_->currentItem()->isHidden()) {
+        QListWidgetItem* current = images_->selectedItems().isEmpty()
+            ? nullptr : images_->selectedItems().front();
+        for (int index = 0; !current && index < images_->count(); ++index) {
+            if (!images_->item(index)->isHidden()) {
+                current = images_->item(index);
+            }
+        }
+        if (current) {
+            images_->setCurrentItem(current, QItemSelectionModel::NoUpdate);
+        } else {
+            images_->setCurrentRow(-1, QItemSelectionModel::NoUpdate);
+        }
     }
     rebuilding_ = false;
     update_command_presentation();
@@ -2304,53 +2411,82 @@ void InferenceWorkspace::refresh_canvas() {
 }
 
 void InferenceWorkspace::commit_selection_scope() {
-    if (rebuilding_ || !service_ || !images_) return;
-    auto& task = service_->task();
-    const auto selected = images_->selectedItems();
-    task.inference_use_all_images = selected.isEmpty();
+    if (rebuilding_ || !service_ || !images_) {
+        return;
+    }
+    TaskNodeConfig& task = service_->task();
+    const QList<QListWidgetItem*> selected = images_->selectedItems();
+    const bool filtered = sample_split_filter_->currentData().toString() != "all" ||
+        !sample_search_->text().trimmed().isEmpty();
+    task.inference_use_all_images = selected.isEmpty() && !filtered;
     task.inference_images.clear();
-    if (!task.inference_use_all_images)
-        for (auto* item : selected)
+    if (!selected.isEmpty()) {
+        for (QListWidgetItem* item : selected) {
             task.inference_images.push_back(
                 item->data(Qt::UserRole).toString().toStdString());
-    if (changed) changed();
+        }
+    } else if (filtered) {
+        for (int index = 0; index < images_->count(); ++index) {
+            QListWidgetItem* item = images_->item(index);
+            if (!item->isHidden()) {
+                task.inference_images.push_back(
+                    item->data(Qt::UserRole).toString().toStdString());
+            }
+        }
+    }
+    if (changed) {
+        changed();
+    }
 }
 
 void InferenceWorkspace::update_command_presentation() {
-    if (device_type_)
+    if (device_type_) {
         device_type_->setEnabled(!busy_ && device_type_->count() > 0);
-    if (device_)
+    }
+    if (device_) {
         device_->setEnabled(!busy_ && device_->count() > 0);
-    if (weight_type_)
+    }
+    if (weight_type_) {
         weight_type_->setEnabled(!busy_ && weight_type_->count() > 0);
-    if (weight_branch_)
+    }
+    if (weight_branch_) {
         weight_branch_->setEnabled(!busy_ && weight_branch_->count() > 0);
+    }
     const int selected = images_ ? images_->selectedItems().size() : 0;
-    const int total = images_ ? images_->count() : 0;
-    QString command;
+    int total = 0;
+    if (images_) {
+        for (int index = 0; index < images_->count(); ++index) {
+            if (!images_->item(index)->isHidden()) {
+                ++total;
+            }
+        }
+    }
+    const bool filtered = sample_split_filter_->currentData().toString() != "all" ||
+        !sample_search_->text().trimmed().isEmpty();
     QString scope;
     QString summary;
     if (total == 0) {
-        command = tr("Infer all images");
-        scope = tr("all Task images");
-        summary = tr("No Task images");
+        summary = filtered ? tr("No matches") : tr("No Task images");
     } else if (selected == 0) {
-        scope = total == 1 ? tr("all 1 image") : tr("all %1 images").arg(total);
-        command = tr("Infer %1").arg(scope);
-        summary = total == 1 ? tr("All 1 image") : tr("All %1 images").arg(total);
+        scope = filtered ? tr("all %1 matching images").arg(total)
+                         : tr("all %1 images").arg(total);
+        summary = filtered ? tr("%1 matching").arg(total)
+                           : tr("All %1 images").arg(total);
     } else if (selected == 1) {
         scope = tr("the selected image");
-        command = tr("Infer 1 image");
         summary = tr("1 image selected");
     } else {
         scope = tr("%1 selected images").arg(selected);
-        command = tr("Infer %1 selected").arg(selected);
         summary = tr("%1 selected").arg(selected);
     }
-    if (scope_summary_) scope_summary_->setText(summary);
-    if (!start_) return;
-    start_->setText(command);
-    start_->setAccessibleName(command);
+    if (scope_summary_) {
+        scope_summary_->setText(summary);
+    }
+    if (!start_) {
+        return;
+    }
+    start_->setText(tr("Infer"));
+    start_->setAccessibleName(tr("Infer"));
 
     const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
     const auto* compute = selected_device();
@@ -2358,25 +2494,29 @@ void InferenceWorkspace::update_command_presentation() {
     const bool available = compute && weight && QFileInfo::exists(QString::fromStdString(weight->path)) &&
         jocelin::model::weight_supports_device(*weight, compute->device.type) &&
         jocelin::runtime::runtime_is_available(weight->format, jocelin::runtime::available_runtime_capabilities());
-    if (total == 0)
-        start_->setToolTip(tr("Add Task images before starting inference."));
-    else if (!model)
+    if (total == 0) {
+        start_->setToolTip(filtered ? tr("No images match the current filters.")
+                                    : tr("Add Task images before starting inference."));
+    } else if (!model) {
         start_->setToolTip(tr("Select a Task model before starting inference."));
-    else if (!compute)
+    } else if (!compute) {
         start_->setToolTip(tr("Select an available CPU or GPU device."));
-    else if (!available)
+    } else if (!available) {
         start_->setToolTip(tr("The selected model has no weight compatible with this device and the installed inference runtimes."));
-    else
+    } else {
         start_->setToolTip(
             tr("Run inference for %1 with %2 on %3.")
                 .arg(scope,
                      weight_type_label(weight->format),
                      QString::fromStdString(compute->display_name)));
+    }
     start_->setEnabled(!busy_ && total > 0 && model && available);
 }
 
 void InferenceWorkspace::request_start() {
-    if (busy_ || !images_ || images_->count() == 0 || !model_browser_) return;
+    if (busy_ || !images_ || !start_ || !start_->isEnabled() || !model_browser_) {
+        return;
+    }
     const QString model_id = model_browser_->checked_model_id();
     const auto* compute = selected_device();
     const auto* weight = selected_weight();
@@ -2400,6 +2540,8 @@ void InferenceWorkspace::set_busy(bool busy) {
     update_command_presentation();
     model_browser_->setEnabled(!busy);
     images_->setEnabled(!busy);
+    sample_split_filter_->setEnabled(!busy);
+    sample_search_->setEnabled(!busy);
     device_type_->setEnabled(!busy_ && device_type_->count() > 0);
     device_->setEnabled(!busy_ && device_->count() > 0);
     weight_type_->setEnabled(!busy_ && weight_type_->count() > 0);

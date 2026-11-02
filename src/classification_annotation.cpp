@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -89,7 +90,7 @@ void ClassificationCanvas::update_view() {
         available, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
-ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) : QWidget(parent) {
+ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, QTabWidget* inspector) : QWidget(parent) {
     setObjectName("classificationAnnotationWorkspace");
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -117,7 +118,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) 
     auto* toggle_images = make_panel_toggle(
         context_bar, tr("Images"), "classificationToggleImagesButton");
     auto* toggle_classes = make_panel_toggle(
-        context_bar, tr("Classes"), "classificationToggleClassesButton");
+        context_bar, tr("Inspector"), "classificationToggleClassesButton");
     context_layout->addWidget(title);
     context_layout->addSpacing(10);
     context_layout->addWidget(toggle_images);
@@ -195,7 +196,6 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) 
     auto* classes_panel = new QFrame(splitter);
     classes_panel->setObjectName("classificationClassesPanel");
     classes_panel->setMinimumWidth(0);
-    classes_panel->setMaximumWidth(300);
     auto* classes_layout = new QVBoxLayout(classes_panel);
     classes_layout->setContentsMargins(10, 10, 10, 10);
     auto* classes_title = new QLabel(tr("CLASSES"), classes_panel);
@@ -221,14 +221,29 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) 
     classes_layout->addWidget(add_class);
     classes_layout->addWidget(assign_);
 
+    QTabWidget* tabs = inspector ? inspector : new QTabWidget(splitter);
+    tabs->setObjectName("classificationAnnotationInspector");
+    tabs->setMinimumWidth(0);
+    tabs->addTab(classes_panel, tr("Classes"));
+    QWidget* results_panel = new QWidget(tabs);
+    QVBoxLayout* results_layout = new QVBoxLayout(results_panel);
+    results_layout->setContentsMargins(8, 8, 8, 8);
+    result_details_ = new QLabel(tr("No inference result for this image."), results_panel);
+    result_details_->setObjectName("classificationAnnotationResultDetails");
+    result_details_->setWordWrap(true);
+    result_details_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    results_layout->addWidget(result_details_);
+    results_layout->addStretch();
+    tabs->addTab(results_panel, tr("Results"));
+
     splitter->addWidget(images_panel);
     splitter->addWidget(preview_panel);
-    splitter->addWidget(classes_panel);
+    splitter->addWidget(tabs);
     splitter->setCollapsible(0, true);
     splitter->setCollapsible(1, false);
     splitter->setCollapsible(2, true);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({240, 700, 230});
+    splitter->setSizes({240, 700, 360});
     root->addWidget(splitter, 1);
     connect(toggle_images, &QToolButton::toggled, this, [splitter](bool shown) {
         auto sizes = splitter->sizes();
@@ -237,7 +252,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent) 
     });
     connect(toggle_classes, &QToolButton::toggled, this, [splitter](bool shown) {
         auto sizes = splitter->sizes();
-        sizes[2] = shown ? 250 : 0;
+        sizes[2] = shown ? 360 : 0;
         splitter->setSizes(sizes);
     });
 
@@ -392,7 +407,9 @@ void ClassificationAnnotationWidget::set_view_mode(int mode) {
 }
 
 void ClassificationAnnotationWidget::update_review_state() {
-    if (!review_state_) return;
+    if (!review_state_) {
+        return;
+    }
     const int label = class_labels_.value(current_row_, -1);
     const QString ground_truth = label >= 0 && label < class_names_.size()
         ? class_names_[label] : tr("Unassigned");
@@ -400,6 +417,14 @@ void ClassificationAnnotationWidget::update_review_state() {
     const QString prediction = predicted_index >= 0 && predicted_index < prediction_class_names_.size()
         ? prediction_class_names_[predicted_index]
         : predicted_class_ > 0 ? tr("Class %1").arg(predicted_class_) : tr("Unavailable");
+
+    if (result_details_) {
+        result_details_->setText(has_prediction_
+            ? tr("Prediction: %1\nConfidence: %2%")
+                  .arg(predicted_class_ == -1 ? tr("Unknown") : prediction)
+                  .arg(confidence_ * 100.0, 0, 'f', 1)
+            : tr("No inference result for this image."));
+    }
 
     if (view_mode_ == 0) {
         review_state_->setText(tr("Ground truth: %1").arg(ground_truth));

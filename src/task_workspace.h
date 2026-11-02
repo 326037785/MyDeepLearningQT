@@ -11,9 +11,9 @@
 #include <memory>
 
 class QLabel;
-class QComboBox;
 class QPushButton;
 class QStackedWidget;
+class QTabWidget;
 
 namespace studio {
 
@@ -60,6 +60,7 @@ public:
     std::function<void(int node_id)> import_model_requested;
     std::function<void(int node_id, const QString&)> export_model_requested;
     std::function<void(int node_id, const QStringList&)> delete_models_requested;
+    std::function<void(int node_id, const ModelWeightSelection&)> delete_model_weights_requested;
     std::function<void(int node_id, const QString&, const QString&)> delete_model_weight_requested;
     std::function<void(int node_id)> clear_models_requested;
     std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
@@ -86,7 +87,10 @@ private:
     InferenceWorkspace* inference_ = nullptr;
     ResultsWorkspace* results_ = nullptr;
     ProjectModelBrowser* annotation_models_ = nullptr;
-    QComboBox* annotation_weight_branch_ = nullptr;
+    QWidget* annotation_models_tab_ = nullptr;
+    QLabel* annotation_selection_ = nullptr;
+    QTabWidget* segmentation_inspector_ = nullptr;
+    QTabWidget* classification_inspector_ = nullptr;
     std::array<QPushButton*, 6> step_buttons_{};
     Step active_step_ = Step::Data;
     bool runtime_busy_ = false;

@@ -29,6 +29,7 @@ class QPushButton;
 class QResizeEvent;
 class QSlider;
 class QSplitter;
+class QTabWidget;
 class QToolButton;
 class QUndoStack;
 class QPainter;
@@ -150,7 +151,7 @@ private:
 
 class SegmentationAnnotationWidget final : public QWidget {
 public:
-    explicit SegmentationAnnotationWidget(QWidget* parent = nullptr);
+    explicit SegmentationAnnotationWidget(QWidget* parent = nullptr, QTabWidget* inspector = nullptr);
 
     void set_task_dataset(const QString& directory,
                           const std::vector<TaskSampleBinding>& samples,
@@ -226,6 +227,7 @@ private:
     QLabel* quality_ = nullptr;
     QLabel* class_identity_ = nullptr;
     QLabel* class_empty_hint_ = nullptr;
+    QLabel* result_details_ = nullptr;
     QLabel* brush_size_caption_ = nullptr;
     QLabel* layer_caption_ = nullptr;
     QLabel* opacity_caption_ = nullptr;

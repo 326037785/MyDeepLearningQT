@@ -14,6 +14,7 @@ class QLabel;
 class QListWidget;
 class QPushButton;
 class QResizeEvent;
+class QTabWidget;
 
 namespace studio {
 
@@ -37,7 +38,7 @@ private:
 
 class ClassificationAnnotationWidget final : public QWidget {
 public:
-    explicit ClassificationAnnotationWidget(QWidget* parent = nullptr);
+    explicit ClassificationAnnotationWidget(QWidget* parent = nullptr, QTabWidget* inspector = nullptr);
 
     void set_dataset(const std::vector<TaskSampleBinding>& samples,
                      const QStringList& class_names,
@@ -85,6 +86,7 @@ private:
     QLabel* context_ = nullptr;
     ClassificationCanvas* preview_ = nullptr;
     QLabel* review_state_ = nullptr;
+    QLabel* result_details_ = nullptr;
     QLabel* images_title_ = nullptr;
     QLabel* empty_hint_ = nullptr;
     QPushButton* assign_ = nullptr;

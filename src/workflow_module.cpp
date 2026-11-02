@@ -218,7 +218,6 @@ bool arrange_selected_nodes(WorkflowScene* scene, const QString& command, QStrin
         const qreal interval = (nodes.back()->y() - nodes.front()->y()) / (nodes.size() - 1);
         for (int index = 1; index + 1 < nodes.size(); ++index) nodes[index]->setY(nodes.front()->y() + interval * index);
     }
-    scene->node_move_completed();
     return true;
 }
 
@@ -249,10 +248,6 @@ WorkflowModule::WorkflowModule(ProjectManager& project, MainWindow& shell, Activ
     scene_->model_changed = [this] { markWorkflowChanged(); };
     scene_->before_nodes_removed = [this](const std::vector<int>& nodes) { return before_nodes_removed(nodes); };
     scene_->nodes_removed = [this] { nodes_removed(); };
-    scene_->position_changed = [this] {
-        project_.mark_active_dirty();
-        refreshProjectUi();
-    };
     scene_->validation_refresh_requested = [this] { refreshValidation(); };
     scene_->node_activated = [this](int node_id) { openNodeWorkspace(node_id); };
     scene_->node_action_requested = [this](int node_id, const QString& action) {

@@ -121,12 +121,12 @@ NodeItem::NodeItem(WorkflowGraph* graph, int node_id) : graph_(graph), node_id_(
     const auto& outputs = WorkflowGraph::output_ports(node_value.kind);
     for (size_t i = 0; i < inputs.size(); ++i) {
         auto* item = new PortItem(node_id_, i, inputs[i], this);
-        item->setPos(0, 47 + static_cast<qreal>(i) * 22);
+        item->setPos(0, 68 + static_cast<qreal>(i) * 22);
         input_ports_.push_back(item);
     }
     for (size_t i = 0; i < outputs.size(); ++i) {
         auto* item = new PortItem(node_id_, i, outputs[i], this);
-        item->setPos(Width, 47 + static_cast<qreal>(i) * 22);
+        item->setPos(Width, 68 + static_cast<qreal>(i) * 22);
         output_ports_.push_back(item);
     }
 }
@@ -135,7 +135,7 @@ qreal NodeItem::height() const {
     const auto& node_value = graph_->node(node_id_);
     const size_t rows = std::max<size_t>(1, std::max(
         WorkflowGraph::input_ports(node_value.kind).size(), WorkflowGraph::output_ports(node_value.kind).size()));
-    return 32.0 + static_cast<qreal>(rows) * 22.0 + 16.0;
+    return 32.0 + static_cast<qreal>(rows) * 22.0 + 50.0;
 }
 
 QRectF NodeItem::boundingRect() const { return QRectF(-10, -10, Width + 20, height() + 24); }
@@ -226,13 +226,13 @@ void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget
     painter->setPen(QColor("#587075"));
     const QString compact_summary = QFontMetrics(painter->font()).elidedText(
         summary(), Qt::ElideRight, static_cast<int>(Width - 42));
-    painter->drawText(QRectF(14, 37, Width - 42, 22), Qt::AlignVCenter, compact_summary);
+    painter->drawText(QRectF(14, 58, Width - 42, 22), Qt::AlignVCenter, compact_summary);
     QColor state_color("#0EA67A");
     if (!issues_.empty() || node_value.status == NodeStatus::Running) state_color = QColor("#D09232");
     if (node_value.status == NodeStatus::Error) state_color = QColor("#C63737");
     painter->setPen(Qt::NoPen);
     painter->setBrush(state_color);
-    painter->drawEllipse(QRectF(Width - 20, 44, 8, 8));
+    painter->drawEllipse(QRectF(Width - 20, 64, 8, 8));
 }
 
 PortItem* NodeItem::port(PortDirection direction, size_t index) const {
@@ -285,7 +285,6 @@ void NodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                                   std::round(pos().y() / grid) * grid);
             if (snapped != pos()) setPos(snapped);
         }
-        static_cast<WorkflowScene*>(scene())->node_move_completed();
     }
     drag_moved_ = false;
 }
@@ -534,10 +533,6 @@ void WorkflowScene::node_moved(int node_id, const QPointF& position) {
     update_connections_for_node(node_id);
     const auto item = node_items_.find(node_id);
     if (item != node_items_.end()) setSceneRect(sceneRect().united(item->second->sceneBoundingRect().adjusted(-400, -300, 400, 300)));
-}
-
-void WorkflowScene::node_move_completed() {
-    if (position_changed) position_changed();
 }
 
 void WorkflowScene::activate_node(int node_id) { if (node_activated) node_activated(node_id); }

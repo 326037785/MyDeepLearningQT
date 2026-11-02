@@ -312,6 +312,11 @@ QWidget* NodeWorkspace::task_page() {
     task_workspace_->delete_models_requested = [this](int node_id, const QStringList& model_ids) {
         if (delete_models_requested) delete_models_requested(node_id, model_ids);
     };
+    task_workspace_->delete_model_weights_requested = [this](int node_id, const ModelWeightSelection& weights) {
+        if (delete_model_weights_requested) {
+            delete_model_weights_requested(node_id, weights);
+        }
+    };
     task_workspace_->delete_model_weight_requested = [this](int node_id, const QString& model_id, const QString& weight_id) {
         if (delete_model_weight_requested) {
             delete_model_weight_requested(node_id, model_id, weight_id);

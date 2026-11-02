@@ -28,12 +28,12 @@ TaskNodeConfig task_config_for(const std::string& task) {
     config.model_index = model->index;
     config.model_scale = model->scale;
     config.device = {jocelin::config::DeviceType::Cpu, -1, "cpu"};
-    config.training.batch_size = 8;
+    config.training.batch_size = 4;
     config.training.epochs = 100;
     config.training.learning_rate = 0.001f;
     config.training.weight_decay = 0.0001f;
-    config.training.image_width = 512;
-    config.training.image_height = 512;
+    config.training.image_width = 256;
+    config.training.image_height = 256;
     config.training.workers = 4;
     config.training.optimizer = "adam";
     config.training.scheduler = "cosine";

@@ -372,11 +372,16 @@ std::vector<MissingModelAssets> ProjectManager::open_project(const QString& proj
     return missing_assets;
 }
 
-void ProjectManager::remove_models(int node_id, const QStringList& model_ids, const QString& weight_id) {
+void ProjectManager::remove_models(int node_id, const QStringList& model_ids, const QString& weight_id,
+                                   const ModelWeightSelection& weights) {
     auto& graph = active_workflow().document.graph;
     TaskWorkspaceService service(graph, node_id,
         has_storage() ? QFileInfo(node_models_directory(node_id)).absolutePath() : QString{});
-    if (!weight_id.isEmpty()) {
+    if (!weights.empty()) {
+        for (const auto& [model_id, selected_weight_id] : weights) {
+            service.remove_model_weight(model_id, selected_weight_id);
+        }
+    } else if (!weight_id.isEmpty()) {
         if (model_ids.size() != 1) {
             throw std::runtime_error("weight deletion requires exactly one model");
         }

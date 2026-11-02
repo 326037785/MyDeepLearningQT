@@ -21,10 +21,12 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QPointer>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTabBar>
 #include <QTemporaryDir>
@@ -117,6 +119,8 @@ void module_command_boundaries(studio::MainWindow& window, const QString& projec
     graph->connect(source, 0, task, 0);
     scene->rebuild();
     scene->model_changed();
+    require(window.windowTitle().endsWith(" *") && tabs->tabText(1).endsWith(" *"),
+            "topology change did not mark the workflow as unsaved");
     require(run->isEnabled(), "valid workflow cannot open its task");
     require(!remove->isEnabled(), "delete is available without a selection");
     for (auto* item : scene->items()) {
@@ -145,6 +149,56 @@ void module_command_boundaries(studio::MainWindow& window, const QString& projec
     saved.open_project(project_file);
     require(saved.workflows().size() == 2 && saved.workflows()[1].document.graph.nodes().size() == 2,
             "saved project lost the workflow fixture");
+
+    studio::NodeItem* task_item = nullptr;
+    for (QGraphicsItem* item : scene->items()) {
+        if (item->data(0).toInt() == task) {
+            task_item = dynamic_cast<studio::NodeItem*>(item);
+            if (task_item) {
+                break;
+            }
+        }
+    }
+    require(task_item, "task node is missing from the canvas");
+    view->ensureVisible(task_item);
+    QApplication::processEvents();
+    const QPointF original_position = task_item->pos();
+    const std::vector<studio::Connection> original_connections = graph->connections();
+    graph->set_status(source, studio::NodeStatus::Success);
+    graph->set_status(task, studio::NodeStatus::Error);
+    const QPoint start = view->mapFromScene(task_item->mapToScene(QPointF(70, 16)));
+    const QPoint end = start + QPoint(60, 45);
+    QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QMouseEvent drag(QEvent::MouseMove, QPointF(end), QPointF(view->viewport()->mapToGlobal(end)),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(view->viewport(), &drag);
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    require(task_item->pos() != original_position, "dragging the task node did not move it");
+    require(graph->connections() == original_connections &&
+            graph->node(source).status == studio::NodeStatus::Success &&
+            graph->node(task).status == studio::NodeStatus::Error,
+            "moving a node changed its topology or execution status");
+    require(!window.windowTitle().endsWith(" *") && !tabs->tabText(1).endsWith(" *"),
+            "moving a node marked the workflow as unsaved");
+    const QPointF moved_position = task_item->pos();
+    dialogs.start(5);
+    save->trigger();
+    dialogs.stop();
+    require(dialogs_seen == 0, "manual save after moving a node failed");
+    saved.open_project(project_file);
+    require(saved.workflows()[1].document.positions.at(task) == moved_position,
+            "manual save did not persist the moved node position");
+
+    QSpinBox* batch = window.findChild<QSpinBox*>("propertiesTrainingBatchSize");
+    require(batch, "task properties are missing after selecting the node");
+    batch->setValue(batch->value() + 1);
+    require(window.windowTitle().endsWith(" *") && tabs->tabText(1).endsWith(" *"),
+            "changing a task parameter did not mark the workflow as unsaved");
+    dialogs.start(5);
+    save->trigger();
+    dialogs.stop();
+    require(dialogs_seen == 0 && !window.windowTitle().endsWith(" *"),
+            "task parameter change could not be saved");
     const QString title = window.windowTitle();
 
     const auto project_busy = project->busy;

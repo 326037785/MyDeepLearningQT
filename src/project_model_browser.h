@@ -5,6 +5,8 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -50,12 +52,26 @@ public:
         import_->setObjectName("projectModelImportAction");
         export_ = management_menu_->addAction(tr("Export current model…"));
         export_->setObjectName("projectModelExportAction");
-        delete_ = management_menu_->addAction(tr("Delete selected models…"));
+        delete_ = new QAction(tr("Delete checked Weights…"), this);
         delete_->setObjectName("projectModelDeleteAction");
-        delete_weight_menu_ = management_menu_->addMenu(tr("Delete weight…"));
-        delete_weight_menu_->setObjectName("projectModelDeleteWeightMenu");
-        management_menu_->addSeparator();
-        clear_ = management_menu_->addAction(tr("Clear all models…"));
+        delete_->setIcon(IconProvider::icon("trash"));
+        select_all_ = new QCheckBox(tr("Select all"), this);
+        select_all_->setObjectName("projectModelSelectAllCheckBox");
+        select_all_->setToolTip(tr("Select all models, including every Weight branch and empty model row, for deletion"));
+        select_all_->setTristate(true);
+        select_all_->setVisible(false);
+        header->insertWidget(header->count() - 1, select_all_);
+        delete_button_ = new QToolButton(this);
+        delete_button_->setObjectName("projectModelDeleteButton");
+        delete_button_->setDefaultAction(delete_);
+        delete_button_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        delete_button_->setAccessibleName(tr("Delete selected models or weight branches"));
+        header->insertWidget(header->count() - 1, delete_button_);
+        delete_cell_ = management_menu_->addAction(tr("Delete current Weight…"));
+        delete_cell_->setObjectName("projectModelDeleteCellAction");
+        delete_row_ = management_menu_->addAction(tr("Delete entire Model row…"));
+        delete_row_->setObjectName("projectModelDeleteRowAction");
+        clear_ = new QAction(tr("Clear all models…"), this);
         clear_->setObjectName("projectModelClearAction");
 
         table_ = new QTreeWidget(this);
@@ -105,18 +121,58 @@ public:
         detail_layout->addLayout(fields);
         root->addWidget(detail_);
 
-        connect(table_, &QTreeWidget::currentItemChanged, this,
-                [this](QTreeWidgetItem*, QTreeWidgetItem*) {
+        connect(select_all_, &QCheckBox::clicked, this, [this](bool checked) {
+            for (int row = 0; row < table_->topLevelItemCount(); ++row) {
+                QTreeWidgetItem* item = table_->topLevelItem(row);
+                for (int column = 1; column < table_->columnCount(); ++column) {
+                    QWidget* cell = table_->itemWidget(item, column);
+                    QCheckBox* target = cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
+                    if (target && target->isEnabled()) {
+                        target->setChecked(checked);
+                    }
+                }
+            }
+            all_models_selected_ = checked;
             update_detail();
-            if (selection_changed) selection_changed(current_model_id());
+        });
+        connect(table_, &QTreeWidget::itemSelectionChanged, this,
+                [this] { update_detail(); });
+        connect(table_, &QTreeWidget::currentItemChanged, this,
+                [this](QTreeWidgetItem* item, QTreeWidgetItem*) {
+            update_detail();
+            const int column = table_->currentColumn();
+            if (weight_branch_selection_changed && item && column >= 1 && column <= 4) {
+                QComboBox* branch = qobject_cast<QComboBox*>(table_->itemWidget(item, column));
+                weight_branch_selection_changed(current_model_id(), branch
+                    ? branch->currentData().toString()
+                    : item->data(column, Qt::UserRole).toString());
+                return;
+            }
+            if (selection_changed) {
+                selection_changed(current_model_id());
+            }
         });
         connect(table_, &QTreeWidget::itemClicked, this,
-                [this](QTreeWidgetItem*, int column) {
-            if (selection_changed) selection_changed(current_model_id());
-            if (!weight_selection_mode_ || column < 1 || column > 4) return;
-            if (model_check_selection_) set_checked_model_id(current_model_id());
-            if (weight_selection_changed)
+                [this](QTreeWidgetItem* item, int column) {
+            if (weight_branch_selection_changed && item && column >= 1 && column <= 4) {
+                QComboBox* branch = qobject_cast<QComboBox*>(table_->itemWidget(item, column));
+                weight_branch_selection_changed(current_model_id(), branch
+                    ? branch->currentData().toString()
+                    : item->data(column, Qt::UserRole).toString());
+                return;
+            }
+            if (selection_changed) {
+                selection_changed(current_model_id());
+            }
+            if (!weight_selection_mode_ || column < 1 || column > 4) {
+                return;
+            }
+            if (model_check_selection_) {
+                set_checked_model_id(current_model_id());
+            }
+            if (weight_selection_changed) {
                 weight_selection_changed(current_model_id(), weight_format_for_column(column));
+            }
         });
         connect(table_, &QTreeWidget::itemDoubleClicked, this,
                 [this](QTreeWidgetItem*, int) {
@@ -127,25 +183,28 @@ public:
             if (!management_actions_enabled_) {
                 return;
             }
-            if (auto* item = table_->itemAt(position); item && !item->isSelected()) {
-                table_->setCurrentItem(item);
+            const QModelIndex cell = table_->indexAt(position);
+            if (!cell.isValid()) {
+                return;
             }
-            delete_weight_menu_->clear();
-            const auto* model = current_model();
-            if (model) {
-                const QString model_id = QString::fromStdString(model->id);
-                for (const auto& weight : model->weights) {
-                    const QString weight_id = QString::fromStdString(weight.id);
-                    QAction* action = delete_weight_menu_->addAction(
-                        QString::fromStdString(jocelin::config::to_string(weight.format)) + " / " + weight_id);
-                    connect(action, &QAction::triggered, this, [this, model_id, weight_id] {
-                        if (delete_model_weight_requested) {
-                            delete_model_weight_requested(model_id, weight_id);
-                        }
-                    });
-                }
+            QTreeWidgetItem* item = table_->topLevelItem(cell.row());
+            const QString model_id = item->data(0, Qt::UserRole).toString();
+            const auto model = std::find_if(models_.begin(), models_.end(), [&model_id](const ProjectModel& value) {
+                return QString::fromStdString(value.id) == model_id;
+            });
+            const bool deletable = model != models_.end() &&
+                model->training_status != jocelin::model::ModelTrainingStatus::Running;
+            QWidget* content = table_->itemWidget(item, cell.column());
+            QComboBox* branch = qobject_cast<QComboBox*>(content);
+            if (!branch && content) {
+                branch = content->findChild<QComboBox*>("projectModelWeightBranch");
             }
-            update_detail();
+            const QString weight_id = cell.column() > 0
+                ? branch ? branch->currentData().toString() : cell.data(Qt::UserRole).toString() : QString{};
+            delete_cell_->setData(QStringList{model_id, weight_id});
+            delete_cell_->setEnabled(deletable && !weight_id.isEmpty());
+            delete_row_->setData(model_id);
+            delete_row_->setEnabled(deletable);
             management_menu_->exec(table_->viewport()->mapToGlobal(position));
         });
         connect(details_, &QToolButton::toggled, detail_, &QWidget::setVisible);
@@ -157,9 +216,38 @@ public:
                 export_requested(current_model_id());
         });
         connect(delete_, &QAction::triggered, this, [this] {
-            const auto ids = selected_model_ids();
-            if (delete_models_requested && !ids.isEmpty())
-                delete_models_requested(ids);
+            update_detail();
+            if (all_models_selected_) {
+                if (clear_models_requested) {
+                    clear_models_requested();
+                }
+                return;
+            }
+            ModelWeightSelection weights;
+            for (int row = 0; row < table_->topLevelItemCount(); ++row) {
+                QTreeWidgetItem* item = table_->topLevelItem(row);
+                for (int column = 1; column < table_->columnCount(); ++column) {
+                    const QString weight_id = item->data(column, Qt::UserRole + 1).toString();
+                    if (!weight_id.isEmpty()) {
+                        weights.emplace_back(item->data(0, Qt::UserRole).toString(), weight_id);
+                    }
+                }
+            }
+            if (delete_model_weights_requested && !weights.empty()) {
+                delete_model_weights_requested(weights);
+            }
+        });
+        connect(delete_cell_, &QAction::triggered, this, [this] {
+            const QStringList target = delete_cell_->data().toStringList();
+            if (delete_model_weight_requested && target.size() == 2 && !target[1].isEmpty()) {
+                delete_model_weight_requested(target[0], target[1]);
+            }
+        });
+        connect(delete_row_, &QAction::triggered, this, [this] {
+            const QString model_id = delete_row_->data().toString();
+            if (delete_models_requested && !model_id.isEmpty()) {
+                delete_models_requested({model_id});
+            }
         });
         connect(clear_, &QAction::triggered, this, [this] {
             if (clear_models_requested) clear_models_requested();
@@ -184,6 +272,7 @@ public:
     void set_models(const std::vector<ProjectModel>& models) {
         const QString selected = current_model_id();
         const QString checked = checked_model_id();
+        all_models_selected_ = false;
         models_ = models;
         QSignalBlocker blocker(table_);
         table_->clear();
@@ -227,10 +316,15 @@ public:
     }
 
     void set_current_model_id(const QString& id) {
+        if (current_model_id() == id) {
+            return;
+        }
         for (int row = 0; row < table_->topLevelItemCount(); ++row) {
             auto* item = table_->topLevelItem(row);
             if (item->data(0, Qt::UserRole).toString() == id) {
+                const QSignalBlocker blocker(table_);
                 table_->setCurrentItem(item);
+                update_detail();
                 return;
             }
         }
@@ -248,7 +342,6 @@ public:
             const QString id = item->data(0, Qt::UserRole).toString();
             if (!id.isEmpty() && !ids.contains(id)) ids.push_back(id);
         }
-        if (ids.isEmpty() && !current_model_id().isEmpty()) ids.push_back(current_model_id());
         return ids;
     }
 
@@ -302,6 +395,8 @@ public:
     void set_management_multi_selection(bool enabled) {
         table_->setSelectionMode(
             enabled ? QAbstractItemView::ExtendedSelection : QAbstractItemView::SingleSelection);
+        select_all_->setVisible(enabled && management_actions_enabled_);
+        update_detail();
     }
 
     void set_model_check_eligible(const QString& id, bool eligible) {
@@ -323,6 +418,9 @@ public:
 
     void set_management_actions_enabled(bool enabled) {
         management_actions_enabled_ = enabled;
+        delete_button_->setVisible(enabled);
+        select_all_->setVisible(enabled && table_->selectionMode() == QAbstractItemView::ExtendedSelection);
+        update_detail();
     }
 
     void set_detail_visible(bool visible) {
@@ -335,28 +433,48 @@ public:
         weight_selection_mode_ = enabled;
         table_->setSelectionBehavior(
             enabled ? QAbstractItemView::SelectItems : QAbstractItemView::SelectRows);
+        if (weight_branch_selection_changed) {
+            table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        }
     }
 
     void set_current_weight(
         const QString& model_id,
-        jocelin::config::WeightType format)
+        jocelin::config::WeightType format,
+        const QString& weight_id = {})
     {
         const int column = column_for_weight_format(format);
         for (int row = 0; row < table_->topLevelItemCount(); ++row) {
             auto* item = table_->topLevelItem(row);
-            if (item->data(0, Qt::UserRole).toString() != model_id) continue;
+            if (item->data(0, Qt::UserRole).toString() != model_id) {
+                continue;
+            }
+            const QSignalBlocker blocker(table_);
             table_->setCurrentItem(item, column);
-            if (model_check_selection_) set_checked_model_id(model_id);
+            QComboBox* branch = qobject_cast<QComboBox*>(table_->itemWidget(item, column));
+            if (branch && !weight_id.isEmpty()) {
+                const int index = branch->findData(weight_id);
+                if (index >= 0) {
+                    const QSignalBlocker branch_blocker(branch);
+                    branch->setCurrentIndex(index);
+                }
+            }
+            if (model_check_selection_) {
+                set_checked_model_id(model_id);
+            }
+            update_detail();
             return;
         }
     }
 
     std::function<void(const QString&)> selection_changed;
     std::function<void(const QString&, jocelin::config::WeightType)> weight_selection_changed;
+    std::function<void(const QString&, const QString&)> weight_branch_selection_changed;
     std::function<void(const QString&)> checked_model_changed;
     std::function<void()> import_requested;
     std::function<void(const QString&)> export_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const ModelWeightSelection&)> delete_model_weights_requested;
     std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
 
@@ -389,7 +507,7 @@ private:
         return QStringLiteral("—");
     }
 
-    static void set_weight_cell(
+    void set_weight_cell(
         QTreeWidgetItem* item,
         int column,
         const ProjectModel& model,
@@ -397,15 +515,100 @@ private:
     {
         QStringList precisions;
         QStringList branches;
-        for (const auto& weight : model.weights) {
-            if (weight.format != format) continue;
-            const QString precision = precision_label(weight.precision);
-            if (!precisions.contains(precision)) precisions.push_back(precision);
-            branches.push_back(
-                QString::fromStdString(weight.id) + QStringLiteral(" · ") + precision);
+        const std::vector<const jocelin::model::ModelWeight*> weights = jocelin::model::find_weights(model, format);
+        for (const jocelin::model::ModelWeight* weight : weights) {
+            const QString precision = precision_label(weight->precision);
+            if (!precisions.contains(precision)) {
+                precisions.push_back(precision);
+            }
+            branches.push_back(QString::fromStdString(weight->id) + QStringLiteral(" · ") + precision);
         }
         item->setText(column, precisions.isEmpty() ? QStringLiteral("—") : precisions.join(QStringLiteral(" / ")));
-        if (!branches.isEmpty()) item->setToolTip(column, branches.join(QStringLiteral("\n")));
+        if (!branches.isEmpty()) {
+            item->setToolTip(column, branches.join(QStringLiteral("\n")));
+        }
+        if (weights.empty() || (!weight_branch_selection_changed && !management_actions_enabled_)) {
+            return;
+        }
+        item->setData(column, Qt::UserRole, QString::fromStdString(weights.front()->id));
+        QComboBox* branch = nullptr;
+        if (weights.size() == 1) {
+            item->setText(column, precision_label(weights.front()->precision));
+        } else {
+            branch = new QComboBox(table_);
+            branch->setObjectName("projectModelWeightBranch");
+            for (const jocelin::model::ModelWeight* weight : weights) {
+                const bool repeated_precision = std::count_if(weights.begin(), weights.end(),
+                    [weight](const jocelin::model::ModelWeight* other) {
+                        return other->precision == weight->precision;
+                    }) > 1;
+                const QString id = QString::fromStdString(weight->id);
+                branch->addItem(precision_label(weight->precision) +
+                    (repeated_precision ? QStringLiteral(" · ") + id : QString{}), id);
+            }
+            branch->setToolTip(branches.join(QStringLiteral("\n")));
+        }
+        if (management_actions_enabled_) {
+            QWidget* cell = new QWidget(table_);
+            cell->setMinimumWidth(0);
+            cell->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+            QHBoxLayout* cell_layout = new QHBoxLayout(cell);
+            cell_layout->setContentsMargins(0, 0, 0, 0);
+            cell_layout->setSpacing(3);
+            cell_layout->setSizeConstraint(QLayout::SetNoConstraint);
+            QCheckBox* target = new QCheckBox(cell);
+            target->setObjectName("projectModelWeightDeleteCheckBox");
+            target->setToolTip(tr("Select Weight %1 for deletion").arg(QString::fromStdString(weights.front()->id)));
+            target->setEnabled(model.training_status != jocelin::model::ModelTrainingStatus::Running);
+            cell_layout->addWidget(target);
+            if (branch) {
+                branch->setMinimumWidth(0);
+                branch->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                cell_layout->addWidget(branch, 1);
+            } else {
+                QLabel* label = new QLabel(item->text(column), cell);
+                label->setMinimumWidth(0);
+                label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                label->setAttribute(Qt::WA_TransparentForMouseEvents);
+                cell_layout->addWidget(label, 1);
+            }
+            table_->setItemWidget(item, column, cell);
+            connect(target, &QCheckBox::toggled, this, [this, item, column](bool checked) {
+                all_models_selected_ = false;
+                item->setData(column, Qt::UserRole + 1,
+                    checked ? item->data(column, Qt::UserRole).toString() : QString{});
+                update_detail();
+            });
+            cell->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(cell, &QWidget::customContextMenuRequested, this, [this, cell](const QPoint& position) {
+                table_->viewport()->customContextMenuRequested(cell->mapTo(table_->viewport(), position));
+            });
+        } else if (branch) {
+            table_->setItemWidget(item, column, branch);
+        }
+        if (!branch) {
+            return;
+        }
+        if (management_actions_enabled_) {
+            branch->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(branch, &QWidget::customContextMenuRequested, this, [this, branch](const QPoint& position) {
+                table_->viewport()->customContextMenuRequested(branch->mapTo(table_->viewport(), position));
+            });
+        }
+        const QString model_id = QString::fromStdString(model.id);
+        connect(branch, qOverload<int>(&QComboBox::activated), this,
+            [this, item, column, branch, model_id](int index) {
+                const QString weight_id = branch->itemData(index).toString();
+                {
+                    const QSignalBlocker blocker(table_);
+                    table_->setCurrentItem(item, column);
+                    item->setData(column, Qt::UserRole, weight_id);
+                }
+                update_detail();
+                if (weight_branch_selection_changed) {
+                    weight_branch_selection_changed(model_id, weight_id);
+                }
+            });
     }
 
     void add_field(QGridLayout* layout, int row, const QString& name, QLabel*& value) {
@@ -422,12 +625,53 @@ private:
 
     void update_detail() {
         const auto* model = current_model();
+        int selected_count = 0;
+        for (int row = 0; row < table_->topLevelItemCount(); ++row) {
+            QTreeWidgetItem* item = table_->topLevelItem(row);
+            for (int column = 1; column < table_->columnCount(); ++column) {
+                QWidget* cell = table_->itemWidget(item, column);
+                QCheckBox* target = cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
+                if (!target) {
+                    continue;
+                }
+                QComboBox* branch = cell->findChild<QComboBox*>("projectModelWeightBranch");
+                const QString current = branch ? branch->currentData().toString() : item->data(column, Qt::UserRole).toString();
+                target->setToolTip(tr("Select Weight %1 for deletion").arg(current));
+                item->setData(column, Qt::UserRole, current);
+                const QString selected = item->data(column, Qt::UserRole + 1).toString();
+                if (!selected.isEmpty() && (selected != current || !target->isEnabled())) {
+                    all_models_selected_ = false;
+                    item->setData(column, Qt::UserRole + 1, QString{});
+                    const QSignalBlocker blocker(target);
+                    target->setChecked(false);
+                }
+                if (target->isEnabled() && !current.isEmpty()) {
+                    if (!item->data(column, Qt::UserRole + 1).toString().isEmpty()) {
+                        ++selected_count;
+                    }
+                }
+            }
+        }
+        const QSignalBlocker select_all_blocker(select_all_);
+        const bool can_clear_models = !models_.empty() && std::none_of(models_.begin(), models_.end(),
+            [](const ProjectModel& value) {
+                return value.training_status == jocelin::model::ModelTrainingStatus::Running;
+            });
+        if (!can_clear_models) {
+            all_models_selected_ = false;
+        }
+        select_all_->setEnabled(can_clear_models);
+        select_all_->setCheckState(all_models_selected_ ? Qt::Checked
+            : selected_count == 0 ? Qt::Unchecked : Qt::PartiallyChecked);
         export_->setEnabled(model != nullptr);
-        delete_->setEnabled(model != nullptr);
-        delete_weight_menu_->setEnabled(model && !model->weights.empty());
+        delete_->setEnabled(management_actions_enabled_ && (all_models_selected_ || selected_count > 0));
+        delete_->setText(all_models_selected_ ? tr("Clear all models…") : tr("Delete checked Weights…"));
+        delete_->setToolTip(all_models_selected_ ? tr("Clear all models…")
+            : tr("Delete %1 checked Weight branch(es)").arg(selected_count));
         clear_->setEnabled(!models_.empty());
         if (!model) {
             model_name_->setText(tr("No model selected"));
+            weights_->setToolTip({});
             for (auto* label : {task_, network_, capacity_, input_, classes_,
                                 metric_, created_, weights_})
                 label->setText(QStringLiteral("—"));
@@ -465,14 +709,18 @@ private:
     QLabel* created_ = nullptr;
     QLabel* weights_ = nullptr;
     QToolButton* details_ = nullptr;
+    QToolButton* delete_button_ = nullptr;
+    QCheckBox* select_all_ = nullptr;
     QMenu* management_menu_ = nullptr;
-    QMenu* delete_weight_menu_ = nullptr;
     QAction* import_ = nullptr;
     QAction* export_ = nullptr;
     QAction* delete_ = nullptr;
+    QAction* delete_cell_ = nullptr;
+    QAction* delete_row_ = nullptr;
     QAction* clear_ = nullptr;
     std::vector<ProjectModel> models_;
     bool model_check_selection_ = false;
+    bool all_models_selected_ = false;
     bool weight_selection_mode_ = false;
     bool management_actions_enabled_ = true;
 };

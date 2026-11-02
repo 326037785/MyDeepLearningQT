@@ -118,7 +118,6 @@ public:
     // Called before mutating topology, while all affected edges still exist.
     std::function<bool(const std::vector<int>&)> before_nodes_removed;
     std::function<void()> nodes_removed;
-    std::function<void()> position_changed;
     std::function<void()> validation_refresh_requested;
     std::function<void(int node_id)> node_activated;
     std::function<void(int node_id, const QString&)> node_action_requested;
@@ -128,7 +127,6 @@ public:
     void update_connection_drag(const QPointF& scene_position);
     void finish_connection_drag(PortItem* port, const QPointF& scene_position);
     void node_moved(int node_id, const QPointF& position);
-    void node_move_completed();
     void activate_node(int node_id);
     void request_node_action(int node_id, const QString& action);
 

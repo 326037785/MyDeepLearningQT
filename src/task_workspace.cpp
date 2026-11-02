@@ -8,7 +8,6 @@
 #include "task_module_catalog.h"
 #include "ui_metrics.h"
 
-#include <QComboBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -17,6 +16,7 @@
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -126,6 +126,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     training_->delete_models_requested = [this](const QStringList& model_ids) {
         if (delete_models_requested) delete_models_requested(node_id_, model_ids);
     };
+    training_->delete_model_weights_requested = [this](const ModelWeightSelection& weights) {
+        if (delete_model_weights_requested) {
+            delete_model_weights_requested(node_id_, weights);
+        }
+    };
     training_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
         if (delete_model_weight_requested) {
             delete_model_weight_requested(node_id_, model_id, weight_id);
@@ -142,6 +147,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     };
     inference_->delete_models_requested = [this](const QStringList& model_ids) {
         if (delete_models_requested) delete_models_requested(node_id_, model_ids);
+    };
+    inference_->delete_model_weights_requested = [this](const ModelWeightSelection& weights) {
+        if (delete_model_weights_requested) {
+            delete_model_weights_requested(node_id_, weights);
+        }
     };
     inference_->delete_model_weight_requested = [this](const QString& model_id, const QString& weight_id) {
         if (delete_model_weight_requested) {
@@ -166,30 +176,35 @@ QWidget* TaskWorkspace::build_annotation_page() {
     layout->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
                                ThemeTokens::Space2, ThemeTokens::Space2);
     layout->setSpacing(0);
-    auto* selector = new QWidget(page);
-    auto* selector_layout = new QHBoxLayout(selector);
-    selector_layout->setContentsMargins(0, 0, 0, 0);
-    annotation_models_ = new ProjectModelBrowser(selector);
+    segmentation_inspector_ = new QTabWidget(page);
+    classification_inspector_ = new QTabWidget(page);
+    segmentation_ = new SegmentationAnnotationWidget(page, segmentation_inspector_);
+    classification_ = new ClassificationAnnotationWidget(page, classification_inspector_);
+    annotation_models_tab_ = new QWidget(page);
+    QVBoxLayout* models_layout = new QVBoxLayout(annotation_models_tab_);
+    models_layout->setContentsMargins(8, 8, 8, 8);
+    annotation_models_ = new ProjectModelBrowser(annotation_models_tab_);
     annotation_models_->setObjectName("annotationProjectModelBrowser");
     annotation_models_->set_management_actions_enabled(false);
     annotation_models_->set_detail_visible(false);
-    annotation_models_->setMaximumHeight(140);
     annotation_models_->selection_changed = [this](const QString& model_id) {
-        if (service_) service_->select_inference_model(model_id);
+        if (service_) {
+            service_->select_inference_model(model_id);
+        }
     };
-    annotation_weight_branch_ = new QComboBox(selector);
-    annotation_weight_branch_->setObjectName("annotationWeightBranch");
-    annotation_weight_branch_->setMinimumContentsLength(16);
-    annotation_weight_branch_->setToolTip(tr("Choose this model's inference weight branch"));
-    connect(annotation_weight_branch_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-        if (service_) service_->select_inference_result(service_->selected_model_id(), annotation_weight_branch_->currentData().toString());
-    });
-    selector_layout->addWidget(annotation_models_, 1);
-    selector_layout->addWidget(new QLabel(tr("Weight branch"), selector));
-    selector_layout->addWidget(annotation_weight_branch_);
-    layout->addWidget(selector);
-    segmentation_ = new SegmentationAnnotationWidget(page);
-    classification_ = new ClassificationAnnotationWidget(page);
+    annotation_models_->weight_branch_selection_changed = [this](const QString& model_id, const QString& weight_id) {
+        if (service_) {
+            service_->select_inference_result(model_id, weight_id);
+        }
+    };
+    annotation_models_->set_weight_selection_mode(true);
+    models_layout->addWidget(annotation_models_, 1);
+    annotation_selection_ = new QLabel(tr("No model selected"), annotation_models_tab_);
+    annotation_selection_->setObjectName("annotationModelSelection");
+    annotation_selection_->setWordWrap(true);
+    annotation_selection_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    models_layout->addWidget(annotation_selection_);
+    segmentation_inspector_->insertTab(1, annotation_models_tab_, tr("Models"));
     segmentation_->hide();
     classification_->hide();
     layout->addWidget(segmentation_, 1);
@@ -395,6 +410,15 @@ void TaskWorkspace::refresh_annotation() {
     const auto& task = service_->task();
     const QString directory = QString::fromStdString(service_->source_dataset().directory);
     const bool segmentation = task.task == "sg";
+    QTabWidget* inspector = segmentation ? segmentation_inspector_ : classification_inspector_;
+    QTabWidget* other_inspector = segmentation ? classification_inspector_ : segmentation_inspector_;
+    const int previous_tab = other_inspector->indexOf(annotation_models_tab_);
+    if (previous_tab >= 0) {
+        other_inspector->removeTab(previous_tab);
+    }
+    if (inspector->indexOf(annotation_models_tab_) < 0) {
+        inspector->insertTab(1, annotation_models_tab_, tr("Models"));
+    }
     segmentation_->setVisible(segmentation);
     classification_->setVisible(!segmentation);
     if (segmentation) {
@@ -426,20 +450,32 @@ void TaskWorkspace::refresh_annotation() {
 }
 
 void TaskWorkspace::refresh_inference_result() {
-    const QSignalBlocker blocker(annotation_weight_branch_);
-    annotation_weight_branch_->clear();
+    annotation_selection_->setText(tr("No model selected"));
     if (service_) {
-        annotation_models_->set_current_model_id(service_->selected_model_id());
-        if (const auto* model = service_->find_model(service_->selected_model_id()))
-            for (const auto& weight : model->weights)
-                annotation_weight_branch_->addItem(QString::fromStdString(weight.id), QString::fromStdString(weight.id));
-        annotation_weight_branch_->setCurrentIndex(annotation_weight_branch_->findData(service_->selected_weight_id()));
+        const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
+        const jocelin::model::ModelWeight* weight = model
+            ? jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString()) : nullptr;
+        if (weight) {
+            annotation_selection_->setText(tr("%1 · Weight: %2")
+                .arg(QString::fromStdString(model->name), QString::fromStdString(weight->id)));
+            annotation_models_->set_current_weight(service_->selected_model_id(), weight->format,
+                                                   service_->selected_weight_id());
+        } else if (model) {
+            annotation_models_->set_current_model_id(service_->selected_model_id());
+        }
+        if (model && !weight) {
+            annotation_selection_->setText(tr("%1 · No weight selected").arg(QString::fromStdString(model->name)));
+        }
     }
     const auto* selected = service_ && service_->source_node_id() != 0 ? service_->selected_inference_result() : nullptr;
     QStringList classes;
-    if (service_)
-        if (const auto* model = service_->find_model(service_->selected_model_id()))
-            for (const auto& value : model->classes) classes.push_back(QString::fromStdString(value.name));
+    if (service_) {
+        if (const auto* model = service_->find_model(service_->selected_model_id())) {
+            for (const auto& value : model->classes) {
+                classes.push_back(QString::fromStdString(value.name));
+            }
+        }
+    }
     segmentation_->set_inference_result(selected);
     classification_->set_inference_result(selected, classes);
 }

@@ -48,6 +48,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -1067,7 +1068,7 @@ void MaskCanvas::rebuild_overlay() {
     }
 }
 
-SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QWidget(parent) {
+SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent, QTabWidget* inspector) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(ThemeTokens::Space1);
@@ -1105,7 +1106,7 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
     auto* toggle_samples = make_panel_toggle(
         context_bar, tr("Samples"), "annotationToggleSamplesButton");
     auto* toggle_classes = make_panel_toggle(
-        context_bar, tr("Classes"), "annotationToggleClassesButton");
+        context_bar, tr("Inspector"), "annotationToggleClassesButton");
     toggle_samples_ = toggle_samples;
     toggle_classes_ = toggle_classes;
     context_ = new QLabel(tr("No dataset selected"), context_bar);
@@ -1338,16 +1339,31 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent) : QW
     class_actions->setColumnStretch(2, 1);
     classes_layout->addLayout(class_actions);
 
-    content->addWidget(samples_panel); content->addWidget(viewport_panel); content->addWidget(classes_panel);
+    QTabWidget* tabs = inspector ? inspector : new QTabWidget(content);
+    tabs->setObjectName("segmentationAnnotationInspector");
+    tabs->setMinimumWidth(0);
+    tabs->addTab(classes_panel, tr("Classes"));
+    QWidget* results_panel = new QWidget(tabs);
+    QVBoxLayout* results_layout = new QVBoxLayout(results_panel);
+    results_layout->setContentsMargins(8, 8, 8, 8);
+    result_details_ = new QLabel(tr("No inference result for this image."), results_panel);
+    result_details_->setObjectName("segmentationAnnotationResultDetails");
+    result_details_->setWordWrap(true);
+    result_details_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    results_layout->addWidget(result_details_);
+    results_layout->addStretch();
+    tabs->addTab(results_panel, tr("Results"));
+
+    content->addWidget(samples_panel); content->addWidget(viewport_panel); content->addWidget(tabs);
     content->setCollapsible(0, true); content->setCollapsible(1, false); content->setCollapsible(2, true);
     content->setStretchFactor(0, 0); content->setStretchFactor(1, 1); content->setStretchFactor(2, 0);
-    content->setSizes({210, 740, 230});
+    content->setSizes({210, 740, 360});
     root->addWidget(content, 1);
     connect(toggle_samples, &QToolButton::toggled, this, [this](bool shown) {
         set_side_panel_width(0, shown, 210);
     });
     connect(toggle_classes, &QToolButton::toggled, this, [this](bool shown) {
-        set_side_panel_width(2, shown, 230);
+        set_side_panel_width(2, shown, 360);
     });
     connect(previous, &QToolButton::clicked, this, [this] { if (current_index_ > 0 && confirm_transition()) load_index(current_index_ - 1); });
     connect(next, &QToolButton::clicked, this, [this] { if (current_index_ + 1 < image_files_.size() && confirm_transition()) load_index(current_index_ + 1); });
@@ -1598,18 +1614,14 @@ void SegmentationAnnotationWidget::apply_responsive_layout(bool force) {
     responsive_layout_mode_ = mode;
 
     const bool show_samples = toggle_samples_->isChecked();
-    const bool show_classes = mode == 0;
-    {
-        const QSignalBlocker classes_blocker(toggle_classes_);
-        toggle_classes_->setChecked(show_classes);
-    }
+    const bool show_classes = toggle_classes_->isChecked();
     const int center_width = std::max(
         560, available_width - (show_samples ? 210 : 0) -
-                 (show_classes ? 230 : 0));
+                 (show_classes ? 360 : 0));
     content_splitter_->setSizes({
         show_samples ? 210 : 0,
         center_width,
-        show_classes ? 230 : 0});
+        show_classes ? 360 : 0});
     content_splitter_->setProperty(
         "responsiveMode",
         mode == 0 ? "wide" : mode == 1 ? "narrow" : "compact");
@@ -1714,6 +1726,9 @@ void SegmentationAnnotationWidget::set_inference_result(const InferenceResultSet
 }
 
 void SegmentationAnnotationWidget::refresh_inference_layers() {
+    if (result_details_) {
+        result_details_->setText(tr("No inference result for this image."));
+    }
     if (!canvas_ || current_index_ < 0 || current_index_ >= image_files_.size()) {
         if (canvas_) {
             canvas_->set_prediction_overlay({});
@@ -1730,7 +1745,20 @@ void SegmentationAnnotationWidget::refresh_inference_layers() {
         if (!value || current_index_ >= static_cast<int>(sample_bindings_.size()) ||
             reference.source_sample_id != sample_bindings_[static_cast<size_t>(current_index_)].sample_id ||
             QFileInfo(QString::fromStdString(value->image_path)).absoluteFilePath() !=
-                QFileInfo(image_files_[current_index_]).absoluteFilePath()) continue;
+                QFileInfo(image_files_[current_index_]).absoluteFilePath()) {
+            continue;
+        }
+        if (result_details_) {
+            const QString unavailable = QStringLiteral("—");
+            result_details_->setText(
+                tr("Confidence: %1\nPredicted area: %2 px\nMean IoU: %3\nPrecision: %4\nRecall: %5\nF1: %6")
+                    .arg(value->mean_confidence, 0, 'f', 4)
+                    .arg(value->predicted_area)
+                    .arg(value->metrics.available ? QString::number(value->metrics.mean_iou, 'f', 4) : unavailable)
+                    .arg(value->metrics.available ? QString::number(value->metrics.precision, 'f', 4) : unavailable)
+                    .arg(value->metrics.available ? QString::number(value->metrics.recall, 'f', 4) : unavailable)
+                    .arg(value->metrics.available ? QString::number(value->metrics.f1, 'f', 4) : unavailable));
+        }
         canvas_->set_prediction_overlay(prediction_overlay_from_result(*value));
         if (!value->result_name.empty() && !value->save_dir.empty())
             canvas_->set_heatmap_overlay(QImage(QDir(QString::fromStdString(value->save_dir))

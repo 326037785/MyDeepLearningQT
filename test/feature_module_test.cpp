@@ -1,6 +1,7 @@
 #include "activity_log.h"
 #include "execution_module.h"
 #include "model_actions.h"
+#include "project_model_browser.h"
 #include "node_workspace.h"
 #include "project_manager.h"
 #include "settings_module.h"
@@ -9,8 +10,10 @@
 #include "ui_language.h"
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDir>
 #include <QEventLoop>
@@ -22,6 +25,7 @@
 #include <QImage>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -29,6 +33,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QTreeWidget>
 #include <QWidget>
 #include <iostream>
 #include <stdexcept>
@@ -224,6 +229,46 @@ int main(int argc, char** argv) try {
     const auto added = service.add_model(model);
     project.mark_active_dirty();
     project.save_project();
+    // Explicit Select all includes hidden branches and empty model rows;
+    // checking every displayed branch individually must keep branch-only scope.
+    {
+        studio::ProjectModelBrowser browser;
+        studio::ProjectModel multiple = added;
+        jocelin::model::ModelWeight alternate = multiple.weights.front();
+        alternate.id = "alternate";
+        multiple.weights.push_back(alternate);
+        studio::ProjectModel empty = added;
+        empty.id = "empty_model";
+        empty.weights.clear();
+        browser.set_models({multiple, empty});
+        QCheckBox* select_all = browser.findChild<QCheckBox*>("projectModelSelectAllCheckBox");
+        QAction* remove = browser.findChild<QAction*>("projectModelDeleteAction");
+        int branch_deletions = 0;
+        int model_clears = 0;
+        browser.delete_model_weights_requested = [&](const studio::ModelWeightSelection& weights) {
+            branch_deletions = static_cast<int>(weights.size());
+        };
+        browser.clear_models_requested = [&] { ++model_clears; };
+        for (QCheckBox* target : browser.findChildren<QCheckBox*>("projectModelWeightDeleteCheckBox")) {
+            target->setChecked(true);
+        }
+        remove->trigger();
+        require(branch_deletions == 1 && model_clears == 0,
+                "checking branches escalated into model deletion");
+        browser.set_models({multiple, empty});
+        select_all->click();
+        remove->trigger();
+        require(model_clears == 1 && branch_deletions == 1,
+                "Select all did not clear complete models");
+        browser.set_models({empty});
+        require(select_all->isEnabled(), "empty model rows cannot be selected for deletion");
+        select_all->click();
+        remove->trigger();
+        require(model_clears == 2, "Select all retained empty model rows");
+        browser.set_models({});
+        require(!remove->isEnabled() && !select_all->isEnabled(),
+                "model deletion selection survived an empty list");
+    }
     const auto export_directory = temporary.filePath("Export");
     require(QDir().mkpath(export_directory), "cannot create export destination");
     QTimer export_dialog;
@@ -340,6 +385,64 @@ int main(int argc, char** argv) try {
     inferred.exec();
     require(service.inference_result(stopped_model, "libtorch_fp32"), "Stopped model did not produce inference results");
     training_dialogs.stop();
+    // Delete through the real browser -> ModelActions -> ProjectManager path.
+    // Include an empty model and verify every workspace and persisted owner.
+    studio::ProjectModel empty = added;
+    empty.id.clear();
+    empty.weights.clear();
+    empty.asset_directory = QDir(project.node_models_directory(node)).filePath("empty").toStdString();
+    require(QDir().mkpath(QString::fromStdString(empty.asset_directory)), "cannot create empty model fixture");
+    service.add_model(empty);
+    const int peer = project.active_workflow().document.graph.add_task_node({"sg"});
+    project.active_workflow().document.positions[peer] = {200, 0};
+    studio::ProjectModel peer_model = empty;
+    peer_model.asset_directory = QDir(project.node_models_directory(peer)).filePath("peer").toStdString();
+    require(QDir().mkpath(QString::fromStdString(peer_model.asset_directory)), "cannot create peer model fixture");
+    studio::TaskWorkspaceService peer_service(project.active_workflow().document.graph, peer);
+    peer_service.add_model(peer_model);
+    project.mark_active_dirty();
+    project.save_project();
+    QStringList removed_directories;
+    for (const studio::ProjectModel& value : service.models()) {
+        removed_directories.push_back(QString::fromStdString(value.asset_directory));
+    }
+    models.models_changed = [&] { ++changes; workspace.refresh_models(); };
+    workspace.edit_node(&project.active_workflow().document.graph, node, {});
+    QWidget* browser = workspace.findChild<QWidget*>("trainingProjectModelBrowser");
+    QCheckBox* select_all = browser ? browser->findChild<QCheckBox*>("projectModelSelectAllCheckBox") : nullptr;
+    QAction* remove = browser ? browser->findChild<QAction*>("projectModelDeleteAction") : nullptr;
+    require(select_all && remove && select_all->isEnabled(), "Select all is unavailable in the Task workspace");
+    QTimer deletion_dialogs;
+    QObject::connect(&deletion_dialogs, &QTimer::timeout, [&] {
+        QMessageBox* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (message && message->button(QMessageBox::Yes)) {
+            message->button(QMessageBox::Yes)->click();
+        }
+    });
+    select_all->click();
+    deletion_dialogs.start(5);
+    remove->trigger();
+    deletion_dialogs.stop();
+    require(service.models().empty() && service.task().runtime.results.empty() &&
+            service.task().runtime.training_model_id.empty(), "Select all deletion retained model state");
+    for (QTreeWidget* list : workspace.findChildren<QTreeWidget*>("projectModelBrowserList")) {
+        require(list->topLevelItemCount() == 0, "a workspace retained deleted model rows");
+    }
+    QWidget* detail = browser->findChild<QWidget*>("projectModelDetailCard");
+    for (QLabel* label : detail->findChildren<QLabel*>()) {
+        require(label->toolTip().isEmpty(), "deleted model asset path remained in details");
+    }
+    for (const QString& directory : removed_directories) {
+        require(!QDir(directory).exists(), "deleted model assets remain");
+    }
+    require(!QDir(QFileInfo(project.node_models_directory(node)).absolutePath() + "/inference").exists(),
+            "deleted model inference assets remain");
+    studio::ProjectManager reopened;
+    reopened.open_project(project.project_file());
+    require(studio::TaskWorkspaceService(reopened.active_workflow().document.graph, node).models().empty() &&
+            studio::TaskWorkspaceService(reopened.active_workflow().document.graph, peer).models().size() == 1 &&
+            QDir(QString::fromStdString(peer_model.asset_directory)).exists(),
+            "Select all deletion failed persistence or affected another Node");
     std::cout << "Standalone feature modules passed\n";
     return 0;
 } catch (const std::exception& error) {

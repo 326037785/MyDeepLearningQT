@@ -112,6 +112,7 @@ public:
     std::function<void()> import_model_requested;
     std::function<void(const QString&)> export_model_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const ModelWeightSelection&)> delete_model_weights_requested;
     std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
     std::function<void()> changed;
@@ -180,6 +181,7 @@ public:
     std::function<void()> import_model_requested;
     std::function<void(const QString&)> export_model_requested;
     std::function<void(const QStringList&)> delete_models_requested;
+    std::function<void(const ModelWeightSelection&)> delete_model_weights_requested;
     std::function<void(const QString&, const QString&)> delete_model_weight_requested;
     std::function<void()> clear_models_requested;
     std::function<void()> changed;
@@ -200,6 +202,8 @@ private:
     std::vector<ProjectModel> models_;
     ProjectModelBrowser* model_browser_ = nullptr;
     QListWidget* images_ = nullptr;
+    QComboBox* sample_split_filter_ = nullptr;
+    QLineEdit* sample_search_ = nullptr;
     QStackedWidget* canvas_stack_ = nullptr;
     ImageResultCanvas* segmentation_canvas_ = nullptr;
     ClassificationCanvas* classification_canvas_ = nullptr;
