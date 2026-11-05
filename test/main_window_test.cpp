@@ -344,6 +344,9 @@ int main(int argc, char** argv) try {
         jocelin::model::ModelWeight weight;
         weight.id = id;
         weight.format = format;
+        if (format == jocelin::config::WeightType::Onnx) {
+            weight.normalization.emplace();
+        }
         weight.role = format == jocelin::config::WeightType::LibTorch
             ? jocelin::model::WeightRole::Training
             : jocelin::model::WeightRole::Inference;
@@ -754,6 +757,7 @@ int main(int argc, char** argv) try {
     auto converted_weight = peer_model->weights.front();
     converted_weight.id = "onnx_fp32";
     converted_weight.format = jocelin::config::WeightType::Onnx;
+    converted_weight.normalization.emplace();
     converted_weight.role = jocelin::model::WeightRole::Inference;
     converted_weight.parent_weight_id = "libtorch_fp32";
     converted_weight.path = QDir(independent_asset).filePath("model.onnx").toStdString();

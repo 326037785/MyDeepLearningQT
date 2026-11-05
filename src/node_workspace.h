@@ -55,6 +55,7 @@ public:
     std::function<bool(int, DatasetConfig, int, const TaskDatasetBinding*)> dataset_replace_requested;
     std::function<void(int node_id, const TrainingLaunchRequest&)> training_launch_requested;
     std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
+    std::function<void(int node_id, const QString&, const QString&)> convert_weight_requested;
     std::function<void()> stop_requested;
     std::function<void()> pause_requested;
     std::function<void(const QString&)> run_details_requested;

@@ -885,14 +885,8 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.weight_type = jocelin::config::WeightType::LibTorch;
     backend.device = device;
     backend.augment = config.training.augment;
-    backend.normalize = true;
+    backend.normalize = binding().preprocessing.normalize;
     backend.bgr_to_rgb = true;
-    backend.mean[0] = 0.485f;
-    backend.mean[1] = 0.456f;
-    backend.mean[2] = 0.406f;
-    backend.std[0] = 0.229f;
-    backend.std[1] = 0.224f;
-    backend.std[2] = 0.225f;
     backend.loss_type = jocelin::config::LossType::Auto;
     backend.metric_type = jocelin::config::MetricType::Auto;
 
@@ -983,13 +977,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.require_checkpoint_match = true;
     backend.use_checkpoint_config = true;
     backend.allow_partial_checkpoint_load = false;
-    backend.normalize = true;
-    backend.mean[0] = 0.485f;
-    backend.mean[1] = 0.456f;
-    backend.mean[2] = 0.406f;
-    backend.std[0] = 0.229f;
-    backend.std[1] = 0.224f;
-    backend.std[2] = 0.225f;
+    // Core restores this model's normalization when it loads the selected asset.
     backend.morph_kernel_size = 5;
 
     jocelin::inference::InferenceRequest request;

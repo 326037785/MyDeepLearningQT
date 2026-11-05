@@ -163,9 +163,10 @@ int main(int argc, char** argv) try {
     for (size_t index = 1; index < service.binding().samples.size(); ++index)
         if (!service.binding().samples[index].quality_issues.empty())
             return 12;
+    service.binding().preprocessing.normalize = false;
     const auto request = service.build_training_request(jocelin::config::cpu_device());
     if (request.samples.samples.size() != 9 ||
-        request.config.bucket_capacity != 2 ||
+        request.config.bucket_capacity != 2 || request.config.normalize ||
         request.config.batch_size != task.training.batch_size ||
         std::abs(request.config.augment.probability - 0.8f) > 1e-6f ||
         !request.config.augment.enable.rotate ||

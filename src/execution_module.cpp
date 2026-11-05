@@ -7,6 +7,8 @@
 #include "task_workspace_pages.h"
 #include <checkpoint/checkpoint_catalog.h>
 #include <common/model/model_weight_matcher.h>
+#include <common/exception/pipeline_exception.h>
+#include <infer_network/conversion/onnx/native_export.h>
 #include <runtime/device_service.h>
 #include <runtime/inference_route.h>
 #include <QDateTime>
@@ -18,6 +20,7 @@
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QSettings>
+#include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
 #include <stdexcept>
 
@@ -94,6 +97,9 @@ ExecutionModule::ExecutionModule(ProjectManager& project, NodeWorkspace& workspa
     : QObject(parent), project_(project), workspace_(workspace), dialog_parent_(parent) {
     workspace_.training_launch_requested = [this](int id, const TrainingLaunchRequest& request) { start_training(id, request); };
     workspace_.infer_requested = [this](int id, const InferenceLaunchRequest& request) { start_inference(id, request); };
+    workspace_.convert_weight_requested = [this](int id, const QString& model, const QString& weight) {
+        start_weight_conversion(id, model, weight);
+    };
     workspace_.stop_requested = [this] { stop(); };
     workspace_.pause_requested = [this] { pause(); };
     training_job_.progress = [this](const jocelin::train::TrainingProgress& progress) { training_progress(progress); };
@@ -102,13 +108,16 @@ ExecutionModule::ExecutionModule(ProjectManager& project, NodeWorkspace& workspa
     training_job_.completed = [this](const jocelin::training::TrainingResult& result, const QString& error) { training_completed(result, error); };
     inference_job_.progress = [this](size_t done, size_t total, const QString& image) { inference_progress(done, total, image); };
     inference_job_.completed = [this](const InferenceOutcome& outcome) { inference_completed(outcome); };
+    connect(&conversion_job_, &QFutureWatcher<std::pair<jocelin::model::ModelWeight, QString>>::finished,
+            this, [this] { weight_conversion_completed(); });
 }
 
 WorkflowGraph& ExecutionModule::graph() { return project_.active_workflow().document.graph; }
 bool ExecutionModule::is_running() const {
     // Keep the operation locked through startup and the queued completion callback.
     return active_training_node_id_ != 0 || active_inference_node_id_ != 0 ||
-        training_job_.is_running() || inference_job_.is_running();
+        active_conversion_node_id_ != 0 || training_job_.is_running() ||
+        inference_job_.is_running() || conversion_job_.isRunning();
 }
 void ExecutionModule::start_training(int node_id) {
     TrainingLaunchRequest request;
@@ -375,6 +384,129 @@ void ExecutionModule::inference_completed(const InferenceOutcome& outcome) {
     changed();
 }
 
+void ExecutionModule::start_weight_conversion(
+    int node_id, const QString& model_id, const QString& weight_id)
+{
+    if (is_running()) {
+        return;
+    }
+    bool locked = false;
+    try {
+        if (graph().nodes().count(node_id) == 0 || graph().node(node_id).kind != NodeKind::TaskConfig) {
+            throw std::runtime_error("weight conversion requires a Task node");
+        }
+        if (!project_.has_storage()) {
+            throw std::runtime_error("save the project before converting a weight");
+        }
+        project_.save_project();
+        TaskWorkspaceService service(graph(), node_id);
+        const ProjectModel* model = service.find_model(model_id);
+        const jocelin::model::ModelWeight* source = model
+            ? jocelin::model::find_weight(*model, weight_id.toStdString()) : nullptr;
+        if (!model || !source || source->format != jocelin::config::WeightType::LibTorch ||
+            source->precision != jocelin::model::WeightPrecision::Float32 ||
+            model->training_status == jocelin::model::ModelTrainingStatus::Running ||
+            !QFileInfo(QString::fromStdString(source->path)).isFile()) {
+            throw std::runtime_error("the selected LibTorch weight is unavailable");
+        }
+
+        jocelin::infer_network::conversion::onnx::NativeExportRequest request;
+        request.config.tool_type = model->task;
+        request.config.model_index = model->model_index;
+        request.config.model_scale = model->model_scale;
+        request.config.image_width = model->image_width;
+        request.config.image_height = model->image_height;
+        request.config.num_classes = static_cast<int>(model->classes.size());
+        request.config.require_checkpoint_match = true;
+        if (!jocelin::infer_network::conversion::onnx::supports_native_export(request.config)) {
+            throw std::runtime_error("ONNX conversion is not available for this model");
+        }
+
+        const QString directory = QFileInfo(QString::fromStdString(model->asset_directory)).absoluteFilePath();
+        const QString relative = QDir(project_.node_models_directory(node_id)).relativeFilePath(directory);
+        if (!QDir(directory).exists() || relative == "." || relative == ".." ||
+            relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
+            throw std::runtime_error("model assets must belong to the current Task node");
+        }
+        QString target_id = QStringLiteral("onnx_fp32");
+        int suffix = 2;
+        while (jocelin::model::find_weight(*model, target_id.toStdString()) ||
+               QFileInfo::exists(QDir(directory).filePath(target_id + ".onnx"))) {
+            target_id = QStringLiteral("onnx_fp32_%1").arg(suffix++);
+        }
+        request.checkpoint_path = source->path;
+        request.parent_weight_id = source->id;
+        request.output_weight_id = target_id.toStdString();
+        request.output_path = QDir(directory).filePath(target_id + ".onnx").toStdString();
+        active_conversion_node_id_ = node_id;
+        active_conversion_model_id_ = model_id;
+        active_conversion_output_path_ = QString::fromStdString(request.output_path);
+        editing_changed(false);
+        locked = true;
+        message(tr("Converting weight to ONNX…"));
+        log(tr("Converting %1 to ONNX").arg(QString::fromStdString(model->name)));
+        conversion_job_.setFuture(QtConcurrent::run([request] {
+            std::pair<jocelin::model::ModelWeight, QString> outcome;
+            try {
+                outcome.first = jocelin::infer_network::conversion::onnx::export_task_model(request);
+            } catch (...) {
+                outcome.second = QString::fromStdString(jocelin::exception::message(
+                    std::current_exception(), "Unknown weight conversion error"));
+            }
+            return outcome;
+        }));
+    } catch (const std::exception& error) {
+        active_conversion_node_id_ = 0;
+        active_conversion_model_id_.clear();
+        active_conversion_output_path_.clear();
+        if (locked) {
+            editing_changed(true);
+        }
+        QMessageBox::critical(dialog_parent_, tr("Cannot convert weight"), QString::fromUtf8(error.what()));
+    }
+}
+
+void ExecutionModule::weight_conversion_completed() {
+    const std::pair<jocelin::model::ModelWeight, QString> outcome = conversion_job_.result();
+    QString error = outcome.second;
+    bool registered = false;
+    if (error.isEmpty()) {
+        try {
+            TaskWorkspaceService service(graph(), active_conversion_node_id_);
+            service.task().model_list.add_weight(active_conversion_model_id_.toStdString(), outcome.first);
+            registered = true;
+            project_.mark_active_dirty();
+            project_.save_project();
+        } catch (const std::exception& failure) {
+            error = registered
+                ? tr("The weight was converted but the project could not be saved: %1").arg(QString::fromUtf8(failure.what()))
+                : QString::fromUtf8(failure.what());
+        }
+    }
+    if (outcome.second.isEmpty() && !registered && QFileInfo::exists(active_conversion_output_path_) &&
+        !QFile::remove(active_conversion_output_path_)) {
+        error += tr("\nCould not remove the incomplete asset: %1").arg(active_conversion_output_path_);
+    }
+    active_conversion_node_id_ = 0;
+    active_conversion_model_id_.clear();
+    active_conversion_output_path_.clear();
+    editing_changed(true);
+    workspace_.refresh_models();
+    if (error.isEmpty()) {
+        message(tr("Weight converted to ONNX"), 5000);
+        log(tr("Weight converted to ONNX"));
+    } else {
+        log(tr("Weight conversion failed: %1").arg(error));
+        show_log();
+        runtime_status(tr("Error"), "error");
+        QMessageBox* warning = new QMessageBox(QMessageBox::Warning, tr("Weight conversion"),
+                                               error, QMessageBox::Ok, dialog_parent_);
+        warning->setAttribute(Qt::WA_DeleteOnClose);
+        warning->open();
+    }
+    changed();
+}
+
 void ExecutionModule::start_training(
     int node_id, const TrainingLaunchRequest& launch)
 {
@@ -403,9 +535,11 @@ void ExecutionModule::start_training(
                 throw std::runtime_error(
                     "selected Task model no longer exists");
             if (parent->training_status != jocelin::model::ModelTrainingStatus::Completed &&
-                parent->training_status != jocelin::model::ModelTrainingStatus::Imported)
+                parent->training_status != jocelin::model::ModelTrainingStatus::Imported &&
+                parent->training_status != jocelin::model::ModelTrainingStatus::Stopped) {
                 throw std::runtime_error(
-                    "selected Task model training is not complete");
+                    "selected Task model is not completed, imported or stopped");
+            }
             parent_training_weight = jocelin::model::find_training_weight(*parent);
             if (!parent_training_weight ||
                 !QFileInfo::exists(QString::fromStdString(parent_training_weight->path)))

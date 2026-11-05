@@ -58,6 +58,50 @@ void require_exact_fields(
 
 } // namespace
 
+std::optional<jocelin::model::WeightNormalization> ModelListStorage::normalization_from_json(
+    const QJsonValue& value, jocelin::config::WeightType format) {
+    if (value.isUndefined() && format != jocelin::config::WeightType::Onnx) {
+        return std::nullopt;
+    }
+    const QJsonObject normalization = value.toObject();
+    const QJsonArray mean = normalization.value("mean").toArray();
+    const QJsonArray deviation = normalization.value("std").toArray();
+    if (!value.isObject() || normalization.size() != 3 ||
+        !normalization.value("normalize").isBool() || mean.size() != 3 || deviation.size() != 3) {
+        throw std::runtime_error("model normalization metadata is invalid");
+    }
+    jocelin::model::WeightNormalization settings;
+    settings.normalize = normalization.value("normalize").toBool();
+    for (int channel = 0; channel < 3; ++channel) {
+        if (!mean[channel].isDouble() || !deviation[channel].isDouble()) {
+            throw std::runtime_error("model normalization channel is invalid");
+        }
+        settings.mean[channel] = static_cast<float>(mean[channel].toDouble());
+        settings.std[channel] = static_cast<float>(deviation[channel].toDouble());
+        if (!std::isfinite(settings.mean[channel]) || !std::isfinite(settings.std[channel]) ||
+            (settings.normalize && settings.std[channel] <= 0.0f)) {
+            throw std::runtime_error("model normalization channel is invalid");
+        }
+    }
+    return settings;
+}
+
+QJsonValue ModelListStorage::normalization_to_json(
+    const std::optional<jocelin::model::WeightNormalization>& normalization,
+    jocelin::config::WeightType format) {
+    if (!normalization) {
+        if (format == jocelin::config::WeightType::Onnx) {
+            throw std::runtime_error("ONNX model weight requires normalization metadata");
+        }
+        return QJsonValue(QJsonValue::Undefined);
+    }
+    const jocelin::model::WeightNormalization& settings = *normalization;
+    return QJsonObject{
+        {"normalize", settings.normalize},
+        {"mean", QJsonArray{settings.mean[0], settings.mean[1], settings.mean[2]}},
+        {"std", QJsonArray{settings.std[0], settings.std[1], settings.std[2]}}};
+}
+
 jocelin::model::ModelList ModelListStorage::load(
     const QString& node_directory, const QString& root_directory) {
     QJsonParseError error;
@@ -110,7 +154,8 @@ jocelin::model::ModelList ModelListStorage::load(
             for (const auto weight_value : object.value("weights").toArray()) {
                 if (!weight_value.isObject())
                     throw std::runtime_error("invalid Task model weight entry");
-                const auto weight_object = weight_value.toObject();
+                QJsonObject weight_object = weight_value.toObject();
+                const QJsonValue normalization_value = weight_object.take("normalization");
                 require_exact_fields(
                     weight_object,
                     {"id", "format", "precision", "role", "path",
@@ -144,6 +189,7 @@ jocelin::model::ModelList ModelListStorage::load(
                 weight.input_signature = weight_object.value("input_signature").toString().toStdString();
                 weight.output_signature = weight_object.value("output_signature").toString().toStdString();
                 weight.target_architecture = weight_object.value("target_architecture").toString().toStdString();
+                weight.normalization = normalization_from_json(normalization_value, weight.format);
                 if (!QDateTime::fromString(QString::fromStdString(weight.created_at), Qt::ISODate).isValid() ||
                     weight.onnx_opset < 0) {
                     throw std::runtime_error("Task model weight metadata is invalid");
@@ -226,7 +272,7 @@ QByteArray ModelListStorage::serialize(
                 : weight.supported_device_types;
             for (const auto type : devices)
                 supported_devices.append(QString::fromStdString(jocelin::config::to_string(type)));
-            weights.append(QJsonObject{
+            QJsonObject weight_object{
                 {"id", QString::fromStdString(weight.id)},
                 {"format", QString::fromStdString(jocelin::config::to_string(weight.format))},
                 {"precision", QString::fromStdString(jocelin::model::to_string(weight.precision))},
@@ -241,7 +287,9 @@ QByteArray ModelListStorage::serialize(
                 {"onnx_opset", weight.onnx_opset},
                 {"input_signature", QString::fromStdString(weight.input_signature)},
                 {"output_signature", QString::fromStdString(weight.output_signature)},
-                {"target_architecture", QString::fromStdString(weight.target_architecture)}});
+                {"target_architecture", QString::fromStdString(weight.target_architecture)}};
+            weight_object.insert("normalization", normalization_to_json(weight.normalization, weight.format));
+            weights.append(weight_object);
         }
         model_entries.append(QJsonObject{
             {"id", QString::fromStdString(model.id)},

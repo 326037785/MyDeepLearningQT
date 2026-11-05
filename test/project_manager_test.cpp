@@ -437,6 +437,7 @@ void model_list_ownership_roundtrip(const studio::ProjectModel& prototype) {
             converted.parent_weight_id = added.weights.front().id;
             converted.path = QDir(QString::fromStdString(model.asset_directory)).filePath("model.onnx").toStdString();
             converted.runtime_name = "onnx";
+            converted.normalization.emplace();
             studio::ProjectStorage::write_atomic(QString::fromStdString(converted.path), "derived weight");
             service.task().model_list.add_weight(added.id, converted);
             service.find_model("model_1")->metric = 0.25 + 0.1 * node_id;

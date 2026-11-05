@@ -18,6 +18,7 @@
 #include "task_dataset_binding.h"
 #include "task_inference_filter.h"
 #include "ui_metrics.h"
+#include "weight_conversion_popup.h"
 
 #include <checkpoint/checkpoint_catalog.h>
 #include <common/config/ai_config.h>
@@ -38,6 +39,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QImageReader>
@@ -53,6 +55,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScreen>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -1511,6 +1514,7 @@ void TrainingWorkspace::update_model_compatibility() {
             const auto* training_weight = jocelin::model::find_training_weight(model);
             const bool lifecycle_eligible =
                 model.training_status == jocelin::model::ModelTrainingStatus::Completed ||
+                model.training_status == jocelin::model::ModelTrainingStatus::Stopped ||
                 model.training_status == jocelin::model::ModelTrainingStatus::Imported;
             const bool eligible = lifecycle_eligible && training_weight &&
                 QFileInfo::exists(QString::fromStdString(training_weight->path));
@@ -1940,6 +1944,31 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->set_model_check_selection(true);
     model_browser_->set_management_multi_selection(true);
     model_browser_->set_detail_visible(false);
+    model_browser_->convert_weight_requested = [this](const QString& model_id, const QString& weight_id, QWidget* anchor) {
+        if (!service_ || busy_) {
+            return;
+        }
+        const ProjectModel* model = service_->find_model(model_id);
+        const jocelin::model::ModelWeight* source = model
+            ? jocelin::model::find_weight(*model, weight_id.toStdString()) : nullptr;
+        if (!model || !source) {
+            return;
+        }
+        WeightConversionPopup popup(*model, *source, anchor);
+        popup.adjustSize();
+        const QPoint position = anchor->mapToGlobal(QPoint(0, anchor->height()));
+        QScreen* screen = QGuiApplication::screenAt(position);
+        if (screen) {
+            const QRect bounds = screen->availableGeometry();
+            popup.move(qBound(bounds.left(), position.x(), qMax(bounds.left(), bounds.right() - popup.width() + 1)),
+                       qBound(bounds.top(), position.y(), qMax(bounds.top(), bounds.bottom() - popup.height() + 1)));
+        } else {
+            popup.move(position);
+        }
+        if (popup.exec() == QDialog::Accepted && convert_weight_requested) {
+            convert_weight_requested(model_id, weight_id);
+        }
+    };
     model_browser_->import_requested = [this] {
         if (import_model_requested) import_model_requested();
     };

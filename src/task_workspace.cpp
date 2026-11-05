@@ -165,6 +165,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     inference_->start_requested = [this](const InferenceLaunchRequest& request) {
         if (infer_requested) infer_requested(node_id_, request);
     };
+    inference_->convert_weight_requested = [this](const QString& model_id, const QString& weight_id) {
+        if (convert_weight_requested) {
+            convert_weight_requested(node_id_, model_id, weight_id);
+        }
+    };
     UiMetrics::apply_semantic_metrics(this);
     activate_step(Step::Data);
 }

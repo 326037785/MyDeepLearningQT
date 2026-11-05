@@ -427,8 +427,8 @@
     </message>
     <message>
       <location filename="../../src/project_module.cpp" line="159" />
-      <source>Wait for the current training or inference run to finish before closing.</source>
-      <translation>请等待当前训练或推理任务结束后再关闭。</translation>
+      <source>Wait for the current operation to finish before closing.</source>
+      <translation>请等待当前操作结束后再关闭。</translation>
     </message>
     <message>
       <location filename="../../src/project_module.cpp" line="181" />
@@ -722,5 +722,23 @@ Cancel keeps Project data unchanged; unavailable weights cannot be used for trai
     <message><source>Success</source><translation>成功</translation></message>
     <message><source>Error</source><translation>错误</translation></message>
     <message><source>Not ready</source><translation>未就绪</translation></message>
+  </context>
+  <context>
+    <name>studio::WeightConversionPopup</name>
+    <message><source>Convert weight</source><translation>转换权重</translation></message>
+    <message><source>Convert</source><translation>转换</translation></message>
+    <message><source>Conversion is not available for this model or format.</source><translation>当前模型或格式暂不支持转换。</translation></message>
+  </context>
+  <context>
+    <name>studio::ExecutionModule</name>
+    <message><source>Converting weight to ONNX…</source><translation>正在将权重转换为 ONNX…</translation></message>
+    <message><source>Converting %1 to ONNX</source><translation>正在将 %1 转换为 ONNX</translation></message>
+    <message><source>Cannot convert weight</source><translation>无法转换权重</translation></message>
+    <message><source>The weight was converted but the project could not be saved: %1</source><translation>权重已转换，但无法保存项目：%1</translation></message>
+    <message><source>&#10;Could not remove the incomplete asset: %1</source><translation>&#10;无法删除未完成的资产：%1</translation></message>
+    <message><source>Weight converted to ONNX</source><translation>权重已转换为 ONNX</translation></message>
+    <message><source>Weight conversion failed: %1</source><translation>权重转换失败：%1</translation></message>
+    <message><source>Weight conversion</source><translation>权重转换</translation></message>
+    <message><source>Error</source><translation>错误</translation></message>
   </context>
 </TS>

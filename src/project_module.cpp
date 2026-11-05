@@ -156,7 +156,7 @@ void ProjectModule::close_project() {
 bool ProjectModule::can_close() {
     if (busy && busy()) {
         QMessageBox::information(&shell_, tr("Task running"),
-            tr("Wait for the current training or inference run to finish before closing."));
+            tr("Wait for the current operation to finish before closing."));
         return false;
     }
     return confirmProjectTransition();

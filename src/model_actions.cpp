@@ -1,4 +1,5 @@
 #include "model_actions.h"
+#include "model_list_storage.h"
 #include "json_file_writer.h"
 #include "node_workspace.h"
 #include "classification_annotation_state.h"
@@ -87,6 +88,7 @@ void ModelActions::import_model(int node_id) {
             std::string input_signature;
             std::string output_signature;
             std::string target_architecture;
+            std::optional<jocelin::model::WeightNormalization> normalization;
         };
         std::vector<ImportWeight> import_weights;
         if (raw_weights) {
@@ -94,9 +96,14 @@ void ModelActions::import_model(int node_id) {
                 "libtorch_fp32", jocelin::config::WeightType::LibTorch,
                 jocelin::model::WeightPrecision::Float32,
                 jocelin::model::WeightRole::Training, manifest_path, {}, {}});
-        } else if (object.value("weights").isArray()) {
+        } else {
+            if (!object.value("weights").isArray()) {
+                throw std::runtime_error("model manifest requires a weights array");
+            }
             for (const auto& entry : object.value("weights").toArray()) {
-                if (!entry.isObject()) continue;
+                if (!entry.isObject()) {
+                    throw std::runtime_error("model manifest weight must be an object");
+                }
                 const auto weight = entry.toObject();
                 const QString file = weight.value("file").toString();
                 if (file.isEmpty() || QFileInfo(file).isAbsolute())
@@ -106,12 +113,8 @@ void ModelActions::import_model(int node_id) {
                     throw std::runtime_error("model weight file is missing");
                 const auto format = jocelin::config::weight_type_from_string(
                     weight.value("format").toString().toStdString());
-                const auto role = weight.contains("role")
-                    ? jocelin::model::weight_role_from_string(
-                          weight.value("role").toString().toStdString())
-                    : (format == jocelin::config::WeightType::LibTorch
-                           ? jocelin::model::WeightRole::Training
-                           : jocelin::model::WeightRole::Inference);
+                const auto role = jocelin::model::weight_role_from_string(
+                    weight.value("role").toString().toStdString());
                 ImportWeight imported{
                     weight.value("id").toString().toStdString(),
                     format,
@@ -131,19 +134,9 @@ void ModelActions::import_model(int node_id) {
                 imported.input_signature = weight.value("input_signature").toString().toStdString();
                 imported.output_signature = weight.value("output_signature").toString().toStdString();
                 imported.target_architecture = weight.value("target_architecture").toString().toStdString();
+                imported.normalization = ModelListStorage::normalization_from_json(weight.value("normalization"), format);
                 import_weights.push_back(std::move(imported));
             }
-        } else {
-            const QString checkpoint_name = object.value("checkpoint").toString();
-            if (checkpoint_name.isEmpty() || QFileInfo(checkpoint_name).isAbsolute())
-                throw std::runtime_error("model manifest checkpoint must be a relative path");
-            const QString source = QDir(source_directory).absoluteFilePath(checkpoint_name);
-            if (!QFileInfo(source).isFile())
-                throw std::runtime_error("model checkpoint is missing");
-            import_weights.push_back({
-                "libtorch_fp32", jocelin::config::WeightType::LibTorch,
-                jocelin::model::WeightPrecision::Float32,
-                jocelin::model::WeightRole::Training, source, {}, {}});
         }
         if (import_weights.empty())
             throw std::runtime_error("model manifest contains no weights");
@@ -165,7 +158,6 @@ void ModelActions::import_model(int node_id) {
         config.model_num_heads = 12;
         config.image_width = task.training.image_width;
         config.image_height = task.training.image_height;
-        config.normalize = task_service.binding().preprocessing.normalize;
         std::vector<jocelin::model::ModelClass> classes;
         for (const auto& entry : object.value("classes").toArray()) {
             const auto value = entry.toObject();
@@ -205,7 +197,6 @@ void ModelActions::import_model(int node_id) {
             config.model_embed_dim = metadata->model_embed_dim;
             config.model_depth = metadata->model_depth;
             config.model_num_heads = metadata->model_num_heads;
-            config.normalize = metadata->normalize;
             std::copy(metadata->mean.begin(), metadata->mean.end(), config.mean);
             std::copy(metadata->std.begin(), metadata->std.end(), config.std);
         } else if (manifest_spec) {
@@ -256,6 +247,7 @@ void ModelActions::import_model(int node_id) {
             config.image_height = height->value();
             config.num_classes = count->value();
         }
+        config.normalize = metadata ? metadata->normalize : task_service.binding().preprocessing.normalize;
         const auto imported_task = jocelin::config::to_string(config.tool_type);
         if (imported_task != task.task)
             throw std::runtime_error("imported model belongs to a different task repository");
@@ -332,6 +324,7 @@ void ModelActions::import_model(int node_id) {
             imported.input_signature = weight.input_signature;
             imported.output_signature = weight.output_signature;
             imported.target_architecture = weight.target_architecture;
+            imported.normalization = native ? std::nullopt : weight.normalization;
             model.weights.push_back(std::move(imported));
         }
         const auto added = task_service.add_model(std::move(model));
@@ -383,7 +376,7 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
                 : weight.supported_device_types;
             for (const auto type : device_types)
                 supported_devices.append(QString::fromStdString(jocelin::config::to_string(type)));
-            weights.append(QJsonObject{
+            QJsonObject weight_object{
                 {"id", QString::fromStdString(weight.id)},
                 {"format", QString::fromStdString(jocelin::config::to_string(weight.format))},
                 {"precision", QString::fromStdString(jocelin::model::to_string(weight.precision))},
@@ -398,7 +391,9 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
                 {"onnx_opset", weight.onnx_opset},
                 {"input_signature", QString::fromStdString(weight.input_signature)},
                 {"output_signature", QString::fromStdString(weight.output_signature)},
-                {"target_architecture", QString::fromStdString(weight.target_architecture)}});
+                {"target_architecture", QString::fromStdString(weight.target_architecture)}};
+            weight_object.insert("normalization", ModelListStorage::normalization_to_json(weight.normalization, weight.format));
+            weights.append(weight_object);
         }
         write_json_file(QDir(destination).filePath("model.json"), QJsonObject{
             {"format", "deep_learning_project_model"},

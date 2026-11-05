@@ -34,3 +34,5 @@ add_dependencies(shell_ui_test studio_translations)
 target_link_libraries(shell_ui_test PRIVATE Qt5::Test)
 studio_add_test(feature_module_test feature_module_contract
     feature_module_test.cpp)
+studio_add_test(weight_conversion_test weight_conversion_contract
+    weight_conversion_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc")

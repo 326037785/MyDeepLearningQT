@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -89,7 +90,7 @@ public:
         table_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         table_->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         table_->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-        table_->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
+        table_->setContextMenuPolicy(Qt::CustomContextMenu);
         root->addWidget(table_, 1);
 
         detail_ = new QFrame(this);
@@ -178,7 +179,7 @@ public:
                 [this](QTreeWidgetItem*, int) {
             set_detail_visible(true);
         });
-        connect(table_->viewport(), &QWidget::customContextMenuRequested, this,
+        connect(table_, &QWidget::customContextMenuRequested, this,
                 [this](const QPoint& position) {
             if (!management_actions_enabled_) {
                 return;
@@ -470,6 +471,7 @@ public:
     std::function<void(const QString&)> selection_changed;
     std::function<void(const QString&, jocelin::config::WeightType)> weight_selection_changed;
     std::function<void(const QString&, const QString&)> weight_branch_selection_changed;
+    std::function<void(const QString&, const QString&, QWidget*)> convert_weight_requested;
     std::function<void(const QString&)> checked_model_changed;
     std::function<void()> import_requested;
     std::function<void(const QString&)> export_requested;
@@ -572,6 +574,22 @@ private:
                 label->setAttribute(Qt::WA_TransparentForMouseEvents);
                 cell_layout->addWidget(label, 1);
             }
+            if (format == jocelin::config::WeightType::LibTorch && convert_weight_requested) {
+                QToolButton* convert = new QToolButton(cell);
+                convert->setObjectName("projectModelConvertButton");
+                IconProvider::configure(convert, "convert",
+                    QCoreApplication::translate("studio::WeightConversionPopup", "Convert weight"), 15);
+                convert->setEnabled(model.training_status != jocelin::model::ModelTrainingStatus::Running);
+                cell_layout->addWidget(convert);
+                const QString model_id = QString::fromStdString(model.id);
+                connect(convert, &QToolButton::clicked, this, [this, item, column, branch, convert, model_id] {
+                    const QString weight_id = branch ? branch->currentData().toString()
+                        : item->data(column, Qt::UserRole).toString();
+                    if (convert_weight_requested && !weight_id.isEmpty()) {
+                        convert_weight_requested(model_id, weight_id, convert);
+                    }
+                });
+            }
             table_->setItemWidget(item, column, cell);
             connect(target, &QCheckBox::toggled, this, [this, item, column](bool checked) {
                 all_models_selected_ = false;
@@ -581,7 +599,7 @@ private:
             });
             cell->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(cell, &QWidget::customContextMenuRequested, this, [this, cell](const QPoint& position) {
-                table_->viewport()->customContextMenuRequested(cell->mapTo(table_->viewport(), position));
+                table_->customContextMenuRequested(cell->mapTo(table_->viewport(), position));
             });
         } else if (branch) {
             table_->setItemWidget(item, column, branch);
@@ -592,7 +610,7 @@ private:
         if (management_actions_enabled_) {
             branch->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(branch, &QWidget::customContextMenuRequested, this, [this, branch](const QPoint& position) {
-                table_->viewport()->customContextMenuRequested(branch->mapTo(table_->viewport(), position));
+                table_->customContextMenuRequested(branch->mapTo(table_->viewport(), position));
             });
         }
         const QString model_id = QString::fromStdString(model.id);

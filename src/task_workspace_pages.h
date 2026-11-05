@@ -180,6 +180,7 @@ public:
     void update_progress(size_t done, size_t total, const QString& image);
     void finish(const QString& error);
     std::function<void(const InferenceLaunchRequest&)> start_requested;
+    std::function<void(const QString&, const QString&)> convert_weight_requested;
     std::function<void()> import_model_requested;
     std::function<void(const QString&)> export_model_requested;
     std::function<void(const QStringList&)> delete_models_requested;

@@ -103,7 +103,7 @@ runtime files stay under `<build>/.test-artifacts/Release`. Test programs and
 `Qt5Test.dll` must not enter the product directory.
 
 The root CMake file owns dependencies, common build settings, runtime deployment
-and CTest. Application targets live in `src/CMakeLists.txt`; the 12 test targets
+and CTest. Application targets live in `src/CMakeLists.txt`; the 13 test targets
 live in `test/CMakeLists.txt`. Their compiler and Qt autogen intermediates stay
 under `<build>/src` and `<build>/test`, while the output paths above remain fixed.
 

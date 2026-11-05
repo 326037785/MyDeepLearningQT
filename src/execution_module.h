@@ -4,7 +4,9 @@
 #include "inference_job.h"
 #include "node_workspace.h"
 #include <QCoreApplication>
+#include <QFutureWatcher>
 #include <functional>
+#include <utility>
 namespace studio {
 class ExecutionModule final : public QObject {
     Q_DECLARE_TR_FUNCTIONS(studio::ExecutionModule)
@@ -14,6 +16,7 @@ public:
     void start_training(int node_id);
     void start_training(int node_id, const TrainingLaunchRequest& launch);
     void start_inference(int node_id, const InferenceLaunchRequest& launch);
+    void start_weight_conversion(int node_id, const QString& model_id, const QString& weight_id);
     void stop();
     void pause();
     std::function<void(const QString&)> log;
@@ -31,11 +34,16 @@ private:
     void training_completed(const jocelin::training::TrainingResult& result, const QString& error);
     void inference_progress(size_t done, size_t total, const QString& image);
     void inference_completed(const InferenceOutcome& outcome);
+    void weight_conversion_completed();
     ProjectManager& project_;
     NodeWorkspace& workspace_;
     QWidget* dialog_parent_;
     TrainingJob training_job_;
     InferenceJob inference_job_;
+    QFutureWatcher<std::pair<jocelin::model::ModelWeight, QString>> conversion_job_;
+    int active_conversion_node_id_ = 0;
+    QString active_conversion_model_id_;
+    QString active_conversion_output_path_;
     int active_training_node_id_ = 0;
     QString active_training_model_id_;
     QString active_training_source_mode_;

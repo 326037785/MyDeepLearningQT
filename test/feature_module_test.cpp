@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QContextMenuEvent>
 #include <QDialog>
 #include <QDir>
 #include <QEventLoop>
@@ -28,8 +29,11 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QSettings>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -229,6 +233,64 @@ int main(int argc, char** argv) try {
     const auto added = service.add_model(model);
     project.mark_active_dirty();
     project.save_project();
+    {
+        studio::TrainingWorkspace training;
+        studio::ProjectModel source = added;
+        source.classes.clear();
+        source.model_index = service.task().model_index;
+        source.model_scale = jocelin::config::model_scale_from_string(service.task().model_scale);
+        training.set_service(&service);
+        training.set_models({source});
+        training.resize(1280, 720);
+        training.show();
+        QApplication::processEvents();
+        QTreeWidget* list = training.findChild<QTreeWidget*>("projectModelBrowserList");
+        QTreeWidgetItem* item = list->topLevelItem(0);
+        QStyleOptionViewItem option;
+        option.initFrom(list);
+        option.rect = list->visualItemRect(item);
+        option.features = QStyleOptionViewItem::HasCheckIndicator;
+        const QPoint position = list->style()->subElementRect(
+            QStyle::SE_ItemViewItemCheckIndicator, &option, list).center();
+        QMouseEvent press(QEvent::MouseButtonPress, position, Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, position, Qt::LeftButton,
+                            Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &press);
+        QApplication::sendEvent(list->viewport(), &release);
+        require(item->checkState(0) == Qt::Checked,
+                "completed model checkbox did not accept a mouse click");
+        studio::TrainingLaunchRequest launch;
+        training.start_requested = [&](const studio::TrainingLaunchRequest& request) { launch = request; };
+        training.request_start();
+        require(launch.mode == "inherit" && launch.model_id == QString::fromStdString(source.id),
+                "checked compatible model did not launch inheritance");
+        source.classes = added.classes;
+        training.set_models({source});
+        training.request_start();
+        require(launch.mode == "transfer" && launch.model_id == QString::fromStdString(source.id),
+                "checked model with a different class schema did not launch transfer");
+        source.training_status = jocelin::model::ModelTrainingStatus::Stopped;
+        training.set_models({source});
+        list->topLevelItem(0)->setCheckState(0, Qt::Unchecked);
+        QApplication::sendEvent(list->viewport(), &press);
+        QApplication::sendEvent(list->viewport(), &release);
+        require(list->topLevelItem(0)->checkState(0) == Qt::Checked,
+                "stopped model checkbox did not accept a mouse click");
+        launch = {};
+        training.request_start();
+        require(launch.mode == "transfer" && launch.model_id == QString::fromStdString(source.id),
+                "stopped model with weights could not be selected for transfer");
+        source.classes.clear();
+        training.set_models({source});
+        training.request_start();
+        require(launch.mode == "inherit" && launch.model_id == QString::fromStdString(source.id),
+                "stopped model with weights could not be selected for inheritance");
+        source.weights.clear();
+        training.set_models({source});
+        require(!list->topLevelItem(0)->flags().testFlag(Qt::ItemIsUserCheckable),
+                "stopped model without weights became a training source");
+    }
     // Explicit Select all includes hidden branches and empty model rows;
     // checking every displayed branch individually must keep branch-only scope.
     {
@@ -241,6 +303,55 @@ int main(int argc, char** argv) try {
         empty.id = "empty_model";
         empty.weights.clear();
         browser.set_models({multiple, empty});
+        browser.resize(800, 400);
+        browser.show();
+        QApplication::processEvents();
+        QTreeWidget* list = browser.findChild<QTreeWidget*>("projectModelBrowserList");
+        QAction* remove_row = browser.findChild<QAction*>("projectModelDeleteRowAction");
+        QAction* menu_action = remove_row;
+        QStringList removed_rows;
+        browser.delete_models_requested = [&](const QStringList& ids) { removed_rows = ids; };
+        bool menu_opened = false;
+        QTimer close_menu;
+        QObject::connect(&close_menu, &QTimer::timeout, [&] {
+            QMenu* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (popup) {
+                menu_opened = true;
+                menu_action->trigger();
+                popup->close();
+            }
+        });
+        for (int row = 0; row < 2; ++row) {
+            menu_opened = false;
+            const QPoint row_position(40, list->visualItemRect(list->topLevelItem(row)).center().y());
+            QContextMenuEvent context(QContextMenuEvent::Mouse, row_position,
+                                     list->viewport()->mapToGlobal(row_position));
+            close_menu.start(5);
+            QApplication::sendEvent(list->viewport(), &context);
+            close_menu.stop();
+            require(menu_opened && removed_rows == QStringList{row == 0
+                        ? QString::fromStdString(multiple.id) : QStringLiteral("empty_model")},
+                    "right click did not offer deletion of the clicked model row");
+        }
+        QWidget* cell = list->itemWidget(list->topLevelItem(0), 1);
+        QComboBox* branch = cell->findChild<QComboBox*>("projectModelWeightBranch");
+        branch->setCurrentIndex(1);
+        QMetaObject::invokeMethod(branch, "activated", Qt::DirectConnection, Q_ARG(int, 1));
+        menu_action = browser.findChild<QAction*>("projectModelDeleteCellAction");
+        QStringList removed_weight;
+        browser.delete_model_weight_requested = [&](const QString& model_id, const QString& weight_id) {
+            removed_weight = QStringList{model_id, weight_id};
+        };
+        for (QWidget* content : {cell, static_cast<QWidget*>(branch)}) {
+            menu_opened = false;
+            const QPoint position = content->rect().center();
+            QContextMenuEvent context(QContextMenuEvent::Mouse, position, content->mapToGlobal(position));
+            close_menu.start(5);
+            QApplication::sendEvent(content, &context);
+            close_menu.stop();
+            require(menu_opened && removed_weight == QStringList{QString::fromStdString(multiple.id), "alternate"},
+                    "right click did not target the displayed weight branch");
+        }
         QCheckBox* select_all = browser.findChild<QCheckBox*>("projectModelSelectAllCheckBox");
         QAction* remove = browser.findChild<QAction*>("projectModelDeleteAction");
         int branch_deletions = 0;
@@ -384,6 +495,25 @@ int main(int argc, char** argv) try {
     require(execution.is_running() && training_error.isEmpty(), "Stopped checkpoint could not start inference");
     inferred.exec();
     require(service.inference_result(stopped_model, "libtorch_fp32"), "Stopped model did not produce inference results");
+    for (const QString& mode : QStringList{"inherit", "transfer"}) {
+        QEventLoop finished;
+        execution.changed = [&] { finished.quit(); };
+        studio::TrainingLaunchRequest request;
+        request.mode = mode;
+        request.model_id = stopped_model;
+        execution.start_training(node, request);
+        require(execution.is_running() && training_error.isEmpty(),
+                "Stopped checkpoint could not start inheritance or transfer");
+        execution.stop();
+        finished.exec();
+        const studio::ProjectModel* created = service.find_model(
+            QString::fromStdString(service.task().runtime.training_model_id));
+        require(created && created->parent_model_id == stopped_model.toStdString() &&
+                    created->creation_mode == (mode == "inherit"
+                        ? jocelin::model::ModelCreationMode::InheritTraining
+                        : jocelin::model::ModelCreationMode::TransferTraining) && training_error.isEmpty(),
+                "Stopped checkpoint lost its inheritance or transfer lineage");
+    }
     training_dialogs.stop();
     // Delete through the real browser -> ModelActions -> ProjectManager path.
     // Include an empty model and verify every workspace and persisted owner.

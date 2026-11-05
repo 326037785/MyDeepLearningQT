@@ -28,11 +28,37 @@ TaskNodeConfig 持有 Core 的 `jocelin::model::ModelList`。Training、Inferenc
 
 **ModelWeight**：一个 branch 表示一份权重。权重转换向所属模型行添加 branch，并通过 parent_weight_id 记录来源。
 
+**推理权重转换**：Inference 页的 LibTorch 单元格按当前选中的 weight_id 提供转换入口。卡片选择目标格式；ONNX 是设备无关资产，不显示设备选择，TensorRT 展示 GPU-only 选择。当前 Core 只支持 `cls-2-n` 的 LibTorch FP32 → ONNX FP32，OpenVINO 和 TensorRT 尚不可转换。ONNX 在后台导出并通过 Core 数值校验后登记为同一模型行的 inference branch，再保存 Project；已有权重和推理结果保留。转换失败不登记 branch；转换成功但保存失败时保留新 branch 与文件，并提示重新保存。
+
+**归一化设置**：`normalize`、三通道 `mean/std` 随模型权重确定，不在每次推理时重新选择默认值。LibTorch 使用 checkpoint 中的设置；转换生成的 ONNX 将来源设置保存在 `ModelWeight.normalization` 中，随 model_list.json 和模型导出包保存。该快照属于转换后的权重，不依赖来源分支继续存在。
+
+| 环节 | 设置时机与来源 |
+| --- | --- |
+| 新训练、继承、迁移 | 创建训练请求时读取当前 Task 的 normalize；mean/std 使用 Core AiConfig 的默认值，Qt 不再重复定义。Core 将实际使用的值写进 checkpoint。 |
+| Resume | 恢复原 checkpoint 的归一化设置，保持同一次训练的一致性。 |
+| 导入 LibTorch | 有 checkpoint metadata 时保留其设置；普通 state dictionary 使用本次 Task 设置，并在生成项目内权重时写入 checkpoint。 |
+| 转换 ONNX | 读取选中的来源 checkpoint，复制其归一化设置到新权重说明，不改来源、不重新设置默认值。 |
+| 保存、重开、模型包导入导出 | 原样保存和恢复权重说明，不按当前 Task 设置重算。 |
+| 推理 | 选定权重后、构建本次运行对象和处理图片前恢复一次；整次推理的所有图片共用这份设置。 |
+| 删除来源权重 | 保留 ONNX 自己的设置，仍可独立推理；parent_weight_id 只记录来源关系。 |
+
+Qt 创建推理请求时不覆盖模型的归一化设置。公共 preprocess 根据本次运行配置处理每张图片，网络层和后处理不再次 normalize。用户修改 Task 设置只影响后续新训练或缺少 metadata 的新导入，不改变已有权重。
+
+Project 的 ONNX 权重说明必须携带 normalization，保存、加载和模型包导入导出均按该规则处理，缺失即报错。模型包使用 `weights` 数组，各分支明确提供 `role`；不接受早期单个 `checkpoint` 字段，也不自动补齐角色。直接调用 Core 的外部 ONNX 消费者可以使用 `use_checkpoint_config=false`，明确提供自己的预处理参数。
+
+外部 `.pt/.pth` 直接导入是独立的正式入口，用于接入经典网络的预训练权重。带 checkpoint metadata 时保留来源设置；普通 state dictionary 由用户指定模型规格，Core 按注册名称和形状匹配参数与 buffer，未匹配项保留初始化值，并生成项目内完整 LibTorch 权重。该入口不依赖模型包格式。
+
+**Pipeline 与扩展边界**：训练或导入确定设置 → checkpoint 固化 → 转换复制到 ONNX 权重说明 → Project/模型包保存 → 重开恢复 → 推理创建运行对象前读取一次 → preprocess 每图执行一次 → 网络和后处理不重复归一化。64 对齐是公共 preprocess 的内部行为，外部图片尺寸不构成对齐要求，不向权重说明或网络层增加对齐策略。转换中的网络对象随该次工作结束，后续推理独立加载权重。TensorRT/OpenVINO 可以复用权重说明、后台执行、保存、公共预处理与结果处理；网络层和权重映射须使用各自后端的原生实现，不以 ONNX 解析器代替。当前没有热插拔后端插件机制。
+
+**验证入口与去冗余**：Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显式请求参数。Qt 的 `task_workspace_domain` 核对新训练使用 Task 的 normalize；`weight_conversion_contract` 分别使用关闭归一化、自定义 mean/std 的权重，经实际 Qt 请求比较 LibTorch/ONNX 同图结果，再核对项目重开、模型包导入导出，以及删除来源权重后重开推理；同时验证旧单 checkpoint 清单、缺少 role 的模型包和缺少 normalization 的 ONNX 模型包、项目清单被拒绝。mean/std 默认值只由 Core AiConfig 定义；Qt 导入在来源确定后选择一次 normalize，推理请求不重新覆盖。项目存储与模型包共用 `ModelListStorage::normalization_from_json/normalization_to_json`，不维护两套归一化读写规则。
+
 **Paused**：Core 在完整 epoch 结束并保存 checkpoint 后返回。Qt 登记 last.pt，用户可以 Resume 和 Infer。
 
 **Completed**：Core 完成训练。Qt 登记 best.pt，用户可以 Infer。
 
 **Stopped**：Core 在 batch boundary 终止本次训练，以完整 epoch 为 checkpoint 边界。完成过完整 epoch 时，Core 整理 best.pt 和 last.pt，Qt 登记有效 best.pt 供 Infer 使用；首个 epoch 完成前停止时，模型保持 Stopped，权重集合保持为空。
+
+**继承与迁移来源**：Training 行内勾选支持 Completed、Imported，以及持有有效 LibTorch training weight 的 Stopped 模型。无可用训练权重的行不能作为训练来源。
 
 **Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Core 恢复训练状态，从下一个 epoch 继续。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
 
@@ -77,7 +103,7 @@ Filter 的 Task 类型由当前 Node 确定。配置保存在该 TaskNode 的 Co
 
 单值范围由控件约束，SG 的 Area 和 Aspect ratio 最小值不得大于最大值。关闭 Morphology 时禁用 Iterations。Qt 将当前配置传入 `InferenceRequest::config`；Core 的 `SgResult::process()` 或 `ClsResult::process()` 负责参数语义和过滤计算。
 
-Workflow 分别以 `sg_filter` 和 `cls_filter` 保存对应 Task 的字段；旧 Workflow 缺少该对象时使用 Core 默认值。SG 的 `max_region_area` 使用 int64 字符串保存，`aspect_ratio_range` 保存为最小值和最大值的数组。
+Workflow 分别以 `sg_filter` 和 `cls_filter` 保存对应 Task 的字段；未保存过滤设置时使用 Core 默认值。SG 的 `max_region_area` 使用 int64 字符串保存，`aspect_ratio_range` 保存为最小值和最大值的数组。
 
 `InferenceWorkspace` 根据当前 Task 从 [Task Filter 组合表](../src/task_inference_filter.cpp)取得对应的 `InferenceFilterContent`，并绑定当前 Node 的配置。各 Task content 只负责自己的控件和字段映射；[InferenceFilterPanel](../src/inference_filter_panel.h)负责折叠、Apply、Reset、错误显示和内容挂载。content 创建时由 `std::unique_ptr` 持有，加入 Qt 控件树后由 Qt 父对象管理。新增 Task Filter 时提供自己的 content 并加入组合表。
 
@@ -176,7 +202,7 @@ Annotation package import 显式提供接收 Task 的新类别和标注。它保
 
 **单元格删除**：Training 和 Inference 的 ModelList 上方提供全选勾选框和删除按钮。全选选择或取消选择全部单元格，部分选择显示半选状态。上方删除按各单元格当前选中的 weight_id 清理对应 branch，保留模型行和其他 branch。行内勾选继续指定训练或推理使用的单个模型。
 
-**右键删除**：权重单元格的右键菜单提供删除单元格和删除整行。删除单元格清理当前选中的 branch；删除整行清理该 ModelEntry 的全部 branch。删除操作先确认，再复用既有资产和 inference 清理流程。
+**右键删除**：模型名称和权重单元格均可打开右键菜单。删除单元格清理当前选中的 branch；删除整行清理该 ModelEntry 的全部 branch，有权重和无权重的模型行均支持整行删除。删除操作先确认，再复用既有资产和 inference 清理流程。
 
 **删除 ModelEntry**：应用删除模型行、模型资产、该 model_id 的全部 inference records 和 inference/<model_id>/，并清除对应 training_model_id。
 
