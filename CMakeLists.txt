@@ -94,10 +94,11 @@ function(studio_copy_runtime target)
             $<TARGET_RUNTIME_DLLS:${target}>
             ${STUDIO_OPTIONAL_RUNTIME_DLLS}
             $<TARGET_FILE_DIR:${target}>
-        # Prefer the CUDA/cuDNN DLLs bundled with the selected LibTorch SDK.
+        # Explicit CUDA runtime files from the selected ONNX SDK take precedence.
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${STUDIO_TORCH_RUNTIME_DLLS}
             "${LIBIOMP5_RUNTIME_DLL}"
+            ${DeepLearning_ONNX_RUNTIME_DLLS}
             $<TARGET_FILE_DIR:${target}>
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:${target}>/platforms

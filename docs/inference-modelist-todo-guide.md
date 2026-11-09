@@ -28,7 +28,9 @@ TaskNodeConfig 持有 Core 的 `jocelin::model::ModelList`。Training、Inferenc
 
 **ModelWeight**：一个 branch 表示一份权重。权重转换向所属模型行添加 branch，并通过 parent_weight_id 记录来源。
 
-**推理权重转换**：Inference 页的 LibTorch 单元格按当前选中的 weight_id 提供转换入口。卡片选择目标格式；ONNX 是设备无关资产，不显示设备选择，TensorRT 展示 GPU-only 选择。当前 Core 只支持 `cls-2-n` 的 LibTorch FP32 → ONNX FP32，OpenVINO 和 TensorRT 尚不可转换。ONNX 在后台导出并通过 Core 数值校验后登记为同一模型行的 inference branch，再保存 Project；已有权重和推理结果保留。转换失败不登记 branch；转换成功但保存失败时保留新 branch 与文件，并提示重新保存。
+**推理权重转换**：Inference 页的 LibTorch 单元格按当前选中的 weight_id 提供转换入口。卡片选择目标格式；ONNX 是设备无关资产，不显示设备选择，TensorRT 展示 GPU-only 选择。Core 为已注册的分类和分割模型提供 LibTorch FP32 → ONNX FP32，转换入口按 Core 的模型能力启用。ONNX 在后台导出并通过 Core 数值校验后登记为同一模型行的 inference branch，再保存 Project；已有权重和推理结果保留。转换失败不登记 branch；转换成功但保存失败时保留新 branch 与文件，并提示重新保存。
+
+推理时，CPU 和 CUDA GPU 共用同一份 ONNX 权重。Qt 根据 Core 报告的 Provider 与设备能力显示可用组合，由 Core 按本次选择建立 Session。
 
 **归一化设置**：`normalize`、三通道 `mean/std` 随模型权重确定，不在每次推理时重新选择默认值。LibTorch 使用 checkpoint 中的设置；转换生成的 ONNX 将来源设置保存在 `ModelWeight.normalization` 中，随 model_list.json 和模型导出包保存。该快照属于转换后的权重，不依赖来源分支继续存在。
 
@@ -50,7 +52,7 @@ Project 的 ONNX 权重说明必须携带 normalization，保存、加载和模�
 
 **Pipeline 与扩展边界**：训练或导入确定设置 → checkpoint 固化 → 转换复制到 ONNX 权重说明 → Project/模型包保存 → 重开恢复 → 推理创建运行对象前读取一次 → preprocess 每图执行一次 → 网络和后处理不重复归一化。64 对齐是公共 preprocess 的内部行为，外部图片尺寸不构成对齐要求，不向权重说明或网络层增加对齐策略。转换中的网络对象随该次工作结束，后续推理独立加载权重。TensorRT/OpenVINO 可以复用权重说明、后台执行、保存、公共预处理与结果处理；网络层和权重映射须使用各自后端的原生实现，不以 ONNX 解析器代替。当前没有热插拔后端插件机制。
 
-**验证入口与去冗余**：Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显式请求参数。Qt 的 `task_workspace_domain` 核对新训练使用 Task 的 normalize；`weight_conversion_contract` 分别使用关闭归一化、自定义 mean/std 的权重，经实际 Qt 请求比较 LibTorch/ONNX 同图结果，再核对项目重开、模型包导入导出，以及删除来源权重后重开推理；同时验证旧单 checkpoint 清单、缺少 role 的模型包和缺少 normalization 的 ONNX 模型包、项目清单被拒绝。mean/std 默认值只由 Core AiConfig 定义；Qt 导入在来源确定后选择一次 normalize，推理请求不重新覆盖。项目存储与模型包共用 `ModelListStorage::normalization_from_json/normalization_to_json`，不维护两套归一化读写规则。
+Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显式请求参数。Qt 的 `weight_conversion_contract` 用真实分类和分割 checkpoint 验证 Opset 18 导出、登记和重开，并在 CUDA 可用时对照同一资产的 CPU 与 GPU 结果。归一化开关、重复转换、失败清理、模型包和删除来源权重都由这条转换契约覆盖。项目存储与模型包共用归一化读写规则，推理启动时从选中的权重恢复设置。
 
 **Paused**：Core 在完整 epoch 结束并保存 checkpoint 后返回。Qt 登记 last.pt，用户可以 Resume 和 Infer。
 

@@ -414,9 +414,6 @@ void ExecutionModule::start_weight_conversion(
         request.config.tool_type = model->task;
         request.config.model_index = model->model_index;
         request.config.model_scale = model->model_scale;
-        request.config.image_width = model->image_width;
-        request.config.image_height = model->image_height;
-        request.config.num_classes = static_cast<int>(model->classes.size());
         request.config.require_checkpoint_match = true;
         if (!jocelin::infer_network::conversion::onnx::supports_native_export(request.config)) {
             throw std::runtime_error("ONNX conversion is not available for this model");
