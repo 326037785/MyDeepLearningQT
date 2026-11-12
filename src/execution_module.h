@@ -16,7 +16,8 @@ public:
     void start_training(int node_id);
     void start_training(int node_id, const TrainingLaunchRequest& launch);
     void start_inference(int node_id, const InferenceLaunchRequest& launch);
-    void start_weight_conversion(int node_id, const QString& model_id, const QString& weight_id);
+    void start_weight_conversion(int node_id, const QString& model_id, const QString& weight_id,
+                                 jocelin::config::WeightType target = jocelin::config::WeightType::Onnx);
     void stop();
     void pause();
     std::function<void(const QString&)> log;
@@ -43,7 +44,6 @@ private:
     QFutureWatcher<std::pair<jocelin::model::ModelWeight, QString>> conversion_job_;
     int active_conversion_node_id_ = 0;
     QString active_conversion_model_id_;
-    QString active_conversion_output_path_;
     int active_training_node_id_ = 0;
     QString active_training_model_id_;
     QString active_training_source_mode_;

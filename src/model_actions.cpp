@@ -1,9 +1,11 @@
 #include "model_actions.h"
 #include "model_list_storage.h"
+#include "model_weight_assets.h"
 #include "json_file_writer.h"
 #include "node_workspace.h"
 #include "classification_annotation_state.h"
 #include "model_spec_catalog.h"
+#include "project_storage.h"
 #include "task_workspace_service.h"
 #include <common/model/model_weight_matcher.h>
 #include <checkpoint/checkpoint_catalog.h>
@@ -23,12 +25,34 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QSpinBox>
+#include <QTemporaryDir>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 
 namespace studio {
+namespace {
+
+void copy_weight_files(jocelin::config::WeightType format, const QString& source, const QString& destination) {
+    const QStringList sources = ModelWeightAssets::files(format, source);
+    const QStringList destinations = ModelWeightAssets::files(format, destination);
+    if (format == jocelin::config::WeightType::OpenVino && (sources.size() != 2 || destinations.size() != 2)) {
+        throw std::runtime_error("OpenVINO model weight must have an XML entry path");
+    }
+    for (const QString& asset : sources) {
+        if (!QFileInfo(asset).isFile()) {
+            throw std::runtime_error(("model weight asset is missing: " + asset).toStdString());
+        }
+    }
+    for (int index = 0; index < sources.size(); ++index) {
+        if (!QFile::copy(sources[index], destinations[index])) {
+            throw std::runtime_error(("cannot copy model weight asset: " + sources[index]).toStdString());
+        }
+    }
+}
+
+} // namespace
 
 ModelActions::ModelActions(ProjectManager& project, QWidget* parent)
     : QObject(parent), project_(project), dialog_parent_(parent) {}
@@ -117,14 +141,13 @@ void ModelActions::import_model(int node_id) {
                     throw std::runtime_error("model manifest weight must be an object");
                 }
                 const auto weight = entry.toObject();
-                const QString file = weight.value("file").toString();
-                if (file.isEmpty() || QFileInfo(file).isAbsolute())
-                    throw std::runtime_error("model weight file must be relative");
+                const QString file = ProjectStorage::validated_relative_path(weight.value("file").toString(), "model weight file");
                 const QString source = QDir(source_directory).absoluteFilePath(file);
                 if (!QFileInfo(source).isFile())
                     throw std::runtime_error("model weight file is missing");
                 const auto format = jocelin::config::weight_type_from_string(
                     weight.value("format").toString().toStdString());
+                ModelWeightAssets::validate_associated_files(weight.value("associated_files"), format, source);
                 const auto role = jocelin::model::weight_role_from_string(
                     weight.value("role").toString().toStdString());
                 ImportWeight imported{
@@ -147,6 +170,11 @@ void ModelActions::import_model(int node_id) {
                 imported.output_signature = weight.value("output_signature").toString().toStdString();
                 imported.target_architecture = weight.value("target_architecture").toString().toStdString();
                 imported.normalization = ModelListStorage::normalization_from_json(weight.value("normalization"), format);
+                if (format == jocelin::config::WeightType::OpenVino &&
+                    (role != jocelin::model::WeightRole::Inference ||
+                     imported.precision != jocelin::model::WeightPrecision::Float32 || !imported.normalization)) {
+                    throw std::runtime_error("OpenVINO model package requires an FP32 inference weight with normalization metadata");
+                }
                 import_weights.push_back(std::move(imported));
             }
         }
@@ -157,8 +185,20 @@ void ModelActions::import_model(int node_id) {
             [](const auto& weight) {
                 return weight.format == jocelin::config::WeightType::LibTorch;
             });
-        if (libtorch == import_weights.end())
-            throw std::runtime_error("import currently requires a LibTorch weight branch");
+        const bool manifest_spec = object.contains("task") &&
+            object.contains("model_index") && object.contains("model_scale");
+        const bool has_openvino = std::any_of(import_weights.begin(), import_weights.end(), [](const ImportWeight& weight) {
+            return weight.format == jocelin::config::WeightType::OpenVino;
+        });
+        const bool inference_package = libtorch == import_weights.end();
+        if (inference_package && (!has_openvino || !manifest_spec || !object.value("classes").isArray() ||
+            object.value("format").toString() != "deep_learning_project_model" ||
+            object.value("image_width").toInt() <= 0 || object.value("image_height").toInt() <= 0 ||
+            std::any_of(import_weights.begin(), import_weights.end(), [](const ImportWeight& weight) {
+                return weight.role != jocelin::model::WeightRole::Inference;
+            }))) {
+            throw std::runtime_error("import requires a LibTorch weight or a Studio model package with complete OpenVINO metadata");
+        }
         TaskWorkspaceService task_service(project_.active_workflow().document.graph, node_id);
         const auto& task = task_service.task();
         jocelin::config::AiConfig config;
@@ -176,7 +216,7 @@ void ModelActions::import_model(int node_id) {
             classes.push_back({value.value("id").toString().toStdString(),
                 value.value("name").toString().toStdString(), value.value("mask_value").toInt()});
         }
-        if (classes.empty()) {
+        if (classes.empty() && !inference_package) {
             if (config.tool_type == jocelin::config::ToolType::Cls) {
                 for (const auto* value : classification_classes(task_service.binding().classes))
                     classes.push_back({value->id, value->name, 0});
@@ -186,19 +226,22 @@ void ModelActions::import_model(int node_id) {
             }
         }
         config.num_classes = static_cast<int>(classes.size());
+        if (inference_package && config.tool_type == jocelin::config::ToolType::Cls && classes.empty()) {
+            throw std::runtime_error("OpenVINO classification model package requires classes");
+        }
         if (config.tool_type == jocelin::config::ToolType::Sg) {
             config.num_classes = 1;
             for (const auto& value : classes)
                 config.num_classes = std::max(config.num_classes, value.mask_value + 1);
         }
         std::optional<jocelin::checkpoint::CheckpointMetadata> metadata;
-        try {
-            metadata = jocelin::checkpoint::inspect_checkpoint(libtorch->source_path.toStdString());
-        } catch (const std::exception&) {
-            // External state dictionaries need not carry project metadata.
+        if (!inference_package) {
+            try {
+                metadata = jocelin::checkpoint::inspect_checkpoint(libtorch->source_path.toStdString());
+            } catch (const std::exception&) {
+                // External state dictionaries need not carry project metadata.
+            }
         }
-        const bool manifest_spec = object.contains("task") &&
-            object.contains("model_index") && object.contains("model_scale");
         if (metadata) {
             config.tool_type = metadata->tool_type;
             config.model_index = metadata->model_index;
@@ -300,7 +343,11 @@ void ModelActions::import_model(int node_id) {
         for (const auto& weight : import_weights) {
             const QFileInfo source_info(weight.source_path);
             const bool native = weight.format == jocelin::config::WeightType::LibTorch;
-            const QString filename = QString::fromStdString(weight.id) +
+            const QString id = QString::fromStdString(weight.id);
+            if (ProjectStorage::validated_relative_path(id, "model weight id") != id || QFileInfo(id).fileName() != id) {
+                throw std::runtime_error("model weight id must be a file name");
+            }
+            const QString filename = id +
                 (native ? ".pt" : (source_info.suffix().isEmpty() ? QString{} : "." + source_info.suffix()));
             const QString destination = QDir(asset_directory).filePath(filename);
             if (native) {
@@ -315,8 +362,8 @@ void ModelActions::import_model(int node_id) {
                 log(tr("[import] %1: %2").arg(QString::fromStdString(weight.id),
                     QString::fromStdString(report.summary())));
                 log(tr("Load report: %1").arg(report_file.fileName()));
-            } else if (!QFile::copy(weight.source_path, destination)) {
-                throw std::runtime_error("cannot copy imported model weight into Project");
+            } else {
+                copy_weight_files(weight.format, weight.source_path, destination);
             }
             jocelin::model::ModelWeight imported;
             imported.id = weight.id;
@@ -365,8 +412,10 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
         const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss");
         const QString destination = QDir(parent).filePath(
             QString::fromStdString(model->id) + "-" + stamp);
-        if (!QDir().mkpath(destination))
+        QTemporaryDir staging(QDir(parent).filePath(".model-export-XXXXXX"));
+        if (!staging.isValid()) {
             throw std::runtime_error("cannot create model export directory");
+        }
         QJsonArray classes;
         for (const auto& value : model->classes)
             classes.append(QJsonObject{
@@ -376,12 +425,13 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
         QJsonArray weights;
         for (const auto& weight : model->weights) {
             const QFileInfo source(QString::fromStdString(weight.path));
-            if (!source.isFile())
-                throw std::runtime_error("model weight is missing");
-            const QString filename = QString::fromStdString(weight.id) +
+            const QString id = QString::fromStdString(weight.id);
+            if (ProjectStorage::validated_relative_path(id, "model weight id") != id || QFileInfo(id).fileName() != id) {
+                throw std::runtime_error("model weight id must be a file name");
+            }
+            const QString filename = id +
                 (source.suffix().isEmpty() ? QString{} : "." + source.suffix());
-            if (!QFile::copy(source.absoluteFilePath(), QDir(destination).filePath(filename)))
-                throw std::runtime_error("cannot copy model weight");
+            copy_weight_files(weight.format, source.absoluteFilePath(), QDir(staging.path()).filePath(filename));
             QJsonArray supported_devices;
             const auto device_types = weight.supported_device_types.empty()
                 ? jocelin::model::default_supported_devices(weight.format)
@@ -405,9 +455,10 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
                 {"output_signature", QString::fromStdString(weight.output_signature)},
                 {"target_architecture", QString::fromStdString(weight.target_architecture)}};
             weight_object.insert("normalization", ModelListStorage::normalization_to_json(weight.normalization, weight.format));
+            weight_object.insert("associated_files", ModelWeightAssets::associated_files(weight.format, filename));
             weights.append(weight_object);
         }
-        write_json_file(QDir(destination).filePath("model.json"), QJsonObject{
+        write_json_file(QDir(staging.path()).filePath("model.json"), QJsonObject{
             {"format", "deep_learning_project_model"},
             {"name", QString::fromStdString(model->name)},
             {"created_at", QString::fromStdString(model->created_at)},
@@ -420,6 +471,7 @@ void ModelActions::export_model(int node_id, const QString& model_id) {
             {"metric_name", QString::fromStdString(model->metric_name)},
             {"metric", model->metric},
             {"weights", weights}});
+        ProjectStorage::commit_staging(staging.path(), destination);
         status(
             tr("%1 exported to %2").arg(QString::fromStdString(model->name), destination), 5000);
     } catch (const std::exception& error) {

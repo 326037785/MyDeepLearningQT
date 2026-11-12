@@ -19,6 +19,7 @@
 #include "task_inference_filter.h"
 #include "ui_metrics.h"
 #include "weight_conversion_popup.h"
+#include "model_weight_assets.h"
 
 #include <checkpoint/checkpoint_catalog.h>
 #include <common/config/ai_config.h>
@@ -1966,7 +1967,7 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
             popup.move(position);
         }
         if (popup.exec() == QDialog::Accepted && convert_weight_requested) {
-            convert_weight_requested(model_id, weight_id);
+            convert_weight_requested(model_id, weight_id, popup.target_format());
         }
     };
     model_browser_->import_requested = [this] {
@@ -2334,7 +2335,7 @@ void InferenceWorkspace::refresh_weight_types() {
                 model->weights.begin(), model->weights.end(),
                 [type, compute, &capabilities](const auto& weight) {
                     return weight.format == type &&
-                        QFileInfo::exists(QString::fromStdString(weight.path)) &&
+                        ModelWeightAssets::missing(weight).isEmpty() &&
                         jocelin::model::weight_supports_device(
                             weight, compute->device.type) &&
                         jocelin::runtime::runtime_is_available(
@@ -2349,12 +2350,15 @@ void InferenceWorkspace::refresh_weight_types() {
     if (model && service_) {
         if (const auto* selected = jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString())) {
             preferred = QString::fromStdString(jocelin::config::to_string(selected->format));
-            if (weight_type_->findData(preferred) < 0)
+            if (weight_type_->findData(preferred) < 0 && selected->format != jocelin::config::WeightType::OpenVino) {
                 weight_type_->addItem(weight_type_label(selected->format), preferred);
+            }
         }
     }
     const int preferred_index = weight_type_->findData(preferred);
-    if (preferred_index >= 0) weight_type_->setCurrentIndex(preferred_index);
+    if (preferred_index >= 0 || preferred == QStringLiteral("openvino")) {
+        weight_type_->setCurrentIndex(preferred_index);
+    }
     refresh_weight_branches();
 }
 
@@ -2368,8 +2372,10 @@ void InferenceWorkspace::refresh_weight_branches() {
     const QString type = weight_type_ ? weight_type_->currentData().toString() : QString{};
     if (model && !type.isEmpty()) {
         for (const auto& weight : model->weights) {
-            if (QString::fromStdString(jocelin::config::to_string(weight.format)) != type)
+            if (QString::fromStdString(jocelin::config::to_string(weight.format)) != type ||
+                (weight.format == jocelin::config::WeightType::OpenVino && !ModelWeightAssets::missing(weight).isEmpty())) {
                 continue;
+            }
             weight_branch_->addItem(
                 QString::fromStdString(weight.id) + QStringLiteral(" · ") +
                     QString::fromStdString(jocelin::model::to_string(weight.precision)).toUpper(),
@@ -2551,7 +2557,7 @@ void InferenceWorkspace::update_command_presentation() {
     const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
     const auto* compute = selected_device();
     const auto* weight = selected_weight();
-    const bool available = compute && weight && QFileInfo::exists(QString::fromStdString(weight->path)) &&
+    const bool available = compute && weight && ModelWeightAssets::missing(*weight).isEmpty() &&
         jocelin::model::weight_supports_device(*weight, compute->device.type) &&
         jocelin::runtime::runtime_is_available(weight->format, jocelin::runtime::available_runtime_capabilities());
     if (total == 0) {
@@ -2580,7 +2586,7 @@ void InferenceWorkspace::request_start() {
     const QString model_id = model_browser_->checked_model_id();
     const auto* compute = selected_device();
     const auto* weight = selected_weight();
-    const bool available = compute && weight && QFileInfo::exists(QString::fromStdString(weight->path)) &&
+    const bool available = compute && weight && ModelWeightAssets::missing(*weight).isEmpty() &&
         jocelin::model::weight_supports_device(*weight, compute->device.type) &&
         jocelin::runtime::runtime_is_available(weight->format, jocelin::runtime::available_runtime_capabilities());
     if (model_id.isEmpty() || !available) return;

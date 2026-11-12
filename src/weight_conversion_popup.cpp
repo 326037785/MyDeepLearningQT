@@ -1,8 +1,7 @@
 #include "weight_conversion_popup.h"
 
-#include <infer_network/conversion/onnx/native_export.h>
+#include "weight_conversion.h"
 #include <QButtonGroup>
-#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QVariant>
@@ -76,29 +75,35 @@ QPushButton[primary=true]:disabled { background: #F4F7F8; color: #8A9B99; border
     actions->addWidget(convert);
     root->addLayout(actions);
 
-    jocelin::config::AiConfig config;
-    config.tool_type = model.task;
-    config.model_index = model.model_index;
-    config.model_scale = model.model_scale;
-    const bool onnx_supported =
-        jocelin::infer_network::conversion::onnx::supports_native_export(config) &&
-        source.format == jocelin::config::WeightType::LibTorch &&
-        source.precision == jocelin::model::WeightPrecision::Float32 &&
-        QFileInfo(QString::fromStdString(source.path)).isFile() &&
-        model.training_status != jocelin::model::ModelTrainingStatus::Running;
+    using jocelin::config::WeightType;
+    const bool onnx_supported = can_convert_weight(model, source, WeightType::Onnx);
+    const bool openvino_supported = can_convert_weight(model, source, WeightType::OpenVino);
     const QString unavailable = tr("Conversion is not available for this model or format.");
     if (!onnx_supported) {
         onnx->setToolTip(unavailable);
         onnx->setProperty("conversionUnavailable", true);
     }
     tensorrt->setToolTip(unavailable);
-    openvino->setToolTip(unavailable);
     tensorrt->setProperty("conversionUnavailable", true);
-    openvino->setProperty("conversionUnavailable", true);
+    if (!openvino_supported) {
+        openvino->setToolTip(unavailable);
+        openvino->setProperty("conversionUnavailable", true);
+    }
 
     const auto update = [=] {
-        devices->setVisible(tensorrt->isChecked());
-        convert->setEnabled(onnx->isChecked() && onnx_supported);
+        const bool use_openvino = openvino->isChecked();
+        const bool use_tensorrt = tensorrt->isChecked();
+        target_format_ = use_openvino ? WeightType::OpenVino :
+            (use_tensorrt ? WeightType::TensorRt : WeightType::Onnx);
+        devices->setVisible(use_openvino || use_tensorrt);
+        cpu->setText(use_openvino ? tr("CPU / FP32") : tr("CPU"));
+        gpu->setVisible(use_tensorrt);
+        if (use_openvino) {
+            cpu->setChecked(true);
+        } else if (use_tensorrt) {
+            gpu->setChecked(true);
+        }
+        convert->setEnabled((onnx->isChecked() && onnx_supported) || (use_openvino && openvino_supported));
         convert->setToolTip(convert->isEnabled() ? QString{} : unavailable);
         adjustSize();
     };

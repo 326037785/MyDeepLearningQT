@@ -1,4 +1,5 @@
 #include "model_list_storage.h"
+#include "model_weight_assets.h"
 #include "project_storage.h"
 
 #include <QDateTime>
@@ -156,6 +157,7 @@ jocelin::model::ModelList ModelListStorage::load(
                     throw std::runtime_error("invalid Task model weight entry");
                 QJsonObject weight_object = weight_value.toObject();
                 const QJsonValue normalization_value = weight_object.take("normalization");
+                const QJsonValue associated_files = weight_object.take("associated_files");
                 require_exact_fields(
                     weight_object,
                     {"id", "format", "precision", "role", "path",
@@ -174,6 +176,8 @@ jocelin::model::ModelList ModelListStorage::load(
                     weight_object.value("role").toString().toStdString());
                 weight.path = ProjectStorage::runtime_path(
                     weight_object.value("path").toString(), root_directory);
+                ModelWeightAssets::validate_associated_files(
+                    associated_files, weight.format, QString::fromStdString(weight.path));
                 weight.parent_weight_id =
                     weight_object.value("parent_weight_id").toString().toStdString();
                 weight.created_at = weight_object.value("created_at").toString().toStdString();
@@ -289,6 +293,8 @@ QByteArray ModelListStorage::serialize(
                 {"output_signature", QString::fromStdString(weight.output_signature)},
                 {"target_architecture", QString::fromStdString(weight.target_architecture)}};
             weight_object.insert("normalization", normalization_to_json(weight.normalization, weight.format));
+            weight_object.insert("associated_files",
+                ModelWeightAssets::associated_files(weight.format, QString::fromStdString(weight.path)));
             weights.append(weight_object);
         }
         model_entries.append(QJsonObject{

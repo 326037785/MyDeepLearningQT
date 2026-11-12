@@ -210,6 +210,12 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
         auto openvino = alternate; openvino.id = "openvino_fp32";
         openvino.format = jocelin::config::WeightType::OpenVino;
         openvino.supported_device_types = {jocelin::config::DeviceType::Cpu};
+        const QDir assets(QString::fromStdString(model.asset_directory));
+        require(QDir().mkpath(assets.absolutePath()), "cannot create IR fixture directory");
+        openvino.path = assets.filePath("openvino_fp32.xml").toStdString();
+        openvino.normalization.emplace();
+        studio::ProjectStorage::write_atomic(assets.filePath("openvino_fp32.xml"), "IR fixture");
+        studio::ProjectStorage::write_atomic(assets.filePath("openvino_fp32.bin"), "IR weights fixture");
         model.weights.push_back(openvino);
         require(service.add_model(model).id == "model_1", "fixture model identity changed");
     }
@@ -366,6 +372,18 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
         restored.inference_result("model_1", "libtorch_fp32") && QDir(first_dir).exists() &&
         studio::ProjectStorage::read(QDir(peer_dir).filePath("result.json")) == peer_json,
         "weight deletion crossed inference branch or Node boundaries");
+    const auto* ir_result = restored.inference_result("model_1", "openvino_fp32");
+    require(ir_result, "OpenVINO branch result is missing before deletion");
+    const QString ir_results_directory = QString::fromStdString(ir_result->result_directory);
+    const QDir ir_assets(QString::fromStdString(restored.find_model("model_1")->asset_directory));
+    reopened.remove_models(first, {"model_1"}, "openvino_fp32");
+    require(!restored.inference_result("model_1", "openvino_fp32") && !QDir(ir_results_directory).exists() &&
+        QFileInfo::exists(ir_assets.filePath("openvino_fp32.xml")) &&
+        QFileInfo::exists(ir_assets.filePath("openvino_fp32.bin")), "deleting an OpenVINO branch damaged a shared asset or kept a result");
+    reopened.remove_models(first, {QString::fromStdString(additional.id)}, "openvino_fp32");
+    require(
+        !QFileInfo::exists(ir_assets.filePath("openvino_fp32.xml")) &&
+        !QFileInfo::exists(ir_assets.filePath("openvino_fp32.bin")), "deleting the last OpenVINO reference left an asset");
     const QString copied_model_list = QDir(copy.node_models_directory(first)).filePath("model_list.json");
     require(QFile::remove(copied_model_list), "cannot remove copied ModelList");
     copy.open_project(copy.project_file());

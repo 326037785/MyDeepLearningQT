@@ -2,13 +2,17 @@
 #include "json_file_writer.h"
 #include "classification_annotation_state.h"
 #include "model_spec_catalog.h"
+#include "model_weight_assets.h"
 #include "sample_presentation.h"
 #include "task_workspace_service.h"
 #include "task_workspace_pages.h"
+#include "weight_conversion.h"
 #include <checkpoint/checkpoint_catalog.h>
 #include <common/model/model_weight_matcher.h>
 #include <common/exception/pipeline_exception.h>
 #include <infer_network/conversion/onnx/native_export.h>
+#include <infer_network/ov/cls/cls_native_export.h>
+#include <infer_network/ov/sg/sg_native_export.h>
 #include <runtime/device_service.h>
 #include <runtime/inference_route.h>
 #include <QDateTime>
@@ -97,8 +101,9 @@ ExecutionModule::ExecutionModule(ProjectManager& project, NodeWorkspace& workspa
     : QObject(parent), project_(project), workspace_(workspace), dialog_parent_(parent) {
     workspace_.training_launch_requested = [this](int id, const TrainingLaunchRequest& request) { start_training(id, request); };
     workspace_.infer_requested = [this](int id, const InferenceLaunchRequest& request) { start_inference(id, request); };
-    workspace_.convert_weight_requested = [this](int id, const QString& model, const QString& weight) {
-        start_weight_conversion(id, model, weight);
+    workspace_.convert_weight_requested = [this](int id, const QString& model, const QString& weight,
+                                                 jocelin::config::WeightType target) {
+        start_weight_conversion(id, model, weight, target);
     };
     workspace_.stop_requested = [this] { stop(); };
     workspace_.pause_requested = [this] { pause(); };
@@ -385,7 +390,7 @@ void ExecutionModule::inference_completed(const InferenceOutcome& outcome) {
 }
 
 void ExecutionModule::start_weight_conversion(
-    int node_id, const QString& model_id, const QString& weight_id)
+    int node_id, const QString& model_id, const QString& weight_id, jocelin::config::WeightType target)
 {
     if (is_running()) {
         return;
@@ -403,21 +408,15 @@ void ExecutionModule::start_weight_conversion(
         const ProjectModel* model = service.find_model(model_id);
         const jocelin::model::ModelWeight* source = model
             ? jocelin::model::find_weight(*model, weight_id.toStdString()) : nullptr;
-        if (!model || !source || source->format != jocelin::config::WeightType::LibTorch ||
-            source->precision != jocelin::model::WeightPrecision::Float32 ||
-            model->training_status == jocelin::model::ModelTrainingStatus::Running ||
-            !QFileInfo(QString::fromStdString(source->path)).isFile()) {
-            throw std::runtime_error("the selected LibTorch weight is unavailable");
+        if (!model || !source || !can_convert_weight(*model, *source, target)) {
+            throw std::runtime_error("conversion is not available for the selected source and target format");
         }
 
-        jocelin::infer_network::conversion::onnx::NativeExportRequest request;
-        request.config.tool_type = model->task;
-        request.config.model_index = model->model_index;
-        request.config.model_scale = model->model_scale;
-        request.config.require_checkpoint_match = true;
-        if (!jocelin::infer_network::conversion::onnx::supports_native_export(request.config)) {
-            throw std::runtime_error("ONNX conversion is not available for this model");
-        }
+        jocelin::config::AiConfig config;
+        config.tool_type = model->task;
+        config.model_index = model->model_index;
+        config.model_scale = model->model_scale;
+        config.require_checkpoint_match = true;
 
         const QString directory = QFileInfo(QString::fromStdString(model->asset_directory)).absoluteFilePath();
         const QString relative = QDir(project_.node_models_directory(node_id)).relativeFilePath(directory);
@@ -425,27 +424,41 @@ void ExecutionModule::start_weight_conversion(
             relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
             throw std::runtime_error("model assets must belong to the current Task node");
         }
-        QString target_id = QStringLiteral("onnx_fp32");
+        const bool openvino = target == jocelin::config::WeightType::OpenVino;
+        const QString format_name = openvino ? QStringLiteral("OpenVINO") : QStringLiteral("ONNX");
+        const QString extension = openvino ? QStringLiteral(".xml") : QStringLiteral(".onnx");
+        const QString base_id = openvino ? QStringLiteral("openvino_fp32") : QStringLiteral("onnx_fp32");
+        QString target_id = base_id;
+        QString output_path = QDir(directory).filePath(target_id + extension);
+        const auto assets_exist = [target](const QString& path) {
+            const QStringList assets = ModelWeightAssets::files(target, path);
+            return std::any_of(assets.begin(), assets.end(), [](const QString& asset) {
+                return QFileInfo::exists(asset);
+            });
+        };
         int suffix = 2;
-        while (jocelin::model::find_weight(*model, target_id.toStdString()) ||
-               QFileInfo::exists(QDir(directory).filePath(target_id + ".onnx"))) {
-            target_id = QStringLiteral("onnx_fp32_%1").arg(suffix++);
+        while (jocelin::model::find_weight(*model, target_id.toStdString()) || assets_exist(output_path)) {
+            target_id = base_id + QStringLiteral("_%1").arg(suffix++);
+            output_path = QDir(directory).filePath(target_id + extension);
         }
-        request.checkpoint_path = source->path;
-        request.parent_weight_id = source->id;
-        request.output_weight_id = target_id.toStdString();
-        request.output_path = QDir(directory).filePath(target_id + ".onnx").toStdString();
         active_conversion_node_id_ = node_id;
         active_conversion_model_id_ = model_id;
-        active_conversion_output_path_ = QString::fromStdString(request.output_path);
         editing_changed(false);
         locked = true;
-        message(tr("Converting weight to ONNX…"));
-        log(tr("Converting %1 to ONNX").arg(QString::fromStdString(model->name)));
-        conversion_job_.setFuture(QtConcurrent::run([request] {
+        message(tr("Converting weight to %1…").arg(format_name));
+        log(tr("Converting %1 to %2").arg(QString::fromStdString(model->name), format_name));
+        conversion_job_.setFuture(QtConcurrent::run([config, openvino, checkpoint = source->path,
+            parent_id = source->id, id = target_id.toStdString(), path = output_path.toStdString()] {
             std::pair<jocelin::model::ModelWeight, QString> outcome;
             try {
-                outcome.first = jocelin::infer_network::conversion::onnx::export_task_model(request);
+                if (openvino) {
+                    const jocelin::Ov::NativeExportRequest request{config, checkpoint, path, id, parent_id};
+                    outcome.first = config.tool_type == jocelin::config::ToolType::Sg
+                        ? jocelin::Ov::export_sg_model(request) : jocelin::Ov::export_cls_model(request);
+                } else {
+                    outcome.first = jocelin::infer_network::conversion::onnx::export_task_model(
+                        {config, checkpoint, path, id, parent_id});
+                }
             } catch (...) {
                 outcome.second = QString::fromStdString(jocelin::exception::message(
                     std::current_exception(), "Unknown weight conversion error"));
@@ -455,7 +468,6 @@ void ExecutionModule::start_weight_conversion(
     } catch (const std::exception& error) {
         active_conversion_node_id_ = 0;
         active_conversion_model_id_.clear();
-        active_conversion_output_path_.clear();
         if (locked) {
             editing_changed(true);
         }
@@ -469,6 +481,10 @@ void ExecutionModule::weight_conversion_completed() {
     bool registered = false;
     if (error.isEmpty()) {
         try {
+            const QStringList missing = ModelWeightAssets::missing(outcome.first);
+            if (!missing.isEmpty()) {
+                throw std::runtime_error(("converted weight assets are missing: " + missing.join(", ")).toStdString());
+            }
             TaskWorkspaceService service(graph(), active_conversion_node_id_);
             service.task().model_list.add_weight(active_conversion_model_id_.toStdString(), outcome.first);
             registered = true;
@@ -480,18 +496,23 @@ void ExecutionModule::weight_conversion_completed() {
                 : QString::fromUtf8(failure.what());
         }
     }
-    if (outcome.second.isEmpty() && !registered && QFileInfo::exists(active_conversion_output_path_) &&
-        !QFile::remove(active_conversion_output_path_)) {
-        error += tr("\nCould not remove the incomplete asset: %1").arg(active_conversion_output_path_);
+    if (outcome.second.isEmpty() && !registered) {
+        for (const QString& asset : ModelWeightAssets::files(outcome.first)) {
+            if (QFileInfo::exists(asset) && !QFile::remove(asset)) {
+                error += tr("\nCould not remove the incomplete asset: %1").arg(asset);
+            }
+        }
     }
     active_conversion_node_id_ = 0;
     active_conversion_model_id_.clear();
-    active_conversion_output_path_.clear();
     editing_changed(true);
     workspace_.refresh_models();
     if (error.isEmpty()) {
-        message(tr("Weight converted to ONNX"), 5000);
-        log(tr("Weight converted to ONNX"));
+        const QString format_name = outcome.first.format == jocelin::config::WeightType::OpenVino
+            ? QStringLiteral("OpenVINO") : QStringLiteral("ONNX");
+        const QString success = tr("Weight converted to %1").arg(format_name);
+        message(success, 5000);
+        log(success);
     } else {
         log(tr("Weight conversion failed: %1").arg(error));
         show_log();

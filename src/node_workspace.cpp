@@ -297,9 +297,10 @@ QWidget* NodeWorkspace::task_page() {
         [this](int node_id, const InferenceLaunchRequest& request) {
             if (infer_requested) infer_requested(node_id, request);
         };
-    task_workspace_->convert_weight_requested = [this](int node_id, const QString& model_id, const QString& weight_id) {
+    task_workspace_->convert_weight_requested = [this](int node_id, const QString& model_id, const QString& weight_id,
+                                                        jocelin::config::WeightType target) {
         if (convert_weight_requested) {
-            convert_weight_requested(node_id, model_id, weight_id);
+            convert_weight_requested(node_id, model_id, weight_id, target);
         }
     };
     task_workspace_->status = [this](const QString& message) {

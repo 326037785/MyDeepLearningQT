@@ -1,4 +1,5 @@
 #include "task_workspace_service.h"
+#include "model_weight_assets.h"
 #include <QDateTime>
 
 #include "model_spec_catalog.h"
@@ -225,10 +226,7 @@ bool TaskWorkspaceService::remove_model_weight(const QString& model_id, const QS
         if (relative == "." || relative == ".." || relative.startsWith("../") || QFileInfo(relative).isAbsolute()) {
             throw std::runtime_error(("weight assets must belong to this TaskNode: " + path).toStdString());
         }
-        QStringList assets{path};
-        if (weight->format == jocelin::config::WeightType::OpenVino && QFileInfo(path).suffix() == "xml") {
-            assets.push_back(QFileInfo(path).path() + "/" + QFileInfo(path).completeBaseName() + ".bin");
-        }
+        QStringList assets = ModelWeightAssets::files(*weight);
         if (weight->role == jocelin::model::WeightRole::Training) {
             assets.push_back(QDir(QFileInfo(path).absolutePath()).filePath("best.pt"));
             assets.push_back(QDir(QFileInfo(path).absolutePath()).filePath("last.pt"));
@@ -238,9 +236,12 @@ bool TaskWorkspaceService::remove_model_weight(const QString& model_id, const QS
             bool referenced = false;
             for (const auto& entry : models()) {
                 for (const auto& other : entry.weights) {
-                    if ((entry.id != model_id.toStdString() || other.id != weight_id.toStdString()) &&
-                        QDir::cleanPath(QString::fromStdString(other.path)) == QDir::cleanPath(asset)) {
-                        referenced = true;
+                    if (entry.id != model_id.toStdString() || other.id != weight_id.toStdString()) {
+                        for (const QString& other_asset : ModelWeightAssets::files(other)) {
+                            if (QDir::cleanPath(other_asset) == QDir::cleanPath(asset)) {
+                                referenced = true;
+                            }
+                        }
                     }
                 }
             }
@@ -919,6 +920,15 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     const auto& config = task();
     const auto& output = output_directory.empty() ? config.inference_output_directory : output_directory;
     if (weight.path.empty()) throw std::runtime_error("select a model weight");
+    if (weight.format == jocelin::config::WeightType::OpenVino) {
+        const QStringList missing = ModelWeightAssets::missing(weight);
+        if (!missing.isEmpty()) {
+            throw std::runtime_error(("OpenVINO weight assets are missing or invalid: " + missing.join(", ")).toStdString());
+        }
+        if (!weight.normalization) {
+            throw std::runtime_error("OpenVINO weight normalization metadata is missing");
+        }
+    }
     const auto task_type = jocelin::config::tool_type_from_string(config.task);
     if (model.task != task_type)
         throw std::runtime_error("selected checkpoint belongs to a different task repository");

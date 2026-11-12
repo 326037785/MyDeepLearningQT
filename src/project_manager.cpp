@@ -1,4 +1,5 @@
 #include "project_manager.h"
+#include "model_weight_assets.h"
 #include "model_list_storage.h"
 #include "project_path_validator.h"
 #include "project_storage.h"
@@ -343,10 +344,10 @@ std::vector<MissingModelAssets> ProjectManager::open_project(const QString& proj
                 }
                 MissingModelAssets missing{id, node_id, QString::fromStdString(model.id), {}, {}, false};
                 for (const auto& weight : model.weights) {
-                    const QString path = QString::fromStdString(weight.path);
-                    if (!QFileInfo(path).isFile()) {
+                    const QStringList missing_files = ModelWeightAssets::missing(weight);
+                    if (!missing_files.isEmpty()) {
                         missing.weight_ids.push_back(QString::fromStdString(weight.id));
-                        missing.paths.push_back(path);
+                        missing.paths.append(missing_files);
                     }
                 }
                 if (!missing.weight_ids.isEmpty()) {
@@ -785,7 +786,11 @@ size_t ProjectManager::external_reference_count() const {
         for (const auto& [node_id, node] : workflow.document.graph.nodes())
             if (node.kind == NodeKind::TaskConfig)
                 for (const auto& model : std::get<TaskNodeConfig>(node.config).model_list.entries())
-                    for (const auto& weight : model.weights) inspect(weight.path);
+                    for (const auto& weight : model.weights) {
+                        for (const QString& asset : ModelWeightAssets::files(weight)) {
+                            inspect(asset.toStdString());
+                        }
+                    }
     return external.size();
 }
 

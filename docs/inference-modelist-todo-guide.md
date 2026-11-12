@@ -28,31 +28,33 @@ TaskNodeConfig 持有 Core 的 `jocelin::model::ModelList`。Training、Inferenc
 
 **ModelWeight**：一个 branch 表示一份权重。权重转换向所属模型行添加 branch，并通过 parent_weight_id 记录来源。
 
-**推理权重转换**：Inference 页的 LibTorch 单元格按当前选中的 weight_id 提供转换入口。卡片选择目标格式；ONNX 是设备无关资产，不显示设备选择，TensorRT 展示 GPU-only 选择。Core 为已注册的分类和分割模型提供 LibTorch FP32 → ONNX FP32，转换入口按 Core 的模型能力启用。ONNX 在后台导出并通过 Core 数值校验后登记为同一模型行的 inference branch，再保存 Project；已有权重和推理结果保留。转换失败不登记 branch；转换成功但保存失败时保留新 branch 与文件，并提示重新保存。
+**推理权重转换**使用 Inference 页 LibTorch 单元格当前选中的 `weight_id`。转换卡片按来源权重和 Core 能力启用 ONNX FP32 或 OpenVINO FP32。ONNX 资产可用于可用的 CPU 和 CUDA GPU，OpenVINO 卡片显示固定的 `CPU / FP32`。后台转换通过 Core 数值校验后，在原模型行登记 inference branch 并保存 Project。重复转换分配新的 `weight_id`。转换或分支登记失败时清理本次产物。分支登记成功但 Project 保存失败时保留分支和文件，并提示重试保存。
 
 推理时，CPU 和 CUDA GPU 共用同一份 ONNX 权重。Qt 根据 Core 报告的 Provider 与设备能力显示可用组合，由 Core 按本次选择建立 Session。
 
-**归一化设置**：`normalize`、三通道 `mean/std` 随模型权重确定，不在每次推理时重新选择默认值。LibTorch 使用 checkpoint 中的设置；转换生成的 ONNX 将来源设置保存在 `ModelWeight.normalization` 中，随 model_list.json 和模型导出包保存。该快照属于转换后的权重，不依赖来源分支继续存在。
+OpenVINO 分支的 `path` 指向 XML，`associated_files` 在 Project 和 Studio 模型包中记录同目录的 BIN 文件名。旧记录缺少该字段时按 XML 文件名推导同名 BIN。Project 重开时报告具体缺失文件，推理要求文件对齐全。Save As 随模型目录复制文件对，模型包往返和分支删除也按文件对处理。包含完整模型和归一化元数据的 Studio 模型包可以导入仅含 OpenVINO 权重的模型行。
+
+**归一化设置**随模型权重确定。LibTorch 从 checkpoint 恢复 `normalize` 和三通道 `mean/std`。转换生成的 ONNX 和 OpenVINO 分支将来源设置保存在 `ModelWeight.normalization` 中，随 `model_list.json` 和模型导出包保存。派生分支使用自己的快照独立推理。
 
 | 环节 | 设置时机与来源 |
 | --- | --- |
 | 新训练、继承、迁移 | 创建训练请求时读取当前 Task 的 normalize；mean/std 使用 Core AiConfig 的默认值，Qt 不再重复定义。Core 将实际使用的值写进 checkpoint。 |
 | Resume | 恢复原 checkpoint 的归一化设置，保持同一次训练的一致性。 |
 | 导入 LibTorch | 有 checkpoint metadata 时保留其设置；普通 state dictionary 使用本次 Task 设置，并在生成项目内权重时写入 checkpoint。 |
-| 转换 ONNX | 读取选中的来源 checkpoint，复制其归一化设置到新权重说明，不改来源、不重新设置默认值。 |
+| 转换 ONNX 或 OpenVINO | 读取选中的来源 checkpoint，将其归一化设置复制到新权重说明。 |
 | 保存、重开、模型包导入导出 | 原样保存和恢复权重说明，不按当前 Task 设置重算。 |
 | 推理 | 选定权重后、构建本次运行对象和处理图片前恢复一次；整次推理的所有图片共用这份设置。 |
-| 删除来源权重 | 保留 ONNX 自己的设置，仍可独立推理；parent_weight_id 只记录来源关系。 |
+| 删除来源权重 | 派生分支从自己的权重和归一化快照独立推理。 |
 
 Qt 创建推理请求时不覆盖模型的归一化设置。公共 preprocess 根据本次运行配置处理每张图片，网络层和后处理不再次 normalize。用户修改 Task 设置只影响后续新训练或缺少 metadata 的新导入，不改变已有权重。
 
-Project 的 ONNX 权重说明必须携带 normalization，保存、加载和模型包导入导出均按该规则处理，缺失即报错。模型包使用 `weights` 数组，各分支明确提供 `role`；不接受早期单个 `checkpoint` 字段，也不自动补齐角色。直接调用 Core 的外部 ONNX 消费者可以使用 `use_checkpoint_config=false`，明确提供自己的预处理参数。
+Project 的 ONNX 权重说明要求 `normalization`。OpenVINO 推理和 Studio 模型包导入也要求这份快照。模型包使用 `weights` 数组，各分支明确提供 `role`。直接调用 Core 的外部 ONNX 消费者可以使用 `use_checkpoint_config=false`，明确提供自己的预处理参数。
 
 外部 `.pt/.pth` 直接导入是独立的正式入口，用于接入经典网络的预训练权重。带 checkpoint metadata 时保留来源设置；普通 state dictionary 由用户指定模型规格，Core 按注册名称和形状匹配参数与 buffer，未匹配项保留初始化值，并生成项目内完整 LibTorch 权重。该入口不依赖模型包格式。
 
-**Pipeline 与扩展边界**：训练或导入确定设置 → checkpoint 固化 → 转换复制到 ONNX 权重说明 → Project/模型包保存 → 重开恢复 → 推理创建运行对象前读取一次 → preprocess 每图执行一次 → 网络和后处理不重复归一化。64 对齐是公共 preprocess 的内部行为，外部图片尺寸不构成对齐要求，不向权重说明或网络层增加对齐策略。转换中的网络对象随该次工作结束，后续推理独立加载权重。TensorRT/OpenVINO 可以复用权重说明、后台执行、保存、公共预处理与结果处理；网络层和权重映射须使用各自后端的原生实现，不以 ONNX 解析器代替。当前没有热插拔后端插件机制。
+**Pipeline 与扩展边界**按训练或导入确定设置 → checkpoint 固化 → 转换复制到派生权重说明 → Project 或模型包保存 → 重开恢复 → 推理创建运行对象前读取一次 → preprocess 每图执行一次的顺序运行。64 对齐由公共 preprocess 处理。转换中的网络对象随该次工作结束，后续推理独立加载资产。ONNX 和 OpenVINO 共用权重说明、后台任务、保存、预处理和结果处理，各自用 Core 的原生实现构图和映射权重。
 
-Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显式请求参数。Qt 的 `weight_conversion_contract` 用真实分类和分割 checkpoint 验证 Opset 18 导出、登记和重开，并在 CUDA 可用时对照同一资产的 CPU 与 GPU 结果。归一化开关、重复转换、失败清理、模型包和删除来源权重都由这条转换契约覆盖。项目存储与模型包共用归一化读写规则，推理启动时从选中的权重恢复设置。
+Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显式请求参数。Qt 的 `weight_conversion_contract` 用分类和分割 checkpoint 验证 ONNX 与 OpenVINO 导出、登记和重开，并在 CUDA 可用时对照 ONNX 的 CPU 和 GPU 结果。OpenVINO 用例还覆盖 BIN 占名、缺失诊断、Save As、模型包往返和成对删除。项目存储与模型包共用归一化读写规则，推理启动时从选中的权重恢复设置。
 
 **Paused**：Core 在完整 epoch 结束并保存 checkpoint 后返回。Qt 登记 last.pt，用户可以 Resume 和 Infer。
 

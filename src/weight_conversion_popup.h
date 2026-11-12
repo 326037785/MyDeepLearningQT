@@ -13,6 +13,10 @@ public:
     WeightConversionPopup(const jocelin::model::ModelEntry& model,
                           const jocelin::model::ModelWeight& source,
                           QWidget* parent = nullptr);
+    jocelin::config::WeightType target_format() const { return target_format_; }
+
+private:
+    jocelin::config::WeightType target_format_ = jocelin::config::WeightType::Onnx;
 };
 
 } // namespace studio

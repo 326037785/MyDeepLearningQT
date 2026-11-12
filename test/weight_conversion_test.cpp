@@ -1,5 +1,6 @@
 #include "execution_module.h"
 #include "model_actions.h"
+#include "model_weight_assets.h"
 #include "node_workspace.h"
 #include "project_manager.h"
 #include "project_storage.h"
@@ -99,8 +100,9 @@ int main(int argc, char** argv) try {
         ModelScale scale;
         bool normalize;
         bool project_actions;
+        WeightType target = WeightType::Onnx;
     };
-    const Scenario scenarios[] = {
+    std::vector<Scenario> scenarios{
         {ToolType::Cls, 2, ModelScale::N, true, true},
         {ToolType::Cls, 2, ModelScale::N, false, false},
         {ToolType::Cls, 1, ModelScale::S, true, false},
@@ -108,6 +110,11 @@ int main(int argc, char** argv) try {
         {ToolType::Sg, 1, ModelScale::M, true, false},
     };
     const auto capabilities = jocelin::runtime::available_runtime_capabilities();
+    const bool openvino_available = capabilities.openvino_cpu_runtime_available;
+    if (openvino_available) {
+        scenarios.push_back({ToolType::Cls, 2, ModelScale::N, true, true, WeightType::OpenVino});
+        scenarios.push_back({ToolType::Sg, 0, ModelScale::S, false, true, WeightType::OpenVino});
+    }
     const auto gpu = std::find_if(capabilities.devices.begin(), capabilities.devices.end(), [](const auto& device) {
         return jocelin::config::is_gpu(device);
     });
@@ -116,6 +123,10 @@ int main(int argc, char** argv) try {
     for (const auto& scenario : scenarios) {
         const bool normalize = scenario.normalize;
         const bool classification = scenario.task == ToolType::Cls;
+        const bool openvino = scenario.target == WeightType::OpenVino;
+        const std::string base_weight_id = openvino ? "openvino_fp32" : "onnx_fp32";
+        const std::string repeated_id = base_weight_id + (openvino ? "_3" : "_2");
+        const QString format_name = QString::fromStdString(jocelin::config::to_string(scenario.target));
         QTemporaryDir temporary;
         require(temporary.isValid(), "cannot create conversion fixture");
 
@@ -152,7 +163,8 @@ int main(int argc, char** argv) try {
         config.std[0] = 0.32198765f;
         config.std[1] = 1.2345679f;
         config.std[2] = 0.7777778f;
-        std::cout << "Verifying " << config.model_spec() << " normalize=" << normalize << std::endl;
+        std::cout << "Verifying " << config.model_spec() << " " << format_name.toStdString()
+                  << " normalize=" << normalize << std::endl;
         {
             const std::shared_ptr<torch::nn::Module> network = classification
                 ? std::static_pointer_cast<torch::nn::Module>(jocelin::cls_net::make_cls_model(config))
@@ -207,6 +219,10 @@ int main(int argc, char** argv) try {
             studio::WeightConversionPopup card(unsupported, source);
             QPushButton* unavailable = card.findChild<QPushButton*>("weightConversionConfirm");
             require(unavailable && !unavailable->isEnabled(), "unsupported model offered ONNX conversion");
+            QPushButton* unsupported_openvino = card.findChild<QPushButton*>("weightConversionOpenVino");
+            require(unsupported_openvino, "OpenVINO conversion choice is missing");
+            unsupported_openvino->click();
+            require(!unavailable->isEnabled(), "unsupported model offered OpenVINO conversion");
         }
         studio::TaskWorkspaceService service(graph, node);
         const studio::ProjectModel added = service.add_model(model);
@@ -273,15 +289,22 @@ int main(int argc, char** argv) try {
                 trt->click();
                 card_ok = card_ok && !devices->isHidden() && !cpu->isEnabled() && gpu->isChecked() && !confirm->isEnabled();
                 ov->click();
-                card_ok = card_ok && devices->isHidden() && !confirm->isEnabled();
-                onnx->click();
-                card_ok = card_ok && devices->isHidden() && confirm->isEnabled();
-                confirm->click();
+                card_ok = card_ok && !devices->isHidden() && cpu->isChecked() && !cpu->isEnabled() &&
+                    gpu->isHidden() && confirm->isEnabled() == openvino_available;
+                if (!openvino) {
+                    onnx->click();
+                    card_ok = card_ok && devices->isHidden() && confirm->isEnabled();
+                }
+                if (card_ok && confirm->isEnabled()) {
+                    confirm->click();
+                } else {
+                    popup->reject();
+                }
             });
             convert->click();
             require(card_ok && locked && execution.is_running(), "conversion card or startup lock failed");
         } else {
-            execution.start_weight_conversion(node, model_id, "alternate");
+            execution.start_weight_conversion(node, model_id, "alternate", scenario.target);
             require(locked && execution.is_running(), "conversion did not start");
         }
         QTimer::singleShot(120000, &completed, &QEventLoop::quit);
@@ -292,15 +315,15 @@ int main(int argc, char** argv) try {
         require(!execution.is_running() && !locked, "conversion did not unlock");
         const studio::ProjectModel* current = service.find_model(model_id);
         const jocelin::model::ModelWeight* result = current
-            ? jocelin::model::find_weight(*current, "onnx_fp32") : nullptr;
+            ? jocelin::model::find_weight(*current, base_weight_id) : nullptr;
         require(result && result->normalization && result->normalization->normalize == normalize &&
                 result->normalization->mean[0] == config.mean[0] && result->normalization->std[2] == config.std[2] &&
                 result->parent_weight_id == "alternate" &&
                 result->role == jocelin::model::WeightRole::Inference &&
-                result->format == WeightType::Onnx && result->onnx_opset == 18 &&
+                result->format == scenario.target && (openvino || result->onnx_opset == 18) &&
                 jocelin::model::find_training_weight(*current) &&
                 jocelin::model::find_training_weight(*current)->id == "libtorch_fp32" &&
-                QFileInfo(QString::fromStdString(result->path)).isFile(),
+                studio::ModelWeightAssets::missing(*result).isEmpty(),
                 "conversion did not register the selected source as an inference branch");
         const jocelin::model::ModelWeight converted = *result;
 
@@ -309,25 +332,29 @@ int main(int argc, char** argv) try {
             *training_weight, temporary.filePath("libtorch_inference").toStdString());
         const auto source_response = jocelin::inference::infer(source_request);
 
+        const QString orphan_bin = QDir(model_directory).filePath("openvino_fp32_2.bin");
         if (scenario.project_actions) {
             QComboBox* device_type = workspace.findChild<QComboBox*>("inferenceDeviceType");
             QComboBox* weight_type = workspace.findChild<QComboBox*>("inferenceWeightType");
             require(device_type && weight_type && device_type->findData("cpu") >= 0, "CPU inference is unavailable");
             device_type->setCurrentIndex(device_type->findData("cpu"));
-            require(weight_type->findData("onnx") >= 0, "converted weight is not selectable for CPU inference");
+            require(weight_type->findData(format_name) >= 0, "converted weight is not selectable for CPU inference");
             if (cuda_available) {
                 const int gpu_index = device_type->findData("gpu");
                 require(gpu_index >= 0, "CUDA is absent from the device choices");
                 device_type->setCurrentIndex(gpu_index);
-                require(weight_type->findData("onnx") >= 0, "converted weight is not selectable for CUDA inference");
+                require((weight_type->findData(format_name) >= 0) == !openvino, "converted format exposed on the wrong device");
             }
-            execution.start_weight_conversion(node, model_id, "libtorch_fp32");
+            if (openvino) {
+                studio::ProjectStorage::write_atomic(orphan_bin, "reserved BIN");
+            }
+            execution.start_weight_conversion(node, model_id, "libtorch_fp32", scenario.target);
             require(execution.is_running(), "second conversion did not start");
             completed.exec();
             require(!execution.is_running() && error_log.isEmpty(), "second conversion failed");
             current = service.find_model(model_id);
-            require(jocelin::model::find_weight(*current, "onnx_fp32_2") &&
-                    QFileInfo(QString::fromStdString(converted.path)).isFile(),
+            require(jocelin::model::find_weight(*current, repeated_id) &&
+                    studio::ModelWeightAssets::missing(converted).isEmpty(),
                     "repeated conversion overwrote an existing branch");
         }
 
@@ -336,8 +363,8 @@ int main(int argc, char** argv) try {
         studio::TaskWorkspaceService restored(reopened.active_workflow().document.graph, node);
         const studio::ProjectModel* saved = restored.find_model(model_id);
         const jocelin::model::ModelWeight* saved_weight = saved
-            ? jocelin::model::find_weight(*saved, "onnx_fp32") : nullptr;
-        require(saved_weight && saved_weight->parent_weight_id == "alternate" && saved_weight->onnx_opset == 18 &&
+            ? jocelin::model::find_weight(*saved, base_weight_id) : nullptr;
+        require(saved_weight && saved_weight->parent_weight_id == "alternate" && (openvino || saved_weight->onnx_opset == 18) &&
                 saved_weight->normalization && saved_weight->normalization->normalize == normalize &&
                 saved_weight->normalization->mean == converted.normalization->mean &&
                 saved_weight->normalization->std == converted.normalization->std,
@@ -347,19 +374,19 @@ int main(int argc, char** argv) try {
                 temporary.filePath(folder).toStdString());
             const auto response = jocelin::inference::infer(request);
             require(!response.fallback.occurred && response.fallback.effective_device == device,
-                    "ONNX inference did not use the selected device");
+                    "converted inference did not use the selected device");
             return response.report;
         };
-        const auto cpu_report = infer_restored(jocelin::config::cpu_device(), "onnx_cpu");
+        const auto cpu_report = infer_restored(jocelin::config::cpu_device(), "converted_cpu");
         require_same_result(source_response.report, cpu_report);
-        if (cuda_available) {
+        if (cuda_available && !openvino) {
             require_same_result(cpu_report, infer_restored(*gpu, "onnx_cuda"));
             std::cout << "CUDA inference passed for " << config.model_spec() << '\n';
         }
         if (!scenario.project_actions) {
             continue;
         }
-        require(jocelin::model::find_weight(*saved, "onnx_fp32_2"), "second converted branch did not reopen");
+        require(jocelin::model::find_weight(*saved, repeated_id), "second converted branch did not reopen");
 
         const QString bad_path = QDir(model_directory).filePath("invalid.pt");
         QFile bad_file(bad_path);
@@ -372,13 +399,19 @@ int main(int argc, char** argv) try {
         const studio::ProjectModel invalid = service.add_model(model);
         project.mark_active_dirty();
         project.save_project();
-        execution.start_weight_conversion(node, QString::fromStdString(invalid.id), "libtorch_fp32");
+        execution.start_weight_conversion(node, QString::fromStdString(invalid.id), "libtorch_fp32", scenario.target);
         require(execution.is_running(), "invalid checkpoint did not reach the worker");
         completed.exec();
+        const QString failed_output = QDir(model_directory).filePath(openvino ? "openvino_fp32_4.xml" : "onnx_fp32_3.onnx");
+        const QStringList failed_assets = studio::ModelWeightAssets::files(scenario.target, failed_output);
         require(!execution.is_running() && !locked && !error_log.isEmpty() &&
                 service.find_model(QString::fromStdString(invalid.id))->weights.size() == 1 &&
-                !QFileInfo::exists(QDir(model_directory).filePath("onnx_fp32_3.onnx")),
+                std::none_of(failed_assets.begin(), failed_assets.end(), [](const QString& path) { return QFileInfo::exists(path); }),
                 "failed conversion registered or left an output branch");
+        if (openvino) {
+            require(studio::ProjectStorage::read(orphan_bin) == "reserved BIN" && QFile::remove(orphan_bin),
+                    "OpenVINO conversion overwrote the existing BIN");
+        }
         for (QMessageBox* message : host.findChildren<QMessageBox*>()) {
             message->accept();
         }
@@ -386,9 +419,7 @@ int main(int argc, char** argv) try {
         models.log = [](const QString&) {};
         models.status = [](const QString&, int) {};
         models.models_changed = [] {};
-        const QString export_directory = temporary.filePath("exports");
-        require(QDir().mkpath(export_directory), "cannot create model export directory");
-        QString selected_path = export_directory;
+        QString selected_path;
         QString dialog_error;
         QTimer file_dialogs;
         QObject::connect(&file_dialogs, &QTimer::timeout, [&] {
@@ -401,12 +432,18 @@ int main(int argc, char** argv) try {
                 message->accept();
             }
         });
-        file_dialogs.start(5);
-        models.export_model(node, model_id);
-        file_dialogs.stop();
-        const QStringList bundles = QDir(export_directory).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-        require(dialog_error.isEmpty() && bundles.size() == 1, "model bundle export failed");
-        selected_path = QDir(QDir(export_directory).filePath(bundles.front())).filePath("model.json");
+        const auto export_bundle = [&](studio::ModelActions& actions, const QString& directory) {
+            require(QDir().mkpath(directory), "cannot create model export directory");
+            selected_path = directory;
+            dialog_error.clear();
+            file_dialogs.start(5);
+            actions.export_model(node, model_id);
+            file_dialogs.stop();
+            const QStringList bundles = QDir(directory).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+            require(dialog_error.isEmpty() && bundles.size() == 1, "model bundle export failed");
+            return QDir(QDir(directory).filePath(bundles.front())).filePath("model.json");
+        };
+        selected_path = export_bundle(models, temporary.filePath("exports"));
         file_dialogs.start(5);
         models.import_model(node);
         file_dialogs.stop();
@@ -417,7 +454,7 @@ int main(int argc, char** argv) try {
                 imported_weight->normalization->normalize == normalize &&
                 imported_weight->normalization->mean == converted.normalization->mean &&
                 imported_weight->normalization->std == converted.normalization->std,
-                "model bundle lost ONNX normalization");
+                "model bundle lost converted weight normalization");
         const auto imported_request = service.build_inference_request(jocelin::config::cpu_device(), imported,
             *imported_weight, temporary.filePath("imported_inference").toStdString());
         const auto imported_response = jocelin::inference::infer(imported_request);
@@ -426,6 +463,19 @@ int main(int argc, char** argv) try {
         require(bundle_file.open(QIODevice::ReadOnly), "cannot read exported model bundle");
         const QJsonObject bundle = QJsonDocument::fromJson(bundle_file.readAll()).object();
         bundle_file.close();
+        if (openvino) {
+            const QDir bundle_directory(QFileInfo(selected_path).absolutePath());
+            bool found = false;
+            for (const QJsonValue& entry : bundle.value("weights").toArray()) {
+                const QJsonObject weight = entry.toObject();
+                if (weight.value("id").toString() == QString::fromStdString(base_weight_id)) {
+                    const QString bin = QString::fromStdString(base_weight_id) + ".bin";
+                    found = weight.value("associated_files").toArray() == QJsonArray{bin} &&
+                        QFileInfo(bundle_directory.filePath(bin)).isFile();
+                }
+            }
+            require(found, "model bundle did not publish the OpenVINO asset pair");
+        }
         const size_t imported_count = service.models().size();
         for (int omission = 0; omission < 3; ++omission) {
             QJsonObject invalid_bundle = bundle;
@@ -438,7 +488,7 @@ int main(int argc, char** argv) try {
                     QJsonObject weight = weights[index].toObject();
                     if (omission == 1) {
                         weight.remove("role");
-                    } else if (weight.value("format").toString() == "onnx") {
+                    } else if (weight.value("format").toString() == format_name) {
                         weight.remove("normalization");
                     }
                     weights[index] = weight;
@@ -454,21 +504,81 @@ int main(int argc, char** argv) try {
                     "model import accepted an obsolete or incomplete manifest");
         }
         studio::ProjectStorage::write_atomic(selected_path, QJsonDocument(bundle).toJson());
-        // The ONNX branch must remain usable after both LibTorch sources are deleted.
+        // The converted branch must remain usable after both LibTorch sources are deleted.
         reopened.remove_models(node, {model_id}, "alternate");
         reopened.remove_models(node, {model_id}, "libtorch_fp32");
         require(!QFileInfo::exists(checkpoint), "source deletion retained the checkpoint");
         studio::ProjectManager independent;
-        require(independent.open_project(reopened.project_file()).empty(), "independent ONNX branch did not reopen");
+        require(independent.open_project(reopened.project_file()).empty(), "independent converted branch did not reopen");
         studio::TaskWorkspaceService independent_service(independent.active_workflow().document.graph, node);
         const studio::ProjectModel* independent_model = independent_service.find_model(model_id);
         const jocelin::model::ModelWeight* independent_weight = independent_model
             ? jocelin::model::find_weight(*independent_model, converted.id) : nullptr;
-        require(independent_weight, "independent ONNX branch is missing");
+        require(independent_weight, "independent converted branch is missing");
         const auto independent_request = independent_service.build_inference_request(jocelin::config::cpu_device(),
             *independent_model, *independent_weight, temporary.filePath("independent_inference").toStdString());
         const auto independent_response = jocelin::inference::infer(independent_request);
         require_same_result(source_response.report, independent_response.report);
+        if (openvino) {
+            const QStringList original_assets = studio::ModelWeightAssets::files(*independent_weight);
+            require(original_assets.size() == 2, "independent IR pair is incomplete");
+            const QString bin = original_assets.back();
+            const QString held_bin = bin + ".held";
+            require(QFile::rename(bin, held_bin), "cannot set up missing BIN fixture");
+            studio::ProjectManager incomplete;
+            const auto missing = incomplete.open_project(independent.project_file());
+            require(missing.size() == 1 && missing.front().node_id == node &&
+                    missing.front().model_id == model_id &&
+                    missing.front().weight_ids == QStringList{QString::fromStdString(base_weight_id)} &&
+                    missing.front().paths == QStringList{bin} && !missing.front().all_weights_missing,
+                    "project did not diagnose the missing BIN on its owning branch");
+            bool blocked = false;
+            try {
+                independent_service.build_inference_request(jocelin::config::cpu_device(), *independent_model,
+                    *independent_weight, temporary.filePath("missing_bin_inference").toStdString());
+            } catch (const std::runtime_error& error) {
+                blocked = QString::fromUtf8(error.what()).contains(bin);
+            }
+            require(blocked && QFile::rename(held_bin, bin), "inference accepted a missing BIN or fixture restoration failed");
+
+            studio::ProjectManager copied;
+            require(copied.open_project(independent.project_file()).empty(), "source project could not reopen");
+            copied.save_project_as("IR Copy", temporary.path());
+            require(copied.open_project(copied.project_file()).empty(), "Save As lost the OpenVINO asset pair");
+            studio::TaskWorkspaceService copy_service(copied.active_workflow().document.graph, node);
+            const studio::ProjectModel* copy_model = copy_service.find_model(model_id);
+            require(copy_model, "Save As lost the converted model");
+            const jocelin::model::ModelWeight* copy_weight = jocelin::model::find_weight(*copy_model, base_weight_id);
+            require(copy_weight && copy_weight->path != independent_weight->path &&
+                    studio::ModelWeightAssets::missing(*copy_weight).isEmpty(), "Save As did not relocate the IR pair");
+            const QStringList copy_assets = studio::ModelWeightAssets::files(*copy_weight);
+            const auto copied_request = copy_service.build_inference_request(jocelin::config::cpu_device(),
+                *copy_model, *copy_weight, temporary.filePath("save_as_inference").toStdString());
+            require_same_result(source_response.report, jocelin::inference::infer(copied_request).report);
+            copied.remove_models(node, {model_id}, QString::fromStdString(base_weight_id));
+            const studio::ProjectModel* remaining = copy_service.find_model(model_id);
+            const jocelin::model::ModelWeight* retained = remaining ? jocelin::model::find_weight(*remaining, repeated_id) : nullptr;
+            require(std::none_of(copy_assets.begin(), copy_assets.end(), [](const QString& path) { return QFileInfo::exists(path); }) &&
+                    retained && studio::ModelWeightAssets::missing(*retained).isEmpty() && QFileInfo(bin).isFile(),
+                    "deleting an IR branch did not remove exactly its own asset pair");
+
+            studio::ModelActions independent_actions(independent, &host);
+            independent_actions.status = [](const QString&, int) {};
+            selected_path = export_bundle(independent_actions, temporary.filePath("independent_exports"));
+            file_dialogs.start(5);
+            independent_actions.import_model(node);
+            file_dialogs.stop();
+            require(dialog_error.isEmpty(), "Studio model package with only OpenVINO branches could not be imported");
+            const studio::ProjectModel& imported_ir = independent_service.models().back();
+            const jocelin::model::ModelWeight* imported_ir_weight = jocelin::model::find_weight(imported_ir, base_weight_id);
+            require(imported_ir.id != model_id.toStdString() && imported_ir_weight &&
+                    !jocelin::model::find_training_weight(imported_ir) &&
+                    studio::ModelWeightAssets::missing(*imported_ir_weight).isEmpty(), "IR-only model package lost its assets");
+            const auto imported_ir_request = independent_service.build_inference_request(jocelin::config::cpu_device(),
+                imported_ir, *imported_ir_weight, temporary.filePath("imported_ir_inference").toStdString());
+            require_same_result(source_response.report, jocelin::inference::infer(imported_ir_request).report);
+            continue;
+        }
         const QString catalog_path = QDir(independent.node_models_directory(node)).filePath("model_list.json");
         QFile catalog_file(catalog_path);
         require(catalog_file.open(QIODevice::ReadOnly), "cannot read saved model catalog");

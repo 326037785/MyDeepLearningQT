@@ -727,16 +727,17 @@ Cancel keeps Project data unchanged; unavailable weights cannot be used for trai
     <name>studio::WeightConversionPopup</name>
     <message><source>Convert weight</source><translation>转换权重</translation></message>
     <message><source>Convert</source><translation>转换</translation></message>
+    <message><source>CPU / FP32</source><translation>CPU / FP32</translation></message>
     <message><source>Conversion is not available for this model or format.</source><translation>当前模型或格式暂不支持转换。</translation></message>
   </context>
   <context>
     <name>studio::ExecutionModule</name>
-    <message><source>Converting weight to ONNX…</source><translation>正在将权重转换为 ONNX…</translation></message>
-    <message><source>Converting %1 to ONNX</source><translation>正在将 %1 转换为 ONNX</translation></message>
+    <message><source>Converting weight to %1…</source><translation>正在将权重转换为 %1…</translation></message>
+    <message><source>Converting %1 to %2</source><translation>正在将 %1 转换为 %2</translation></message>
     <message><source>Cannot convert weight</source><translation>无法转换权重</translation></message>
     <message><source>The weight was converted but the project could not be saved: %1</source><translation>权重已转换，但无法保存项目：%1</translation></message>
     <message><source>&#10;Could not remove the incomplete asset: %1</source><translation>&#10;无法删除未完成的资产：%1</translation></message>
-    <message><source>Weight converted to ONNX</source><translation>权重已转换为 ONNX</translation></message>
+    <message><source>Weight converted to %1</source><translation>权重已转换为 %1</translation></message>
     <message><source>Weight conversion failed: %1</source><translation>权重转换失败：%1</translation></message>
     <message><source>Weight conversion</source><translation>权重转换</translation></message>
     <message><source>Error</source><translation>错误</translation></message>
