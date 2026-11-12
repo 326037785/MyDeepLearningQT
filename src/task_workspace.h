@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 
+class QComboBox;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
@@ -89,7 +90,7 @@ private:
     ResultsWorkspace* results_ = nullptr;
     ProjectModelBrowser* annotation_models_ = nullptr;
     QWidget* annotation_models_tab_ = nullptr;
-    QLabel* annotation_selection_ = nullptr;
+    QComboBox* annotation_weight_branch_ = nullptr;
     QTabWidget* segmentation_inspector_ = nullptr;
     QTabWidget* classification_inspector_ = nullptr;
     std::array<QPushButton*, 6> step_buttons_{};

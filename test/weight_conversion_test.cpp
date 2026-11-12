@@ -213,6 +213,7 @@ int main(int argc, char** argv) try {
         model.weights.push_back(source);
         source.id = "alternate";
         source.role = jocelin::model::WeightRole::Inference;
+        source.supported_device_types = {jocelin::config::DeviceType::Cpu};
         model.weights.push_back(source);
         if (scenario.project_actions) {
             studio::ProjectModel unsupported = model;
@@ -343,16 +344,20 @@ int main(int argc, char** argv) try {
                 ? list->itemWidget(list->topLevelItem(0), openvino ? 3 : 2) : nullptr;
             QCheckBox* check = cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
             require(device_type && infer && check && device_type->findData("cpu") >= 0, "CPU inference is unavailable");
-            device_type->setCurrentIndex(device_type->findData("cpu"));
-            check->click();
-            require(infer->isEnabled(), "checked converted branch is not selectable for CPU inference");
             if (cuda_available) {
                 const int gpu_index = device_type->findData("gpu");
                 require(gpu_index >= 0, "CUDA is absent from the device choices");
                 device_type->setCurrentIndex(gpu_index);
-                require(check->isChecked() && infer->isEnabled() == !openvino, "checked branch has the wrong device support");
             }
-            device_type->setCurrentIndex(device_type->findData("cpu"));
+            check->click();
+            if (openvino) {
+                require(device_type->currentData().toString() == "cpu" && device_type->findData("gpu") < 0 && infer->isEnabled(),
+                        "OpenVINO did not select CPU and enable Infer after CUDA was selected");
+            } else if (cuda_available) {
+                require(device_type->currentData().toString() == "gpu" && infer->isEnabled(),
+                        "ONNX did not retain the selected CUDA device");
+            }
+            require(infer->isEnabled(), "checked converted branch is not runnable");
             infer->click();
             require(locked && execution.is_running(), "checked converted branch did not start inference");
             completed.exec();
@@ -368,6 +373,10 @@ int main(int argc, char** argv) try {
             check = cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox");
             require(check && check->isChecked(), "finished inference lost its branch check");
             check->click();
+            if (cuda_available) {
+                require(device_type->currentData().toString() == "gpu" && jocelin::config::is_gpu(service.task().device),
+                        "running the converted branch changed the user's CUDA preference");
+            }
             QWidget* libtorch = list->itemWidget(list->topLevelItem(0), 1);
             QComboBox* branches = libtorch->findChild<QComboBox*>("projectModelWeightBranch");
             QCheckBox* libtorch_check = libtorch->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox");
@@ -377,6 +386,8 @@ int main(int argc, char** argv) try {
             branches->setCurrentIndex(alternate);
             QMetaObject::invokeMethod(branches, "activated", Qt::DirectConnection, Q_ARG(int, alternate));
             libtorch_check->click();
+            require(device_type->currentData().toString() == "cpu" && device_type->findData("gpu") < 0 && infer->isEnabled(),
+                    "CPU-only LibTorch branch did not select CPU and enable Infer");
             infer->click();
             require(locked && execution.is_running(), "checked LibTorch branch did not start inference");
             completed.exec();

@@ -1983,6 +1983,7 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
         if (clear_models_requested) clear_models_requested();
     };
     model_browser_->weight_checks_changed = [this] {
+        refresh_device_types();
         commit_result_selection();
         update_command_presentation();
     };
@@ -2117,6 +2118,7 @@ void InferenceWorkspace::refresh() {
     images_->clear();
     if (!service_) {
         available_devices_.clear();
+        cpu_only_weight_ = false;
         device_type_->clear();
         device_->clear();
         model_browser_->set_models({});
@@ -2229,7 +2231,20 @@ void InferenceWorkspace::synchronize_result_selection() {
 }
 
 void InferenceWorkspace::refresh_device_types() {
-    if (!device_type_) return;
+    if (!device_type_) {
+        return;
+    }
+    using jocelin::config::DeviceType;
+    const jocelin::model::ModelWeight* weight = selected_weight(model_browser_->checked_weights());
+    cpu_only_weight_ = false;
+    if (weight && jocelin::model::weight_supports_device(*weight, DeviceType::Cpu)) {
+        cpu_only_weight_ = !jocelin::model::weight_supports_device(*weight, DeviceType::Gpu);
+        if (!cpu_only_weight_) {
+            const jocelin::runtime::RuntimeCapabilities capabilities = jocelin::runtime::available_runtime_capabilities();
+            cpu_only_weight_ = jocelin::runtime::runtime_supports_device(weight->format, DeviceType::Cpu, capabilities) &&
+                !jocelin::runtime::runtime_supports_device(weight->format, DeviceType::Gpu, capabilities);
+        }
+    }
     QString preferred;
     if (service_)
         preferred = QString::fromStdString(
@@ -2246,11 +2261,14 @@ void InferenceWorkspace::refresh_device_types() {
     }
     for (const auto type : {jocelin::config::DeviceType::Cpu,
                             jocelin::config::DeviceType::Gpu}) {
-        if (types.count(type) == 0) continue;
+        if (types.count(type) == 0 || (cpu_only_weight_ && type != DeviceType::Cpu)) {
+            continue;
+        }
         device_type_->addItem(
             device_type_label(type),
             QString::fromStdString(jocelin::config::to_string(type)));
     }
+    device_type_->setToolTip(cpu_only_weight_ ? tr("The checked Weight branch requires CPU.") : QString{});
     const int preferred_index = device_type_->findData(preferred);
     if (preferred_index >= 0) device_type_->setCurrentIndex(preferred_index);
     refresh_devices();
@@ -2258,18 +2276,19 @@ void InferenceWorkspace::refresh_device_types() {
 
 void InferenceWorkspace::refresh_devices() {
     if (!device_ || !device_type_) return;
+    const QString selected_type = device_type_->currentData().toString();
     QString preferred_id;
     int preferred_index = -1;
     if (service_) {
         preferred_id = QString::fromStdString(service_->task().device.id);
         preferred_index = service_->task().device.index;
     }
-    if (const auto* selected = selected_device()) {
+    const jocelin::runtime::ComputeDevice* selected = selected_device();
+    if (selected && QString::fromStdString(jocelin::config::to_string(selected->device.type)) == selected_type) {
         preferred_id = QString::fromStdString(selected->device.id);
         preferred_index = selected->device.index;
     }
 
-    const QString selected_type = device_type_->currentData().toString();
     QSignalBlocker blocker(device_);
     device_->clear();
     int match = -1;
@@ -2289,7 +2308,10 @@ void InferenceWorkspace::refresh_devices() {
 }
 
 void InferenceWorkspace::commit_device() {
-    if (rebuilding_ || !service_) return;
+    // Keep the user's device preference when CPU is required by the checked branch.
+    if (rebuilding_ || !service_ || cpu_only_weight_) {
+        return;
+    }
     const auto* compute = selected_device();
     if (!compute || service_->task().device == compute->device) return;
     service_->task().device = compute->device;

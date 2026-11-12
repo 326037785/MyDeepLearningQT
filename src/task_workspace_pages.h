@@ -221,6 +221,7 @@ private:
     QProgressBar* progress_ = nullptr;
     bool rebuilding_ = false;
     bool busy_ = false;
+    bool cpu_only_weight_ = false;
     std::vector<jocelin::runtime::ComputeDevice> available_devices_;
 };
 

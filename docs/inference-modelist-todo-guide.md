@@ -32,6 +32,8 @@ TaskNodeConfig 持有 Core 的 `jocelin::model::ModelList`。Training、Inferenc
 
 推理时，CPU 和 CUDA GPU 共用同一份 ONNX 权重。Qt 根据 Core 报告的 Provider 与设备能力显示可用组合，由 Core 按本次选择建立 Session。
 
+仅勾选一个只支持 CPU 的分支时（例如 OpenVINO），Inference 的设备列表自动切到 CPU，本次 Infer 使用 CPU。取消该分支勾选后，设备列表恢复此前的设备选择。
+
 OpenVINO 分支的 `path` 指向 XML，`associated_files` 在 Project 和 Studio 模型包中记录同目录的 BIN 文件名。旧记录缺少该字段时按 XML 文件名推导同名 BIN。Project 重开时报告具体缺失文件，推理要求文件对齐全。Save As 随模型目录复制文件对，模型包往返和分支删除也按文件对处理。包含完整模型和归一化元数据的 Studio 模型包可以导入仅含 OpenVINO 权重的模型行。
 
 **归一化设置**随模型权重确定。LibTorch 从 checkpoint 恢复 `normalize` 和三通道 `mean/std`。转换生成的 ONNX 和 OpenVINO 分支将来源设置保存在 `ModelWeight.normalization` 中，随 `model_list.json` 和模型导出包保存。派生分支使用自己的快照独立推理。
@@ -79,6 +81,7 @@ Results 和 Annotation 的 ModelList 用于查看已保存结果。Inference 的
 - Model row 对应 model_id。
 - Weight branch 对应 weight_id。
 - Annotation、Inference、Results 共用 TaskWorkspaceService 的选择状态。
+- Annotation 的 Models 页签可通过格式单元格或下拉框选择当前模型的权重。Annotation 的 Results 页签随之显示当前图片的结果。
 - 在 Results 或 Annotation 选择 branch，或在 Inference 勾选至仅剩一份 branch 时，刷新该 branch 的结果。查看结果时保留 Inference 的勾选状态。
 - 所选 branch 无结果时，显示空结果并清除 inference overlay。
 

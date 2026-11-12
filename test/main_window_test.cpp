@@ -429,6 +429,7 @@ int main(int argc, char** argv) try {
                 throw std::runtime_error("Training/Inference/Results browser used another TaskNode's models");
     }
     auto& result_task = std::get<studio::TaskNodeConfig>(model_graph.node(2).config);
+    result_task.model_list.entries().front().weights.pop_back(); // Leave the TensorRT cell empty.
     auto extra_branch = result_task.model_list.entries().front().weights.front();
     extra_branch.id = "libtorch_alternate";
     result_task.model_list.entries().front().weights.push_back(extra_branch);
@@ -437,7 +438,7 @@ int main(int argc, char** argv) try {
     auto another_model = result_task.model_list.entries().front();
     another_model.id = "another_model"; another_model.name = "Another model";
     result_task.model_list.entries().push_back(another_model);
-    for (const auto& branch : {std::string("libtorch_fp32"), std::string("libtorch_alternate")}) {
+    for (const std::string& branch : {std::string("libtorch_fp32"), std::string("libtorch_alternate"), std::string("onnx_fp32")}) {
         studio::InferenceResultSet result;
         result.model_id = "route_model"; result.weight_id = branch;
         const auto& sample = result_task.dataset_binding.samples.front();
@@ -445,7 +446,7 @@ int main(int argc, char** argv) try {
         value.image_path = sample.image_paths.front();
         const QImage original_image(QString::fromStdString(value.image_path));
         value.image_width = original_image.width(); value.image_height = original_image.height();
-        value.mean_confidence = branch == "libtorch_fp32" ? 0.25 : 0.75;
+        value.mean_confidence = branch == "onnx_fp32" ? 0.5 : branch == "libtorch_fp32" ? 0.25 : 0.75;
         jocelin::result::sg::SgResult::Component component;
         component.label = 1; component.interest = true;
         component.region.vRun.emplace_back(1, 1, 3, 1);
@@ -458,6 +459,8 @@ int main(int argc, char** argv) try {
     auto* annotation_model_rows = annotation_models ? annotation_models->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
     auto* annotation_branch = annotation_model_rows && annotation_model_rows->topLevelItemCount() > 0
         ? qobject_cast<QComboBox*>(annotation_model_rows->itemWidget(annotation_model_rows->topLevelItem(0), 1)) : nullptr;
+    QComboBox* annotation_weight = owned_workspace.findChild<QComboBox*>("annotationWeightBranch");
+    QLabel* annotation_result = owned_workspace.findChild<QLabel*>("segmentationAnnotationResultDetails");
     auto* result_branch = owned_workspace.findChild<QComboBox*>("resultsWeightBranch");
     QTreeWidget* inference_rows = model_rows(owned_workspace, "inferenceProjectModelBrowser");
     QWidget* libtorch_cell = inference_rows && inference_rows->topLevelItemCount() > 0
@@ -476,7 +479,7 @@ int main(int argc, char** argv) try {
     studio::ImageResultCanvas* infer_canvas = dynamic_cast<studio::ImageResultCanvas*>(
         owned_workspace.findChild<QWidget*>("inferenceSegmentationCanvas"));
     auto* annotation_canvas = dynamic_cast<studio::MaskCanvas*>(owned_workspace.findChild<QWidget*>("segmentationMaskCanvas"));
-    if (!annotation_branch || !result_branch || !result_cell_branch || !inference_branch || !inference_check || !owned_start ||
+    if (!annotation_branch || !annotation_weight || !annotation_result || !result_branch || !result_cell_branch || !inference_branch || !inference_check || !owned_start ||
         !result_table || !infer_canvas || !annotation_canvas) {
         throw std::runtime_error("branch result selectors or previews missing");
     }
@@ -488,11 +491,28 @@ int main(int argc, char** argv) try {
         annotation_branch->setCurrentIndex(index);
         QMetaObject::invokeMethod(annotation_branch, "activated", Qt::DirectConnection, Q_ARG(int, index));
         const bool available = branch != "no_result";
-        if (result_branch->currentData().toString() != branch || result_cell_branch->currentData().toString() != branch ||
+        if (annotation_weight->currentData().toString() != branch ||
+            result_branch->currentData().toString() != branch || result_cell_branch->currentData().toString() != branch ||
             inference_check->isChecked() || owned_start->isEnabled() || result_table->rowCount() != (available ? 1 : 0) ||
             infer_canvas->has_prediction_overlay() != available || annotation_canvas->has_prediction_overlay() != available ||
-            (available && result_confidence() != (branch == "libtorch_fp32" ? 0.25 : 0.75)))
+            (available && result_confidence() != (branch == "libtorch_fp32" ? 0.25 : 0.75))) {
             throw std::runtime_error("branch selection did not synchronize Results/Inference/Annotation or empty state");
+        }
+    }
+    result_branch->setCurrentIndex(result_branch->findData("onnx_fp32"));
+    if (annotation_weight->currentData().toString() != "onnx_fp32" || !annotation_canvas->has_prediction_overlay() ||
+        !annotation_result->text().contains("0.5000") || result_confidence() != 0.5) {
+        throw std::runtime_error("Results branch selection did not refresh the Annotation prediction");
+    }
+    annotation_weight->setCurrentIndex(annotation_weight->findData("no_result"));
+    if (result_branch->currentData().toString() != "no_result" || result_table->rowCount() != 0 ||
+        annotation_canvas->has_prediction_overlay() || !annotation_result->text().contains("No inference result")) {
+        throw std::runtime_error("Annotation branch without a result did not clear both views");
+    }
+    annotation_weight->setCurrentIndex(annotation_weight->findData("libtorch_alternate"));
+    if (result_branch->currentData().toString() != "libtorch_alternate" || !annotation_result->text().contains("0.7500") ||
+        result_confidence() != 0.75 || inference_check->isChecked() || owned_start->isEnabled()) {
+        throw std::runtime_error("Annotation branch selector did not restore the exact result independently of Infer");
     }
     const int saved_branch_index = result_cell_branch->findData("libtorch_fp32");
     result_cell_branch->setCurrentIndex(saved_branch_index);
@@ -523,12 +543,18 @@ int main(int argc, char** argv) try {
     inference_row->setCheckState(0, Qt::Checked);
     QLabel* owned_checked_weight = owned_workspace.findChild<QLabel*>("inferenceCheckedWeight");
     if (!inference_check->isChecked() || owned_start->isEnabled() || !owned_checked_weight ||
-        !owned_checked_weight->text().contains("6")) {
+        !owned_checked_weight->text().contains("5")) {
         throw std::runtime_error("Checking a model row did not include every branch");
     }
     inference_row->setCheckState(0, Qt::Unchecked);
     if (inference_check->isChecked() || owned_start->isEnabled()) {
         throw std::runtime_error("Unchecking a model row retained branch checks");
+    }
+    QTreeWidgetItem* annotation_row = annotation_model_rows->topLevelItem(0);
+    QMetaObject::invokeMethod(annotation_model_rows, "itemClicked", Qt::DirectConnection,
+                              Q_ARG(QTreeWidgetItem*, annotation_row), Q_ARG(int, 4));
+    if (result_confidence() != 0.75 || !annotation_canvas->has_prediction_overlay()) {
+        throw std::runtime_error("Clicking an empty Annotation format cell cleared the selected branch");
     }
     if (!annotation_model_rows || annotation_model_rows->topLevelItemCount() != 2)
         throw std::runtime_error("Annotation has no Node ModelList row selector");

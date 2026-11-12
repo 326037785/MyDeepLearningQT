@@ -8,12 +8,14 @@
 #include "task_module_catalog.h"
 #include "ui_metrics.h"
 
+#include <QComboBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTabWidget>
@@ -199,17 +201,29 @@ QWidget* TaskWorkspace::build_annotation_page() {
         }
     };
     annotation_models_->weight_branch_selection_changed = [this](const QString& model_id, const QString& weight_id) {
-        if (service_) {
+        if (!service_) {
+            return;
+        }
+        if (weight_id.isEmpty()) {
+            service_->select_inference_model(model_id);
+        } else {
             service_->select_inference_result(model_id, weight_id);
         }
     };
     annotation_models_->set_weight_selection_mode(true);
     models_layout->addWidget(annotation_models_, 1);
-    annotation_selection_ = new QLabel(tr("No model selected"), annotation_models_tab_);
-    annotation_selection_->setObjectName("annotationModelSelection");
-    annotation_selection_->setWordWrap(true);
-    annotation_selection_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    models_layout->addWidget(annotation_selection_);
+    annotation_weight_branch_ = new QComboBox(annotation_models_tab_);
+    annotation_weight_branch_->setObjectName("annotationWeightBranch");
+    annotation_weight_branch_->setAccessibleName(tr("Weight branch"));
+    annotation_weight_branch_->setPlaceholderText(tr("No model selected"));
+    annotation_weight_branch_->setEnabled(false);
+    models_layout->addWidget(annotation_weight_branch_);
+    connect(annotation_weight_branch_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (service_ && index >= 0) {
+            service_->select_inference_result(service_->selected_model_id(),
+                annotation_weight_branch_->itemData(index).toString());
+        }
+    });
     segmentation_inspector_->insertTab(1, annotation_models_tab_, tr("Models"));
     segmentation_->hide();
     classification_->hide();
@@ -456,30 +470,30 @@ void TaskWorkspace::refresh_annotation() {
 }
 
 void TaskWorkspace::refresh_inference_result() {
-    annotation_selection_->setText(tr("No model selected"));
-    if (service_) {
-        const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
-        const jocelin::model::ModelWeight* weight = model
-            ? jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString()) : nullptr;
+    const jocelin::model::ModelEntry* model = service_ ? service_->find_model(service_->selected_model_id()) : nullptr;
+    const QSignalBlocker branch_blocker(annotation_weight_branch_);
+    annotation_weight_branch_->clear();
+    annotation_weight_branch_->setPlaceholderText(model ? tr("No weight selected") : tr("No model selected"));
+    if (model) {
+        for (const jocelin::model::ModelWeight& branch : model->weights) {
+            const QString id = QString::fromStdString(branch.id);
+            annotation_weight_branch_->addItem(id, id);
+        }
+        const QString weight_id = service_->selected_weight_id();
+        annotation_weight_branch_->setCurrentIndex(annotation_weight_branch_->findData(weight_id));
+        const jocelin::model::ModelWeight* weight = jocelin::model::find_weight(*model, weight_id.toStdString());
         if (weight) {
-            annotation_selection_->setText(tr("%1 · Weight: %2")
-                .arg(QString::fromStdString(model->name), QString::fromStdString(weight->id)));
-            annotation_models_->set_current_weight(service_->selected_model_id(), weight->format,
-                                                   service_->selected_weight_id());
-        } else if (model) {
+            annotation_models_->set_current_weight(service_->selected_model_id(), weight->format, weight_id);
+        } else {
             annotation_models_->set_current_model_id(service_->selected_model_id());
         }
-        if (model && !weight) {
-            annotation_selection_->setText(tr("%1 · No weight selected").arg(QString::fromStdString(model->name)));
-        }
     }
-    const auto* selected = service_ && service_->source_node_id() != 0 ? service_->selected_inference_result() : nullptr;
+    annotation_weight_branch_->setEnabled(annotation_weight_branch_->count() > 0);
+    const InferenceResultSet* selected = service_ && service_->source_node_id() != 0 ? service_->selected_inference_result() : nullptr;
     QStringList classes;
-    if (service_) {
-        if (const auto* model = service_->find_model(service_->selected_model_id())) {
-            for (const auto& value : model->classes) {
-                classes.push_back(QString::fromStdString(value.name));
-            }
+    if (model) {
+        for (const auto& value : model->classes) {
+            classes.push_back(QString::fromStdString(value.name));
         }
     }
     segmentation_->set_inference_result(selected);

@@ -83,6 +83,7 @@ QPushButton:hover { background: #EEF8F5; border-color: #70BFAE; }
 QPushButton:disabled { color: #8A9B99; background: #F4F7F8; border-color: #DCE4E7; }
 QPushButton[primary=true] { background: #0EA67A; color: white; border-color: #0A8E69; font-weight: 700; padding: 5px 11px; }
 QPushButton[primary=true]:hover { background: #0A8E69; }
+QPushButton#inferenceStartButton:disabled { color: #8A9B99; background: #F4F7F8; border-color: #DCE4E7; }
 QPushButton[accentSecondary=true] { background: white; color: #087A5C; border-color: #20A987; font-weight: 700; }
 QPushButton[destructive=true] { color: #C0392B; border-color: #E7B8B2; }
 QPushButton[nodeLibraryItem=true] { background: transparent; border: 0; padding: 6px 12px; font-size: 12px; font-weight: 500; }
