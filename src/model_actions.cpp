@@ -7,6 +7,7 @@
 #include "task_workspace_service.h"
 #include <common/model/model_weight_matcher.h>
 #include <checkpoint/checkpoint_catalog.h>
+#include <infer_network/ov/common/openvino_runtime.h>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
@@ -24,6 +25,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <filesystem>
 #include <stdexcept>
 
 namespace studio {
@@ -53,11 +55,21 @@ void ModelActions::import_model(int node_id) {
     }
     const QString manifest_path = QFileDialog::getOpenFileName(
         dialog_parent_, tr("Import model weights"), {},
-        tr("Model weights or manifest (*.pt *.pth *.bin *.ckpt *.json);;All files (*)"));
+        tr("Model weights or manifest (*.pt *.pth *.bin *.ckpt *.json *.xml);;All files (*)"));
     if (manifest_path.isEmpty()) return;
     QString imported_asset_directory;
     bool import_added = false;
     try {
+        const std::filesystem::path ir_weights = jocelin::Ov::ir_weights_path(
+            std::filesystem::u8path(manifest_path.toStdString()));
+        if (!ir_weights.empty()) {
+            if (!QFileInfo(QString::fromStdString(ir_weights.u8string())).isFile()) {
+                throw std::runtime_error(
+                    tr("OpenVINO IR requires a BIN file with the same name as the XML file.").toStdString());
+            }
+            throw std::runtime_error(
+                tr("OpenVINO IR was recognized. Standalone OpenVINO import is unavailable.").toStdString());
+        }
         const bool raw_weights = QFileInfo(manifest_path).suffix().compare("json", Qt::CaseInsensitive) != 0;
         QJsonObject object;
         if (!raw_weights) {

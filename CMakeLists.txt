@@ -99,6 +99,7 @@ function(studio_copy_runtime target)
             ${STUDIO_TORCH_RUNTIME_DLLS}
             "${LIBIOMP5_RUNTIME_DLL}"
             ${DeepLearning_ONNX_RUNTIME_DLLS}
+            "${DeepLearning_OPENVINO_RUNTIME_DLLS}"
             $<TARGET_FILE_DIR:${target}>
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:${target}>/platforms
