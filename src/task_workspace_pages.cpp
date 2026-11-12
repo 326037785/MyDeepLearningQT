@@ -1785,18 +1785,11 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     device_->setObjectName("inferenceDevice");
     device_->setMinimumContentsLength(10);
     device_->setMaximumWidth(210);
-    auto* weight_type_label_widget = new QLabel(tr("Weight type"), command_bar);
-    weight_type_label_widget->setProperty("meta", true);
-    weight_type_ = new QComboBox(command_bar);
-    weight_type_->setObjectName("inferenceWeightType");
-    weight_type_->setMinimumContentsLength(8);
-    weight_type_->setMaximumWidth(130);
-    auto* weight_label = new QLabel(tr("Weight"), command_bar);
-    weight_label->setProperty("meta", true);
-    weight_branch_ = new QComboBox(command_bar);
-    weight_branch_->setObjectName("inferenceWeightBranch");
-    weight_branch_->setMinimumContentsLength(12);
-    weight_branch_->setMaximumWidth(230);
+    checked_target_ = new QLabel(command_bar);
+    checked_target_->setObjectName("inferenceCheckedWeight");
+    checked_target_->setTextFormat(Qt::PlainText);
+    checked_target_->setWordWrap(true);
+    checked_target_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* batch_label = new QLabel(tr("Batch"), command_bar);
     batch_label->setProperty("meta", true);
     batch_size_ = new QSpinBox(command_bar);
@@ -1823,18 +1816,15 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     command_layout->addWidget(device_type_, 0, 1);
     command_layout->addWidget(device_label, 0, 2);
     command_layout->addWidget(device_, 0, 3);
-    command_layout->addWidget(weight_type_label_widget, 0, 4);
-    command_layout->addWidget(weight_type_, 0, 5);
-    command_layout->addWidget(weight_label, 0, 6);
-    command_layout->addWidget(weight_branch_, 0, 7);
-    command_layout->addWidget(batch_label, 0, 8);
-    command_layout->addWidget(batch_size_, 0, 9);
-    command_layout->addWidget(state_, 0, 10);
-    command_layout->addWidget(start_, 0, 11);
+    command_layout->addWidget(checked_target_, 0, 4, 1, 2);
+    command_layout->addWidget(batch_label, 0, 6);
+    command_layout->addWidget(batch_size_, 0, 7);
+    command_layout->addWidget(state_, 0, 8);
+    command_layout->addWidget(start_, 0, 9);
     command_layout->addWidget(current_image_, 1, 0, 1, 4);
-    command_layout->addWidget(progress_, 1, 4, 1, 8);
+    command_layout->addWidget(progress_, 1, 4, 1, 6);
     command_layout->setColumnStretch(3, 1);
-    command_layout->setColumnStretch(7, 1);
+    command_layout->setColumnStretch(5, 1);
     root->addWidget(command_bar);
 
     auto* split = new CollapsibleSplitter(Qt::Horizontal, this);
@@ -1942,7 +1932,7 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     models_layout->addWidget(filter_panel_);
     model_browser_ = new ProjectModelBrowser(models);
     model_browser_->setObjectName("inferenceProjectModelBrowser");
-    model_browser_->set_model_check_selection(true);
+    model_browser_->set_branch_check_selection();
     model_browser_->set_management_multi_selection(true);
     model_browser_->set_detail_visible(false);
     model_browser_->convert_weight_requested = [this](const QString& model_id, const QString& weight_id, QWidget* anchor) {
@@ -1992,14 +1982,10 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->clear_models_requested = [this] {
         if (clear_models_requested) clear_models_requested();
     };
-    const auto select_model = [this](const QString& id) {
-        if (rebuilding_ || !service_) return;
-        model_browser_->set_checked_model_id(id);
-        service_->select_inference_model(id);
-        synchronize_result_selection();
+    model_browser_->weight_checks_changed = [this] {
+        commit_result_selection();
+        update_command_presentation();
     };
-    model_browser_->selection_changed = select_model;
-    model_browser_->checked_model_changed = select_model;
     models_layout->addWidget(model_browser_, 3);
     ResourceMonitorWidget* resources = new ResourceMonitorWidget(models);
     resources->setObjectName("inferenceResourceMonitor");
@@ -2035,28 +2021,13 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
         if (rebuilding_) return;
         refresh_devices();
         commit_device();
-        refresh_weight_types();
-        commit_result_selection();
         update_command_presentation();
     });
     connect(device_, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this](int) {
         if (rebuilding_) return;
         commit_device();
-        refresh_weight_types();
-        commit_result_selection();
         update_command_presentation();
-    });
-    connect(weight_type_, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            [this](int) {
-        if (rebuilding_) return;
-        refresh_weight_branches();
-        commit_result_selection();
-        update_command_presentation();
-    });
-    connect(weight_branch_, qOverload<int>(&QComboBox::currentIndexChanged), this,
-            [this](int) {
-        if (!rebuilding_) { commit_result_selection(); update_command_presentation(); }
     });
     const auto apply_sample_filter = [this] {
         if (rebuilding_) {
@@ -2116,6 +2087,7 @@ void InferenceWorkspace::set_service(TaskWorkspaceService* service) {
 
     filter_panel_->set_config(nullptr);
     filter_panel_->set_content(nullptr);
+    model_browser_->set_models({});
     service_ = service;
     if (!service_) {
         refresh();
@@ -2147,8 +2119,6 @@ void InferenceWorkspace::refresh() {
         available_devices_.clear();
         device_type_->clear();
         device_->clear();
-        weight_type_->clear();
-        weight_branch_->clear();
         model_browser_->set_models({});
         if (segmentation_canvas_) segmentation_canvas_->clear();
         if (classification_canvas_) classification_canvas_->clear_canvas();
@@ -2166,7 +2136,6 @@ void InferenceWorkspace::refresh() {
     if (service_->selected_model_id().isEmpty() && !task_models.empty())
         service_->select_inference_model(QString::fromStdString(task_models.front().id));
     model_browser_->set_current_model_id(service_->selected_model_id());
-    model_browser_->set_checked_model_id(service_->selected_model_id());
     refresh_device_types();
     batch_size_->setValue(task.inference_batch_size);
     const std::set<std::string> selected(
@@ -2240,19 +2209,21 @@ void InferenceWorkspace::refresh() {
 }
 
 void InferenceWorkspace::commit_result_selection() {
-    if (rebuilding_ || !service_) return;
-    service_->select_inference_result(model_browser_->checked_model_id(), weight_branch_->currentData().toString());
-    refresh_canvas();
+    if (rebuilding_ || !service_) {
+        return;
+    }
+    const ModelWeightSelection checked = model_browser_->checked_weights();
+    if (checked.size() == 1) {
+        service_->select_inference_result(checked.front().first, checked.front().second);
+        refresh_canvas();
+    }
 }
 
 void InferenceWorkspace::synchronize_result_selection() {
-    if (!service_) return;
-    const bool previous = rebuilding_;
-    rebuilding_ = true;
+    if (!service_) {
+        return;
+    }
     model_browser_->set_current_model_id(service_->selected_model_id());
-    model_browser_->set_checked_model_id(service_->selected_model_id());
-    refresh_weight_types();
-    rebuilding_ = previous;
     update_command_presentation();
     refresh_canvas();
 }
@@ -2315,83 +2286,6 @@ void InferenceWorkspace::refresh_devices() {
             match = device_->count() - 1;
     }
     if (match >= 0) device_->setCurrentIndex(match);
-    refresh_weight_types();
-}
-
-void InferenceWorkspace::refresh_weight_types() {
-    if (!weight_type_) return;
-    QString preferred = weight_type_->currentData().toString();
-    QSignalBlocker blocker(weight_type_);
-    weight_type_->clear();
-
-    const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
-    const auto* compute = selected_device();
-    if (model && compute) {
-        const auto capabilities = jocelin::runtime::available_runtime_capabilities();
-        const auto available_types = jocelin::runtime::available_inference_weight_types(
-            compute->device.type, capabilities);
-        for (const auto type : available_types) {
-            const bool has_weight = std::any_of(
-                model->weights.begin(), model->weights.end(),
-                [type, compute, &capabilities](const auto& weight) {
-                    return weight.format == type &&
-                        ModelWeightAssets::missing(weight).isEmpty() &&
-                        jocelin::model::weight_supports_device(
-                            weight, compute->device.type) &&
-                        jocelin::runtime::runtime_is_available(
-                            weight.format, capabilities);
-                });
-            if (!has_weight) continue;
-            weight_type_->addItem(
-                weight_type_label(type),
-                QString::fromStdString(jocelin::config::to_string(type)));
-        }
-    }
-    if (model && service_) {
-        if (const auto* selected = jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString())) {
-            preferred = QString::fromStdString(jocelin::config::to_string(selected->format));
-            if (weight_type_->findData(preferred) < 0 && selected->format != jocelin::config::WeightType::OpenVino) {
-                weight_type_->addItem(weight_type_label(selected->format), preferred);
-            }
-        }
-    }
-    const int preferred_index = weight_type_->findData(preferred);
-    if (preferred_index >= 0 || preferred == QStringLiteral("openvino")) {
-        weight_type_->setCurrentIndex(preferred_index);
-    }
-    refresh_weight_branches();
-}
-
-void InferenceWorkspace::refresh_weight_branches() {
-    if (!weight_branch_) return;
-    const QString preferred = service_ ? service_->selected_weight_id() : weight_branch_->currentData().toString();
-    QSignalBlocker blocker(weight_branch_);
-    weight_branch_->clear();
-
-    const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
-    const QString type = weight_type_ ? weight_type_->currentData().toString() : QString{};
-    if (model && !type.isEmpty()) {
-        for (const auto& weight : model->weights) {
-            if (QString::fromStdString(jocelin::config::to_string(weight.format)) != type ||
-                (weight.format == jocelin::config::WeightType::OpenVino && !ModelWeightAssets::missing(weight).isEmpty())) {
-                continue;
-            }
-            weight_branch_->addItem(
-                QString::fromStdString(weight.id) + QStringLiteral(" · ") +
-                    QString::fromStdString(jocelin::model::to_string(weight.precision)).toUpper(),
-                QString::fromStdString(weight.id));
-            weight_branch_->setItemData(
-                weight_branch_->count() - 1,
-                QString::fromStdString(weight.path), Qt::ToolTipRole);
-        }
-    }
-    const int preferred_index = weight_branch_->findData(preferred);
-    const auto* previous_weight = model && service_ ?
-        jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString()) : nullptr;
-    if (!previous_weight || QString::fromStdString(jocelin::config::to_string(previous_weight->format)) == type)
-        weight_branch_->setCurrentIndex(preferred_index);
-    else if (preferred_index >= 0)
-        weight_branch_->setCurrentIndex(preferred_index);
 }
 
 void InferenceWorkspace::commit_device() {
@@ -2409,12 +2303,26 @@ const jocelin::runtime::ComputeDevice* InferenceWorkspace::selected_device() con
     return &available_devices_[static_cast<size_t>(index)];
 }
 
-const jocelin::model::ModelWeight* InferenceWorkspace::selected_weight() const {
-    const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
-    if (!model || !weight_branch_ || weight_branch_->currentIndex() < 0) return nullptr;
-    const std::string id = weight_branch_->currentData().toString().toStdString();
-    return jocelin::model::find_weight(*model, id);
+const jocelin::model::ModelWeight* InferenceWorkspace::selected_weight(const ModelWeightSelection& checked) const {
+    if (!service_ || checked.size() != 1) {
+        return nullptr;
+    }
+    const ProjectModel* model = service_->find_model(checked.front().first);
+    return model ? jocelin::model::find_weight(*model, checked.front().second.toStdString()) : nullptr;
 }
+
+namespace {
+
+bool inference_weight_available(const jocelin::model::ModelWeight& weight, const jocelin::config::Device& device) {
+    if (!ModelWeightAssets::missing(weight).isEmpty() || !jocelin::model::weight_supports_device(weight, device.type)) {
+        return false;
+    }
+    const auto capabilities = jocelin::runtime::available_runtime_capabilities();
+    return jocelin::runtime::runtime_is_available(weight.format, capabilities) &&
+        jocelin::runtime::runtime_supports_device(weight.format, device.type, capabilities);
+}
+
+} // namespace
 
 void InferenceWorkspace::refresh_canvas() {
     if (service_ && !busy_)
@@ -2512,12 +2420,6 @@ void InferenceWorkspace::update_command_presentation() {
     if (device_) {
         device_->setEnabled(!busy_ && device_->count() > 0);
     }
-    if (weight_type_) {
-        weight_type_->setEnabled(!busy_ && weight_type_->count() > 0);
-    }
-    if (weight_branch_) {
-        weight_branch_->setEnabled(!busy_ && weight_branch_->count() > 0);
-    }
     const int selected = images_ ? images_->selectedItems().size() : 0;
     int total = 0;
     if (images_) {
@@ -2554,21 +2456,30 @@ void InferenceWorkspace::update_command_presentation() {
     start_->setText(tr("Infer"));
     start_->setAccessibleName(tr("Infer"));
 
-    const auto* model = model_browser_ ? model_browser_->checked_model() : nullptr;
-    const auto* compute = selected_device();
-    const auto* weight = selected_weight();
-    const bool available = compute && weight && ModelWeightAssets::missing(*weight).isEmpty() &&
-        jocelin::model::weight_supports_device(*weight, compute->device.type) &&
-        jocelin::runtime::runtime_is_available(weight->format, jocelin::runtime::available_runtime_capabilities());
+    const ModelWeightSelection checked = model_browser_->checked_weights();
+    const jocelin::runtime::ComputeDevice* compute = selected_device();
+    const jocelin::model::ModelWeight* weight = selected_weight(checked);
+    const bool available = compute && weight && inference_weight_available(*weight, compute->device);
+    QString checked_label;
+    if (weight) {
+        const ProjectModel* model = service_->find_model(checked.front().first);
+        checked_label = tr("%1 · %2").arg(QString::fromStdString(model->name), checked.front().second);
+    } else if (checked.empty()) {
+        checked_label = tr("No Weight branch checked");
+    } else {
+        checked_label = tr("%1 Weight branches checked").arg(checked.size());
+    }
+    checked_target_->setText(checked_label);
+    checked_target_->setToolTip(checked_label);
     if (total == 0) {
         start_->setToolTip(filtered ? tr("No images match the current filters.")
                                     : tr("Add Task images before starting inference."));
-    } else if (!model) {
-        start_->setToolTip(tr("Select a Task model before starting inference."));
+    } else if (!weight) {
+        start_->setToolTip(tr("Check exactly one Weight branch to run inference."));
     } else if (!compute) {
         start_->setToolTip(tr("Select an available CPU or GPU device."));
     } else if (!available) {
-        start_->setToolTip(tr("The selected model has no weight compatible with this device and the installed inference runtimes."));
+        start_->setToolTip(tr("The checked Weight branch requires its asset files and a compatible device and runtime."));
     } else {
         start_->setToolTip(
             tr("Run inference for %1 with %2 on %3.")
@@ -2576,27 +2487,27 @@ void InferenceWorkspace::update_command_presentation() {
                      weight_type_label(weight->format),
                      QString::fromStdString(compute->display_name)));
     }
-    start_->setEnabled(!busy_ && total > 0 && model && available);
+    start_->setEnabled(!busy_ && total > 0 && available);
 }
 
 void InferenceWorkspace::request_start() {
     if (busy_ || !images_ || !start_ || !start_->isEnabled() || !model_browser_) {
         return;
     }
-    const QString model_id = model_browser_->checked_model_id();
-    const auto* compute = selected_device();
-    const auto* weight = selected_weight();
-    const bool available = compute && weight && ModelWeightAssets::missing(*weight).isEmpty() &&
-        jocelin::model::weight_supports_device(*weight, compute->device.type) &&
-        jocelin::runtime::runtime_is_available(weight->format, jocelin::runtime::available_runtime_capabilities());
-    if (model_id.isEmpty() || !available) return;
+    const ModelWeightSelection checked = model_browser_->checked_weights();
+    const jocelin::runtime::ComputeDevice* compute = selected_device();
+    const jocelin::model::ModelWeight* weight = selected_weight(checked);
+    if (!compute || !weight || !inference_weight_available(*weight, compute->device)) {
+        return;
+    }
+    InferenceLaunchRequest request;
+    request.model_id = checked.front().first;
+    request.weight_id = checked.front().second;
+    request.device = compute->device;
+    commit_result_selection();
     commit_selection_scope();
     commit_device();
     if (start_requested) {
-        InferenceLaunchRequest request;
-        request.model_id = model_id;
-        request.weight_id = QString::fromStdString(weight->id);
-        request.device = compute->device;
         start_requested(request);
     }
 }
@@ -2611,8 +2522,6 @@ void InferenceWorkspace::set_busy(bool busy) {
     sample_search_->setEnabled(!busy);
     device_type_->setEnabled(!busy_ && device_type_->count() > 0);
     device_->setEnabled(!busy_ && device_->count() > 0);
-    weight_type_->setEnabled(!busy_ && weight_type_->count() > 0);
-    weight_branch_->setEnabled(!busy_ && weight_branch_->count() > 0);
     batch_size_->setEnabled(!busy);
 }
 
@@ -2687,34 +2596,34 @@ ResultsWorkspace::ResultsWorkspace(QWidget* parent) : QWidget(parent) {
     model_browser_->set_model_check_selection(true);
     model_browser_->set_management_actions_enabled(false);
     model_browser_->set_detail_visible(false);
-    model_browser_->set_weight_selection_mode(true);
     model_browser_->setMaximumHeight(165);
     const auto select_model = [this](const QString& id) {
-        if (!service_) return;
-        service_->select_inference_model(id);
-        refresh();
+        if (service_ && service_->selected_model_id() != id) {
+            service_->select_inference_model(id);
+            refresh();
+        }
     };
     model_browser_->selection_changed = select_model;
     model_browser_->checked_model_changed = select_model;
-    model_browser_->weight_selection_changed = [this](const QString& id, jocelin::config::WeightType format) {
-        if (!service_) return;
-        const auto* model = service_->find_model(id);
-        if (!model) return;
-        const auto* current = jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString());
-        const auto weights = jocelin::model::find_weights(*model, format);
-        const QString weight = current && current->format == format ? QString::fromStdString(current->id) :
-            weights.empty() ? QString{} : QString::fromStdString(weights.front()->id);
-        service_->select_inference_result(id, weight);
-        refresh();
+    model_browser_->weight_branch_selection_changed = [this, select_model](const QString& id, const QString& weight) {
+        if (weight.isEmpty()) {
+            select_model(id);
+        } else if (service_) {
+            service_->select_inference_result(id, weight);
+            refresh();
+        }
     };
+    model_browser_->set_weight_selection_mode(true);
     root->addWidget(model_browser_);
     weight_branch_ = new QComboBox(this);
     weight_branch_->setObjectName("resultsWeightBranch");
     root->addWidget(weight_branch_);
     connect(weight_branch_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
-        if (!service_) return;
+        if (!service_) {
+            return;
+        }
         service_->select_inference_result(service_->selected_model_id(), weight_branch_->currentData().toString());
-        refresh_selected_result();
+        refresh();
     });
 
 
@@ -2876,12 +2785,16 @@ ResultsWorkspace::ResultsWorkspace(QWidget* parent) : QWidget(parent) {
 }
 
 void ResultsWorkspace::set_service(TaskWorkspaceService* service) {
+    if (service_ != service) {
+        model_browser_->set_models(service ? models_ : std::vector<ProjectModel>{});
+    }
     service_ = service;
     refresh();
 }
 
 void ResultsWorkspace::set_models(const std::vector<ProjectModel>& models) {
     models_ = models;
+    model_browser_->set_models(service_ ? models_ : std::vector<ProjectModel>{});
     refresh();
 }
 
@@ -2893,7 +2806,6 @@ void ResultsWorkspace::refresh() {
     table_->setRowCount(0);
     const QSignalBlocker blocker(weight_branch_);
     weight_branch_->clear();
-    model_browser_->set_models(service_ ? models_ : std::vector<ProjectModel>{});
     selected_model_id_ = service_ ? service_->selected_model_id() : QString{};
     if (service_) {
         const auto* model = service_->find_model(selected_model_id_);
@@ -2902,8 +2814,13 @@ void ResultsWorkspace::refresh() {
                 weight_branch_->addItem(QString::fromStdString(weight.id) + " · " + weight_type_label(weight.format),
                     QString::fromStdString(weight.id));
             const QSignalBlocker browser_blocker(model_browser_);
-            model_browser_->set_current_model_id(selected_model_id_);
-            model_browser_->set_checked_model_id(selected_model_id_);
+            const jocelin::model::ModelWeight* weight = jocelin::model::find_weight(*model, service_->selected_weight_id().toStdString());
+            if (weight) {
+                model_browser_->set_current_weight(selected_model_id_, weight->format, QString::fromStdString(weight->id));
+            } else {
+                model_browser_->set_current_model_id(selected_model_id_);
+                model_browser_->set_checked_model_id(selected_model_id_);
+            }
             weight_branch_->setCurrentIndex(weight_branch_->findData(service_->selected_weight_id()));
         }
     }

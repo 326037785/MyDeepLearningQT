@@ -13,6 +13,7 @@
 #include <QAction>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDir>
@@ -309,21 +310,26 @@ int main(int argc, char** argv) try {
     auto* inference_device_type =
         window.findChild<QComboBox*>("inferenceDeviceType");
     auto* inference_device = window.findChild<QComboBox*>("inferenceDevice");
-    auto* inference_weight_type =
-        window.findChild<QComboBox*>("inferenceWeightType");
-    auto* inference_weight_branch =
-        window.findChild<QComboBox*>("inferenceWeightBranch");
+    auto* checked_weight = window.findChild<QLabel*>("inferenceCheckedWeight");
     if (!window.findChild<QWidget*>("inferenceProjectModelBrowser") ||
         !inference_images ||
         !inference_device_type || !inference_device ||
-        !inference_weight_type || !inference_weight_branch ||
+        !checked_weight || checked_weight->text().isEmpty() ||
         !window.findChild<QSpinBox*>("inferenceBatchSize")) return 23;
     if (inference_device_type->findText("CPU") < 0 ||
         inference_device_type->currentText() != "CPU" ||
-        inference_device->count() < 1 ||
-        inference_weight_type->count() != 0 ||
-        inference_weight_branch->count() != 0)
+        inference_device->count() < 1)
         return 90;
+
+    const auto model_rows = [](QWidget& workspace, const char* name) {
+        QWidget* browser = workspace.findChild<QWidget*>(name);
+        return browser ? browser->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
+    };
+    const auto branch_check = [](QTreeWidget* rows, int column) {
+        QWidget* cell = rows && rows->topLevelItemCount() > 0
+            ? rows->itemWidget(rows->topLevelItem(0), column) : nullptr;
+        return cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
+    };
 
     const auto create_weight_file = [&root](const QString& name) {
         QFile file(root.filePath(name));
@@ -453,7 +459,15 @@ int main(int argc, char** argv) try {
     auto* annotation_branch = annotation_model_rows && annotation_model_rows->topLevelItemCount() > 0
         ? qobject_cast<QComboBox*>(annotation_model_rows->itemWidget(annotation_model_rows->topLevelItem(0), 1)) : nullptr;
     auto* result_branch = owned_workspace.findChild<QComboBox*>("resultsWeightBranch");
-    auto* inference_branch = owned_workspace.findChild<QComboBox*>("inferenceWeightBranch");
+    QTreeWidget* inference_rows = model_rows(owned_workspace, "inferenceProjectModelBrowser");
+    QWidget* libtorch_cell = inference_rows && inference_rows->topLevelItemCount() > 0
+        ? inference_rows->itemWidget(inference_rows->topLevelItem(0), 1) : nullptr;
+    QComboBox* inference_branch = libtorch_cell ? libtorch_cell->findChild<QComboBox*>("projectModelWeightBranch") : nullptr;
+    QCheckBox* inference_check = branch_check(inference_rows, 1);
+    QPushButton* owned_start = owned_workspace.findChild<QPushButton*>("inferenceStartButton");
+    QTreeWidget* result_rows = model_rows(owned_workspace, "resultsProjectModelBrowser");
+    QComboBox* result_cell_branch = result_rows && result_rows->topLevelItemCount() > 0
+        ? qobject_cast<QComboBox*>(result_rows->itemWidget(result_rows->topLevelItem(0), 1)) : nullptr;
     auto* result_table = owned_workspace.findChild<QTableWidget*>("taskResultsTable");
     const auto result_confidence = [&result_table]() {
         const QTableWidgetItem* item = result_table ? result_table->item(0, 2) : nullptr;
@@ -462,8 +476,10 @@ int main(int argc, char** argv) try {
     studio::ImageResultCanvas* infer_canvas = dynamic_cast<studio::ImageResultCanvas*>(
         owned_workspace.findChild<QWidget*>("inferenceSegmentationCanvas"));
     auto* annotation_canvas = dynamic_cast<studio::MaskCanvas*>(owned_workspace.findChild<QWidget*>("segmentationMaskCanvas"));
-    if (!annotation_branch || !result_branch || !inference_branch || !result_table || !infer_canvas || !annotation_canvas)
+    if (!annotation_branch || !result_branch || !result_cell_branch || !inference_branch || !inference_check || !owned_start ||
+        !result_table || !infer_canvas || !annotation_canvas) {
         throw std::runtime_error("branch result selectors or previews missing");
+    }
     for (const auto& branch : {QString("libtorch_alternate"), QString("libtorch_fp32"), QString("no_result")}) {
         const int index = annotation_branch->findData(branch);
         if (index < 0) {
@@ -472,14 +488,48 @@ int main(int argc, char** argv) try {
         annotation_branch->setCurrentIndex(index);
         QMetaObject::invokeMethod(annotation_branch, "activated", Qt::DirectConnection, Q_ARG(int, index));
         const bool available = branch != "no_result";
-        if (result_branch->currentData().toString() != branch || inference_branch->currentData().toString() != branch || result_table->rowCount() != (available ? 1 : 0) ||
+        if (result_branch->currentData().toString() != branch || result_cell_branch->currentData().toString() != branch ||
+            inference_check->isChecked() || owned_start->isEnabled() || result_table->rowCount() != (available ? 1 : 0) ||
             infer_canvas->has_prediction_overlay() != available || annotation_canvas->has_prediction_overlay() != available ||
             (available && result_confidence() != (branch == "libtorch_fp32" ? 0.25 : 0.75)))
             throw std::runtime_error("branch selection did not synchronize Results/Inference/Annotation or empty state");
     }
-    inference_branch->setCurrentIndex(inference_branch->findData("libtorch_alternate"));
-    if (result_branch->currentData().toString() != "libtorch_alternate" || result_table->rowCount() != 1)
+    const int saved_branch_index = result_cell_branch->findData("libtorch_fp32");
+    result_cell_branch->setCurrentIndex(saved_branch_index);
+    QMetaObject::invokeMethod(result_cell_branch, "activated", Qt::DirectConnection, Q_ARG(int, saved_branch_index));
+    if (saved_branch_index < 0 || result_branch->currentData().toString() != "libtorch_fp32" || result_confidence() != 0.25) {
+        throw std::runtime_error("Results model cell did not select its exact branch");
+    }
+    const int alternate_index = inference_branch->findData("libtorch_alternate");
+    inference_branch->setCurrentIndex(alternate_index);
+    QMetaObject::invokeMethod(inference_branch, "activated", Qt::DirectConnection, Q_ARG(int, alternate_index));
+    inference_check->click();
+    if (alternate_index < 0 || result_branch->currentData().toString() != "libtorch_alternate" || result_confidence() != 0.75 ||
+        !owned_start->isEnabled() || inference_rows->topLevelItem(0)->checkState(0) != Qt::PartiallyChecked) {
         throw std::runtime_error("Inference branch selection did not update Results");
+    }
+    const int first_branch_index = inference_branch->findData("libtorch_fp32");
+    inference_branch->setCurrentIndex(first_branch_index);
+    QMetaObject::invokeMethod(inference_branch, "activated", Qt::DirectConnection, Q_ARG(int, first_branch_index));
+    if (first_branch_index < 0 || inference_check->isChecked() || !owned_start->isEnabled() || result_confidence() != 0.75) {
+        throw std::runtime_error("Changing the format dropdown changed the checked branch");
+    }
+    inference_check->click();
+    if (owned_start->isEnabled()) {
+        throw std::runtime_error("Multiple checked branches enabled inference");
+    }
+    inference_check->click();
+    QTreeWidgetItem* inference_row = inference_rows->topLevelItem(0);
+    inference_row->setCheckState(0, Qt::Checked);
+    QLabel* owned_checked_weight = owned_workspace.findChild<QLabel*>("inferenceCheckedWeight");
+    if (!inference_check->isChecked() || owned_start->isEnabled() || !owned_checked_weight ||
+        !owned_checked_weight->text().contains("6")) {
+        throw std::runtime_error("Checking a model row did not include every branch");
+    }
+    inference_row->setCheckState(0, Qt::Unchecked);
+    if (inference_check->isChecked() || owned_start->isEnabled()) {
+        throw std::runtime_error("Unchecking a model row retained branch checks");
+    }
     if (!annotation_model_rows || annotation_model_rows->topLevelItemCount() != 2)
         throw std::runtime_error("Annotation has no Node ModelList row selector");
     annotation_model_rows->setCurrentItem(annotation_model_rows->topLevelItem(1));
@@ -493,21 +543,29 @@ int main(int argc, char** argv) try {
         throw std::runtime_error("same-id result leaked into another TaskNode's previews");
     auto* route_device_type =
         route_workspace.findChild<QComboBox*>("inferenceDeviceType");
-    auto* route_weight_type =
-        route_workspace.findChild<QComboBox*>("inferenceWeightType");
-    auto* route_weight_branch =
-        route_workspace.findChild<QComboBox*>("inferenceWeightBranch");
+    QTreeWidget* route_rows = model_rows(route_workspace, "inferenceProjectModelBrowser");
+    QPushButton* route_start = route_workspace.findChild<QPushButton*>("inferenceStartButton");
+    QCheckBox* route_onnx = branch_check(route_rows, 2);
+    QCheckBox* route_openvino = branch_check(route_rows, 3);
+    QCheckBox* route_tensorrt = branch_check(route_rows, 4);
     if (!route_device_type || route_device_type->currentText() != "CPU" ||
-        !route_weight_type || route_weight_type->count() != 2 ||
-        route_weight_type->findText("LibTorch") < 0 ||
-        route_weight_type->findText("ONNX") < 0 ||
-        route_weight_type->findText("OpenVINO") >= 0 ||
-        route_weight_type->findText("TensorRT") >= 0)
+        !route_start || route_start->isEnabled() || !route_onnx || !route_openvino || !route_tensorrt) {
         return 92;
-    route_weight_type->setCurrentIndex(route_weight_type->findText("ONNX"));
-    if (!route_weight_branch || route_weight_branch->count() != 1 ||
-        route_weight_branch->currentData().toString() != "onnx_fp32")
+    }
+    for (QCheckBox* unavailable : {route_openvino, route_tensorrt}) {
+        unavailable->click();
+        if (!unavailable->isChecked() || route_start->isEnabled()) {
+            return 93;
+        }
+        unavailable->click();
+    }
+    route_onnx->click();
+    studio::InferenceLaunchRequest launched;
+    route_workspace.start_requested = [&launched](const studio::InferenceLaunchRequest& request) { launched = request; };
+    route_start->click();
+    if (launched.model_id != "route_model" || launched.weight_id != "onnx_fp32") {
         return 93;
+    }
     if (inference_images->count() != 1 ||
         !inference_images->item(0)->text().startsWith("img_00001.png") ||
         !inference_images->item(0)->toolTip().contains("Original name: sample.png"))

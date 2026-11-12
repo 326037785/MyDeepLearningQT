@@ -379,6 +379,34 @@ int main(int argc, char** argv) try {
         browser.set_models({});
         require(!remove->isEnabled() && !select_all->isEnabled(),
                 "model deletion selection survived an empty list");
+
+        browser.set_branch_check_selection();
+        browser.set_models({multiple, empty});
+        studio::ModelWeightSelection removed_branches;
+        browser.delete_model_weights_requested = [&](const studio::ModelWeightSelection& weights) {
+            removed_branches = weights;
+        };
+        QTreeWidgetItem* model_row = list->topLevelItem(0);
+        cell = list->itemWidget(model_row, 1);
+        branch = cell->findChild<QComboBox*>("projectModelWeightBranch");
+        QCheckBox* target = cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox");
+        require(branch && target, "Inference branch controls are missing");
+        const QString selected_branch = branch->currentData().toString();
+        const QString selected_model = QString::fromStdString(multiple.id);
+        target->click();
+        const int other_index = 1 - branch->currentIndex();
+        branch->setCurrentIndex(other_index);
+        QMetaObject::invokeMethod(branch, "activated", Qt::DirectConnection, Q_ARG(int, other_index));
+        remove->trigger();
+        require(!target->isChecked() && removed_branches == studio::ModelWeightSelection{{selected_model, selected_branch}},
+                "Deletion used the displayed branch instead of the checked branch");
+        model_row->setCheckState(0, Qt::Checked);
+        remove->trigger();
+        require(removed_branches.size() == 2 && model_clears == 2,
+                "Checking an Inference row did not target only its branches");
+        select_all->click();
+        remove->trigger();
+        require(model_clears == 3, "Inference Select all did not target the complete model list");
     }
     const auto export_directory = temporary.filePath("Export");
     require(QDir().mkpath(export_directory), "cannot create export destination");
@@ -538,7 +566,7 @@ int main(int argc, char** argv) try {
     }
     models.models_changed = [&] { ++changes; workspace.refresh_models(); };
     workspace.edit_node(&project.active_workflow().document.graph, node, {});
-    QWidget* browser = workspace.findChild<QWidget*>("trainingProjectModelBrowser");
+    QWidget* browser = workspace.findChild<QWidget*>("inferenceProjectModelBrowser");
     QCheckBox* select_all = browser ? browser->findChild<QCheckBox*>("projectModelSelectAllCheckBox") : nullptr;
     QAction* remove = browser ? browser->findChild<QAction*>("projectModelDeleteAction") : nullptr;
     require(select_all && remove && select_all->isEnabled(), "Select all is unavailable in the Task workspace");

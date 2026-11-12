@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <set>
 #include <vector>
 
 namespace studio {
@@ -123,6 +125,17 @@ public:
         root->addWidget(detail_);
 
         connect(select_all_, &QCheckBox::clicked, this, [this](bool checked) {
+            if (branch_check_selection_) {
+                checked_weights_.clear();
+                if (checked) {
+                    for (const ProjectModel& model : models_) {
+                        set_row_weight_checks(model, true);
+                    }
+                }
+                all_models_selected_ = checked;
+                weight_checks_updated();
+                return;
+            }
             for (int row = 0; row < table_->topLevelItemCount(); ++row) {
                 QTreeWidgetItem* item = table_->topLevelItem(row);
                 for (int column = 1; column < table_->columnCount(); ++column) {
@@ -164,15 +177,6 @@ public:
             }
             if (selection_changed) {
                 selection_changed(current_model_id());
-            }
-            if (!weight_selection_mode_ || column < 1 || column > 4) {
-                return;
-            }
-            if (model_check_selection_) {
-                set_checked_model_id(current_model_id());
-            }
-            if (weight_selection_changed) {
-                weight_selection_changed(current_model_id(), weight_format_for_column(column));
             }
         });
         connect(table_, &QTreeWidget::itemDoubleClicked, this,
@@ -225,12 +229,16 @@ public:
                 return;
             }
             ModelWeightSelection weights;
-            for (int row = 0; row < table_->topLevelItemCount(); ++row) {
-                QTreeWidgetItem* item = table_->topLevelItem(row);
-                for (int column = 1; column < table_->columnCount(); ++column) {
-                    const QString weight_id = item->data(column, Qt::UserRole + 1).toString();
-                    if (!weight_id.isEmpty()) {
-                        weights.emplace_back(item->data(0, Qt::UserRole).toString(), weight_id);
+            if (branch_check_selection_) {
+                weights = checked_weights();
+            } else {
+                for (int row = 0; row < table_->topLevelItemCount(); ++row) {
+                    QTreeWidgetItem* item = table_->topLevelItem(row);
+                    for (int column = 1; column < table_->columnCount(); ++column) {
+                        const QString weight_id = item->data(column, Qt::UserRole + 1).toString();
+                        if (!weight_id.isEmpty()) {
+                            weights.emplace_back(item->data(0, Qt::UserRole).toString(), weight_id);
+                        }
                     }
                 }
             }
@@ -255,6 +263,18 @@ public:
         });
         connect(table_, &QTreeWidget::itemChanged, this,
                 [this](QTreeWidgetItem* item, int column) {
+            if (branch_check_selection_ && item && column == 0) {
+                const QString model_id = item->data(0, Qt::UserRole).toString();
+                const auto model = std::find_if(models_.begin(), models_.end(), [&model_id](const ProjectModel& entry) {
+                    return QString::fromStdString(entry.id) == model_id;
+                });
+                if (model != models_.end() && item->flags().testFlag(Qt::ItemIsUserCheckable)) {
+                    all_models_selected_ = false;
+                    set_row_weight_checks(*model, item->checkState(0) == Qt::Checked);
+                    weight_checks_updated();
+                }
+                return;
+            }
             if (!model_check_selection_ || !item || column != 0) return;
             if (item->checkState(0) == Qt::Checked) {
                 QSignalBlocker blocker(table_);
@@ -273,6 +293,27 @@ public:
     void set_models(const std::vector<ProjectModel>& models) {
         const QString selected = current_model_id();
         const QString checked = checked_model_id();
+        std::map<std::pair<QString, int>, QString> displayed_weights;
+        if (branch_check_selection_) {
+            for (int row = 0; row < table_->topLevelItemCount(); ++row) {
+                const QTreeWidgetItem* item = table_->topLevelItem(row);
+                const QString model_id = item->data(0, Qt::UserRole).toString();
+                for (int column = 1; column < table_->columnCount(); ++column) {
+                    displayed_weights.emplace(std::make_pair(model_id, column), item->data(column, Qt::UserRole).toString());
+                }
+            }
+            for (auto it = checked_weights_.begin(); it != checked_weights_.end();) {
+                const auto model = std::find_if(models.begin(), models.end(), [&it](const ProjectModel& entry) {
+                    return QString::fromStdString(entry.id) == it->first;
+                });
+                if (model == models.end() || model->training_status == jocelin::model::ModelTrainingStatus::Running ||
+                    !jocelin::model::find_weight(*model, it->second.toStdString())) {
+                    it = checked_weights_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
         all_models_selected_ = false;
         models_ = models;
         QSignalBlocker blocker(table_);
@@ -287,6 +328,26 @@ public:
             set_weight_cell(item, 2, model, jocelin::config::WeightType::Onnx);
             set_weight_cell(item, 3, model, jocelin::config::WeightType::OpenVino);
             set_weight_cell(item, 4, model, jocelin::config::WeightType::TensorRt);
+            if (branch_check_selection_) {
+                if (!model.weights.empty() && model.training_status != jocelin::model::ModelTrainingStatus::Running) {
+                    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+                    item->setCheckState(0, Qt::Unchecked);
+                    item->setToolTip(0, tr("Select all Weight branches for %1").arg(QString::fromStdString(model.name)));
+                } else {
+                    item->setFlags(item->flags() & ~Qt::ItemIsUserCheckable);
+                }
+                for (int column = 1; column < table_->columnCount(); ++column) {
+                    const auto previous = displayed_weights.find({model_id, column});
+                    QWidget* cell = table_->itemWidget(item, column);
+                    QComboBox* branch = cell ? cell->findChild<QComboBox*>("projectModelWeightBranch") : nullptr;
+                    if (branch && previous != displayed_weights.end()) {
+                        const int index = branch->findData(previous->second);
+                        if (index >= 0) {
+                            branch->setCurrentIndex(index);
+                        }
+                    }
+                }
+            }
             if (model_check_selection_) {
                 item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
                 item->setCheckState(0, model_id == checked ? Qt::Checked : Qt::Unchecked);
@@ -393,6 +454,15 @@ public:
         }
     }
 
+    void set_branch_check_selection() {
+        branch_check_selection_ = true;
+        table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    }
+
+    ModelWeightSelection checked_weights() const {
+        return {checked_weights_.begin(), checked_weights_.end()};
+    }
+
     void set_management_multi_selection(bool enabled) {
         table_->setSelectionMode(
             enabled ? QAbstractItemView::ExtendedSelection : QAbstractItemView::SingleSelection);
@@ -431,7 +501,6 @@ public:
     }
 
     void set_weight_selection_mode(bool enabled) {
-        weight_selection_mode_ = enabled;
         table_->setSelectionBehavior(
             enabled ? QAbstractItemView::SelectItems : QAbstractItemView::SelectRows);
         if (weight_branch_selection_changed) {
@@ -458,6 +527,7 @@ public:
                 if (index >= 0) {
                     const QSignalBlocker branch_blocker(branch);
                     branch->setCurrentIndex(index);
+                    item->setData(column, Qt::UserRole, weight_id);
                 }
             }
             if (model_check_selection_) {
@@ -469,10 +539,10 @@ public:
     }
 
     std::function<void(const QString&)> selection_changed;
-    std::function<void(const QString&, jocelin::config::WeightType)> weight_selection_changed;
     std::function<void(const QString&, const QString&)> weight_branch_selection_changed;
     std::function<void(const QString&, const QString&, QWidget*)> convert_weight_requested;
     std::function<void(const QString&)> checked_model_changed;
+    std::function<void()> weight_checks_changed;
     std::function<void()> import_requested;
     std::function<void(const QString&)> export_requested;
     std::function<void(const QStringList&)> delete_models_requested;
@@ -481,6 +551,28 @@ public:
     std::function<void()> clear_models_requested;
 
 private:
+    void set_row_weight_checks(const ProjectModel& model, bool checked) {
+        if (model.training_status == jocelin::model::ModelTrainingStatus::Running) {
+            return;
+        }
+        const QString model_id = QString::fromStdString(model.id);
+        for (const jocelin::model::ModelWeight& weight : model.weights) {
+            const std::pair<QString, QString> key{model_id, QString::fromStdString(weight.id)};
+            if (checked) {
+                checked_weights_.insert(key);
+            } else {
+                checked_weights_.erase(key);
+            }
+        }
+    }
+
+    void weight_checks_updated() {
+        update_detail();
+        if (weight_checks_changed) {
+            weight_checks_changed();
+        }
+    }
+
     static int column_for_weight_format(jocelin::config::WeightType format) {
         switch (format) {
         case jocelin::config::WeightType::LibTorch: return 1;
@@ -489,15 +581,6 @@ private:
         case jocelin::config::WeightType::TensorRt: return 4;
         }
         return 1;
-    }
-
-    static jocelin::config::WeightType weight_format_for_column(int column) {
-        switch (column) {
-        case 2: return jocelin::config::WeightType::Onnx;
-        case 3: return jocelin::config::WeightType::OpenVino;
-        case 4: return jocelin::config::WeightType::TensorRt;
-        default: return jocelin::config::WeightType::LibTorch;
-        }
     }
 
     static QString precision_label(jocelin::model::WeightPrecision precision) {
@@ -591,8 +674,22 @@ private:
                 });
             }
             table_->setItemWidget(item, column, cell);
-            connect(target, &QCheckBox::toggled, this, [this, item, column](bool checked) {
+            connect(target, &QCheckBox::toggled, this, [this, item, column, target](bool checked) {
+                if (branch_check_selection_ && !target->isEnabled()) {
+                    return;
+                }
                 all_models_selected_ = false;
+                if (branch_check_selection_) {
+                    const std::pair<QString, QString> key{item->data(0, Qt::UserRole).toString(),
+                        item->data(column, Qt::UserRole).toString()};
+                    if (checked) {
+                        checked_weights_.insert(key);
+                    } else {
+                        checked_weights_.erase(key);
+                    }
+                    weight_checks_updated();
+                    return;
+                }
                 item->setData(column, Qt::UserRole + 1,
                     checked ? item->data(column, Qt::UserRole).toString() : QString{});
                 update_detail();
@@ -643,9 +740,12 @@ private:
 
     void update_detail() {
         const auto* model = current_model();
-        int selected_count = 0;
+        int selected_count = branch_check_selection_ ? static_cast<int>(checked_weights_.size()) : 0;
         for (int row = 0; row < table_->topLevelItemCount(); ++row) {
             QTreeWidgetItem* item = table_->topLevelItem(row);
+            const QString model_id = item->data(0, Qt::UserRole).toString();
+            int row_count = 0;
+            int row_weight_count = 0;
             for (int column = 1; column < table_->columnCount(); ++column) {
                 QWidget* cell = table_->itemWidget(item, column);
                 QCheckBox* target = cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
@@ -654,8 +754,31 @@ private:
                 }
                 QComboBox* branch = cell->findChild<QComboBox*>("projectModelWeightBranch");
                 const QString current = branch ? branch->currentData().toString() : item->data(column, Qt::UserRole).toString();
-                target->setToolTip(tr("Select Weight %1 for deletion").arg(current));
                 item->setData(column, Qt::UserRole, current);
+                if (branch_check_selection_) {
+                    QStringList checked_in_cell;
+                    const int count = branch ? branch->count() : 1;
+                    for (int index = 0; index < count; ++index) {
+                        const QString weight_id = branch ? branch->itemData(index).toString() : current;
+                        if (checked_weights_.count({model_id, weight_id}) != 0) {
+                            checked_in_cell.push_back(weight_id);
+                        }
+                    }
+                    row_count += checked_in_cell.size();
+                    row_weight_count += count;
+                    QString tooltip = tr("Select Weight %1 for inference or deletion").arg(current);
+                    if (!checked_in_cell.isEmpty()) {
+                        tooltip += QStringLiteral("\n") + tr("Checked: %1").arg(checked_in_cell.join(QStringLiteral(", ")));
+                    }
+                    target->setToolTip(tooltip);
+                    if (branch) {
+                        branch->setToolTip(tooltip);
+                    }
+                    const QSignalBlocker blocker(target);
+                    target->setChecked(checked_weights_.count({model_id, current}) != 0);
+                    continue;
+                }
+                target->setToolTip(tr("Select Weight %1 for deletion").arg(current));
                 const QString selected = item->data(column, Qt::UserRole + 1).toString();
                 if (!selected.isEmpty() && (selected != current || !target->isEnabled())) {
                     all_models_selected_ = false;
@@ -668,6 +791,11 @@ private:
                         ++selected_count;
                     }
                 }
+            }
+            if (branch_check_selection_ && item->flags().testFlag(Qt::ItemIsUserCheckable)) {
+                const QSignalBlocker blocker(table_);
+                item->setCheckState(0, row_count == 0 ? Qt::Unchecked :
+                    row_count == row_weight_count ? Qt::Checked : Qt::PartiallyChecked);
             }
         }
         const QSignalBlocker select_all_blocker(select_all_);
@@ -737,9 +865,10 @@ private:
     QAction* delete_row_ = nullptr;
     QAction* clear_ = nullptr;
     std::vector<ProjectModel> models_;
+    std::set<std::pair<QString, QString>> checked_weights_;
+    bool branch_check_selection_ = false;
     bool model_check_selection_ = false;
     bool all_models_selected_ = false;
-    bool weight_selection_mode_ = false;
     bool management_actions_enabled_ = true;
 };
 

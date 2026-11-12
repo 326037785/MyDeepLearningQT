@@ -74,19 +74,19 @@ TaskNode 的任务类型决定清单范围。各行可以有不同的 model_inde
 
 Inference 属于 TaskNode。当前 Node 内的 `model_id + weight_id` 定位一份 latest result。同格式的多个 weight branch 分别保留结果。
 
-ModelList 是结果选择入口：
+Results 和 Annotation 的 ModelList 用于查看已保存结果。Inference 的 ModelList 用于勾选执行和删除目标。
 
 - Model row 对应 model_id。
 - Weight branch 对应 weight_id。
 - Annotation、Inference、Results 共用 TaskWorkspaceService 的选择状态。
-- 切换 Model 或 Weight 后，立即刷新该坐标对应的结果。
+- 在 Results 或 Annotation 选择 branch，或在 Inference 勾选至仅剩一份 branch 时，刷新该 branch 的结果。查看结果时保留 Inference 的勾选状态。
 - 所选 branch 无结果时，显示空结果并清除 inference overlay。
 
 Annotation 右侧使用 Classes、Models、Results 三个 Tab 组合现有视图。类别仍由任务标注组件维护，Models 使用当前 TaskNode 的 ModelList；Results 仅检查当前样本的推理结果，完整结果管理仍在第六阶段。Models 的格式单元格显示已有权重：没有权重显示 `—`，单个权重显示精度，多个权重在单元格内选择。选择只切换已有 `weight_id`，不转换精度、不创建模型或训练记录。
 
 格式列用于分组。结果定位不依赖 weight_format、最近运行顺序或目录扫描。查看已保存结果不要求推理 executor 可用；执行仍受设备和 runtime 约束。
 
-顶部“全选”选择当前 TaskNode 的整个 ModelList；随后删除会清除所有模型行、全部权重 branch（包括同格式未显示的其他 branch）、空模型行及相关推理结果，详情随之清空。单独勾选格式单元格时仅删除该单元格当前选中的权重，保留模型行和其他 branch；修改单个 branch 的选择后退出整表全选。只有空模型行时仍可全选清理。
+Inference 中，每个格式单元格的勾选框对应下拉框当前显示的 `weight_id`，切换下拉框时保留原 branch 的勾选。行首勾选框批量勾选或取消该模型行的所有 branch，包括下拉框里未显示的 branch。部分勾选时行首显示半选。只有勾选恰好一份 branch，且有输入图片、所需资产齐全、当前设备和 runtime 支持时，Infer 才可用。缺少资产或不支持当前设备的 branch 仍可勾选删除。
 
 ResultReference 保存 source_sample_id 和 Core typed Result。一个 bucket 内的图片记录由 Core image_path 区分。
 
@@ -204,7 +204,9 @@ Annotation package import 显式提供接收 Task 的新类别和标注。它保
 
 ## 9. 模型与权重删除
 
-**单元格删除**：Training 和 Inference 的 ModelList 上方提供全选勾选框和删除按钮。全选选择或取消选择全部单元格，部分选择显示半选状态。上方删除按各单元格当前选中的 weight_id 清理对应 branch，保留模型行和其他 branch。行内勾选继续指定训练或推理使用的单个模型。
+**勾选删除**：Inference 的删除按钮按勾选的 `model_id + weight_id` 清理 branch 及对应结果。使用行首勾选后删除，保留该模型行。Training 使用自己的模型来源选择，删除按钮按勾选的格式单元格当前显示的 branch 操作。
+
+**顶部全选**：Training 和 Inference 的顶部“全选”作用于当前 TaskNode 的整个 ModelList。全选后点击删除并确认，会清除所有模型行（含空行）、全部 branch 及相关推理结果。修改单个 branch 的勾选后退出整表全选。Inference 修改行首勾选后也退出整表全选。
 
 **右键删除**：模型名称和权重单元格均可打开右键菜单。删除单元格清理当前选中的 branch；删除整行清理该 ModelEntry 的全部 branch，有权重和无权重的模型行均支持整行删除。删除操作先确认，再复用既有资产和 inference 清理流程。
 

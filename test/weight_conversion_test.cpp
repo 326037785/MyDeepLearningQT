@@ -31,6 +31,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -237,7 +238,7 @@ int main(int argc, char** argv) try {
         bool locked = false;
         execution.editing_changed = [&](bool enabled) { locked = !enabled; };
         execution.log = [&](const QString& text) {
-            if (text.startsWith("Weight conversion failed:")) {
+            if (text.startsWith("Weight conversion failed:") || text.startsWith("Inference failed:")) {
                 error_log = text;
             }
         };
@@ -335,16 +336,54 @@ int main(int argc, char** argv) try {
         const QString orphan_bin = QDir(model_directory).filePath("openvino_fp32_2.bin");
         if (scenario.project_actions) {
             QComboBox* device_type = workspace.findChild<QComboBox*>("inferenceDeviceType");
-            QComboBox* weight_type = workspace.findChild<QComboBox*>("inferenceWeightType");
-            require(device_type && weight_type && device_type->findData("cpu") >= 0, "CPU inference is unavailable");
+            QPushButton* infer = workspace.findChild<QPushButton*>("inferenceStartButton");
+            QWidget* browser = workspace.findChild<QWidget*>("inferenceProjectModelBrowser");
+            QTreeWidget* list = browser ? browser->findChild<QTreeWidget*>("projectModelBrowserList") : nullptr;
+            QWidget* cell = list && list->topLevelItemCount() == 1
+                ? list->itemWidget(list->topLevelItem(0), openvino ? 3 : 2) : nullptr;
+            QCheckBox* check = cell ? cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox") : nullptr;
+            require(device_type && infer && check && device_type->findData("cpu") >= 0, "CPU inference is unavailable");
             device_type->setCurrentIndex(device_type->findData("cpu"));
-            require(weight_type->findData(format_name) >= 0, "converted weight is not selectable for CPU inference");
+            check->click();
+            require(infer->isEnabled(), "checked converted branch is not selectable for CPU inference");
             if (cuda_available) {
                 const int gpu_index = device_type->findData("gpu");
                 require(gpu_index >= 0, "CUDA is absent from the device choices");
                 device_type->setCurrentIndex(gpu_index);
-                require((weight_type->findData(format_name) >= 0) == !openvino, "converted format exposed on the wrong device");
+                require(check->isChecked() && infer->isEnabled() == !openvino, "checked branch has the wrong device support");
             }
+            device_type->setCurrentIndex(device_type->findData("cpu"));
+            infer->click();
+            require(locked && execution.is_running(), "checked converted branch did not start inference");
+            completed.exec();
+            require(!locked && !execution.is_running() && error_log.isEmpty(), "converted branch inference failed");
+            const QString converted_id = QString::fromStdString(base_weight_id);
+            const studio::InferenceResultSet* first_result = service.inference_result(model_id, converted_id);
+            require(first_result && !first_result->samples.empty(), "converted branch did not save its result");
+            const QString first_path = QDir(QString::fromStdString(first_result->result_directory)).filePath("result.json");
+            const auto first_contents = studio::ProjectStorage::read(first_path);
+
+            workspace.show_inference();
+            cell = list->itemWidget(list->topLevelItem(0), openvino ? 3 : 2);
+            check = cell->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox");
+            require(check && check->isChecked(), "finished inference lost its branch check");
+            check->click();
+            QWidget* libtorch = list->itemWidget(list->topLevelItem(0), 1);
+            QComboBox* branches = libtorch->findChild<QComboBox*>("projectModelWeightBranch");
+            QCheckBox* libtorch_check = libtorch->findChild<QCheckBox*>("projectModelWeightDeleteCheckBox");
+            require(branches && libtorch_check, "LibTorch branch controls are missing");
+            const int alternate = branches->findData("alternate");
+            require(alternate >= 0, "alternate LibTorch branch is missing");
+            branches->setCurrentIndex(alternate);
+            QMetaObject::invokeMethod(branches, "activated", Qt::DirectConnection, Q_ARG(int, alternate));
+            libtorch_check->click();
+            infer->click();
+            require(locked && execution.is_running(), "checked LibTorch branch did not start inference");
+            completed.exec();
+            require(!locked && !execution.is_running() && error_log.isEmpty() &&
+                    service.inference_result(model_id, "alternate") &&
+                    studio::ProjectStorage::read(first_path) == first_contents,
+                    "LibTorch inference did not preserve the converted branch result");
             if (openvino) {
                 studio::ProjectStorage::write_atomic(orphan_bin, "reserved BIN");
             }
@@ -362,6 +401,12 @@ int main(int argc, char** argv) try {
         require(reopened.open_project(project.project_file()).empty(), "converted project has missing assets");
         studio::TaskWorkspaceService restored(reopened.active_workflow().document.graph, node);
         const studio::ProjectModel* saved = restored.find_model(model_id);
+        if (scenario.project_actions) {
+            require(restored.inference_result(model_id, QString::fromStdString(base_weight_id)) &&
+                    restored.inference_result(model_id, "alternate") &&
+                    !restored.inference_result(model_id, "libtorch_fp32"),
+                    "results from checked branches did not reopen independently");
+        }
         const jocelin::model::ModelWeight* saved_weight = saved
             ? jocelin::model::find_weight(*saved, base_weight_id) : nullptr;
         require(saved_weight && saved_weight->parent_weight_id == "alternate" && (openvino || saved_weight->onnx_opset == 18) &&

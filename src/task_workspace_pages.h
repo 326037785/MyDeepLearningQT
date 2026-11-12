@@ -195,11 +195,9 @@ private:
     void refresh_canvas();
     void refresh_device_types();
     void refresh_devices();
-    void refresh_weight_types();
-    void refresh_weight_branches();
     void commit_device();
     const jocelin::runtime::ComputeDevice* selected_device() const;
-    const jocelin::model::ModelWeight* selected_weight() const;
+    const jocelin::model::ModelWeight* selected_weight(const ModelWeightSelection& checked) const;
     void update_command_presentation();
     TaskWorkspaceService* service_ = nullptr;
     std::vector<ProjectModel> models_;
@@ -214,8 +212,7 @@ private:
     QCheckBox* overlay_layer_ = nullptr;
     QComboBox* device_type_ = nullptr;
     QComboBox* device_ = nullptr;
-    QComboBox* weight_type_ = nullptr;
-    QComboBox* weight_branch_ = nullptr;
+    QLabel* checked_target_ = nullptr;
     QSpinBox* batch_size_ = nullptr;
     QPushButton* start_ = nullptr;
     QLabel* state_ = nullptr;
