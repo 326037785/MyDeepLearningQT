@@ -8,6 +8,8 @@
 #include <torch/serialize.h>
 #include "workflow_scene.h"
 #include <common/exception/pipeline_exception.h>
+#include <algorithm>
+#include <functional>
 #include <iostream>
 
 #include <QAction>
@@ -23,10 +25,13 @@
 #include <QMessageBox>
 #include <QGraphicsView>
 #include <QImage>
+#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QDialogButtonBox>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
@@ -64,7 +69,7 @@ void dataset_lifecycle_ui() {
     for (int id : {owner, peer, detached}) {
         graph.connect(source, 0, id, 0);
         auto& task = std::get<studio::TaskNodeConfig>(graph.node(id).config);
-        task.dataset_binding.classes = {{"cat", 1, "cat", "#112233", true, false, true}};
+        task.dataset_binding.classes = {{"cat", 1, "cat", "#112233", true, false}};
         task.dataset_binding.samples.front().class_id = "cat";
         task.dataset_binding.samples.front().annotation_state = "annotated";
         task.runtime.results.resize(1);
@@ -215,9 +220,9 @@ int main(int argc, char** argv) try {
 
     window.findChild<QPushButton*>("workspaceStep2Button")->click();
     application.processEvents();
-    auto* canvas = window.findChild<QWidget*>("segmentationMaskCanvas");
-    auto* class_combo = window.findChild<QComboBox*>("segmentationClassCombo");
-    auto* add_class = window.findChild<QPushButton*>("segmentationAddClassButton");
+    studio::MaskCanvas* canvas = window.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
+    QListWidget* classes = window.findChild<QListWidget*>("segmentationClassList");
+    QToolButton* add_class = window.findChild<QToolButton*>("segmentationAddClassButton");
     auto* pan = window.findChild<QToolButton*>("segmentationPanButton");
     auto* transform_region = window.findChild<QToolButton*>(
         "segmentationTransformRegionButton");
@@ -227,9 +232,12 @@ int main(int argc, char** argv) try {
     auto* polygon = window.findChild<QToolButton*>("segmentationPolygonButton");
     auto* fill = window.findChild<QToolButton*>("segmentationFillButton");
     auto* pick = window.findChild<QToolButton*>("segmentationPickButton");
-    if (!canvas || !class_combo || !add_class || !pan || !transform_region || !brush || !eraser ||
+    if (!canvas || !classes || !add_class || !pan || !transform_region || !brush || !eraser ||
         !rectangle || !polygon || !fill || !pick) return 15;
-    for (auto* tool : {pan, transform_region, brush, eraser, rectangle, polygon, fill, pick}) {
+    if (!add_class->text().isEmpty()) {
+        return 16;
+    }
+    for (QToolButton* tool : {add_class, pan, transform_region, brush, eraser, rectangle, polygon, fill, pick}) {
         if (tool->icon().isNull() || tool->accessibleName().isEmpty() ||
             tool->toolTip().isEmpty() || tool->toolTip().contains('\n')) return 16;
     }
@@ -239,27 +247,208 @@ int main(int argc, char** argv) try {
     task_config.dataset_binding.classes = {
         studio::AnnotationClass{
             "imported-class", 1, "imported", "#1F8A9E",
-            true, false, true}};
+            true, false}};
     data_page->changed();
     window.findChild<QPushButton*>("workspaceStep1Button")->click();
     window.findChild<QPushButton*>("workspaceStep2Button")->click();
     application.processEvents();
-    if (class_combo->count() != 1 || class_combo->itemText(0) != "imported")
+    if (classes->count() != 2 || classes->item(1)->text() != "imported" ||
+        classes->currentRow() != 0)
         return 71;
     task_config.dataset_binding.classes.clear();
     window.findChild<QPushButton*>("workspaceStep1Button")->click();
     data_page->changed();
     window.findChild<QPushButton*>("workspaceStep2Button")->click();
     application.processEvents();
-    if (class_combo->count() != 0) return 72;
-    class_combo->setEditText("foreground");
-    add_class->click();
-    application.processEvents();
-    if (class_combo->count() != 1 ||
-        !window.findChild<QListWidget*>("segmentationClassList")) return 17;
+    if (classes->count() != 1 || window.findChild<QComboBox*>("segmentationClassCombo")) {
+        return 72;
+    }
 
     window.show();
     application.processEvents();
+
+    const QPoint center = canvas->rect().center();
+    const auto pointer = [canvas](QEvent::Type type, const QPoint& point) {
+        QMouseEvent event(type, point, Qt::LeftButton,
+            type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(canvas, &event);
+    };
+    // Drive the real Board on release. The timer also closes an unexpected prompt on press.
+    const auto draw = [&](const QPoint& point,
+                          std::function<void(QDialog&)> handle_board = {}) {
+        bool released = false;
+        bool completed_before_prompt = true;
+        QTimer dialogs;
+        QObject::connect(&dialogs, &QTimer::timeout, [&] {
+            QDialog* board = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!board) {
+                return;
+            }
+            if (!released || !handle_board || board->objectName() != "annotationClassBoard") {
+                completed_before_prompt = false;
+                board->reject();
+                return;
+            }
+            handle_board(*board);
+        });
+        dialogs.start(0);
+        pointer(QEvent::MouseButtonPress, point);
+        QApplication::processEvents();
+        released = true;
+        pointer(QEvent::MouseButtonRelease, point);
+        return completed_before_prompt;
+    };
+    const auto enter_name = [](const QString& name) {
+        QTimer::singleShot(0, [name] {
+            if (QInputDialog* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+                dialog->setTextValue(name);
+                dialog->accept();
+            }
+        });
+    };
+    auto& binding = task_config.dataset_binding;
+    const QImage empty_canvas = canvas->mask_image();
+    brush->click();
+    bool cancelled = false;
+    if (!draw(center, [&](QDialog& board) {
+            if (QLineEdit* name = board.findChild<QLineEdit*>("annotationNewClassName")) {
+                name->setText("cancelled");
+                cancelled = true;
+            }
+            board.reject();
+        }) || !cancelled || !binding.classes.empty() || canvas->mask_image() != empty_canvas ||
+        canvas->is_dirty() || canvas->can_undo() || !binding.samples.front().regions.empty()) {
+        return 92;
+    }
+    if (!draw(center, [](QDialog& board) {
+            QLineEdit* name = board.findChild<QLineEdit*>("annotationNewClassName");
+            QDialogButtonBox* buttons = board.findChild<QDialogButtonBox*>();
+            if (!name || !buttons) {
+                board.reject();
+                return;
+            }
+            name->setText("foreground");
+            buttons->button(QDialogButtonBox::Ok)->click();
+        }) || binding.classes.size() != 1 || !canvas->is_dirty() || !canvas->can_undo() ||
+        !binding.samples.front().regions.empty() || classes->currentRow() != 0) {
+        return 93;
+    }
+    const QImage painted = canvas->mask_image();
+    canvas->undo();
+    if (painted == empty_canvas || canvas->mask_image() != empty_canvas || !canvas->can_redo()) {
+        return 94;
+    }
+    canvas->redo();
+    QToolButton* save_mask = window.findChild<QToolButton*>("segmentationSaveMaskButton");
+    QToolButton* rename_class = window.findChild<QToolButton*>("segmentationRenameClassButton");
+    QToolButton* delete_class = window.findChild<QToolButton*>("segmentationDeleteClassButton");
+    QToolButton* lock_class = window.findChild<QToolButton*>("segmentationLockClassButton");
+    QToolButton* move_up = window.findChild<QToolButton*>("segmentationMoveClassUpButton");
+    if (!save_mask || !rename_class || !delete_class || !lock_class || !move_up ||
+        canvas->mask_image() != painted) {
+        return 95;
+    }
+    save_mask->click();
+    if (binding.samples.front().annotation_state != "annotated" || canvas->is_dirty()) {
+        return 96;
+    }
+    const std::string foreground_id = binding.classes.front().id;
+    const int foreground_mask = binding.classes.front().mask_value;
+    enter_name("road");
+    add_class->click();
+    if (binding.classes.size() != 2 || classes->currentRow() != 0) {
+        return 97;
+    }
+    classes->setCurrentRow(2);
+    const std::string road_id = binding.classes.back().id;
+    const int road_mask = binding.classes.back().mask_value;
+    move_up->click();
+    enter_name("lane");
+    rename_class->click();
+    lock_class->click();
+    if (!binding.classes.front().locked || !lock_class->isChecked() ||
+        binding.classes.front().id != road_id || binding.classes.front().name != "lane" ||
+        binding.classes.front().mask_value != road_mask) {
+        return 98;
+    }
+    classes->currentItem()->setCheckState(Qt::Unchecked);
+    if (binding.classes.front().visible) {
+        return 99;
+    }
+    lock_class->click();
+    classes->currentItem()->setCheckState(Qt::Checked);
+    const int stroke_spacing = std::min(canvas->width(), canvas->height() * 4 / 3) / 3;
+    if (!draw(center + QPoint(stroke_spacing, 0)) || !canvas->is_dirty()) {
+        return 100;
+    }
+    classes->setCurrentRow(0);
+    bool assigned_existing = false;
+    if (!draw(center - QPoint(stroke_spacing, 0), [&road_id, &assigned_existing](QDialog& board) {
+            QComboBox* existing = board.findChild<QComboBox*>("annotationExistingClass");
+            QToolButton* add_from_board = board.findChild<QToolButton*>("annotationAddClassButton");
+            QLineEdit* name = board.findChild<QLineEdit*>("annotationNewClassName");
+            QDialogButtonBox* buttons = board.findChild<QDialogButtonBox*>();
+            if (!existing || !add_from_board || !name || !buttons ||
+                add_from_board->icon().isNull() || !add_from_board->text().isEmpty() ||
+                existing->count() != 2 || !existing->isVisible() || name->isVisible()) {
+                board.reject();
+                return;
+            }
+            const int index = existing->findData(QString::fromStdString(road_id));
+            if (index < 0) {
+                board.reject();
+                return;
+            }
+            existing->setCurrentIndex(index);
+            QPushButton* confirm = buttons->button(QDialogButtonBox::Ok);
+            add_from_board->click();
+            if (!name->isVisible() || confirm->isEnabled()) {
+                board.reject();
+                return;
+            }
+            name->setText("unused");
+            add_from_board->click();
+            if (!existing->isVisible() || existing->currentIndex() != index || !confirm->isEnabled()) {
+                board.reject();
+                return;
+            }
+            assigned_existing = true;
+            confirm->click();
+        }) || !assigned_existing || binding.classes.size() != 2 || classes->currentRow() != 0) {
+        return 101;
+    }
+    // Only the draft references lane. Its deletion is immediate and undo cannot restore it.
+    classes->setCurrentRow(1);
+    delete_class->click();
+    canvas->undo();
+    canvas->redo();
+    if (binding.classes.size() != 1 || binding.classes.front().id != foreground_id ||
+        binding.classes.front().mask_value != foreground_mask || canvas->mask_image() != painted ||
+        canvas->is_dirty()) {
+        throw std::runtime_error("unexpected canvas after deleting a draft-only class: count=" +
+            std::to_string(binding.classes.size()) + " mask_equal=" +
+            std::to_string(canvas->mask_image() == painted) + " dirty=" +
+            std::to_string(canvas->is_dirty()));
+    }
+    classes->setCurrentRow(1);
+    const auto confirm_delete = [&](QMessageBox::StandardButton response) {
+        QTimer::singleShot(0, [response] {
+            if (QMessageBox* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                dialog->button(response)->click();
+            }
+        });
+        delete_class->click();
+    };
+    confirm_delete(QMessageBox::Cancel);
+    if (binding.classes.size() != 1 || binding.samples.front().regions.empty()) {
+        return 103;
+    }
+    confirm_delete(QMessageBox::Yes);
+    if (!binding.classes.empty() || !binding.samples.front().regions.empty() ||
+        binding.samples.front().annotation_state != "unannotated" ||
+        canvas->mask_image() != empty_canvas || canvas->is_dirty() || classes->currentRow() != 0) {
+        return 104;
+    }
 
     window.findChild<QPushButton*>("workspaceStep3Button")->click();
     application.processEvents();

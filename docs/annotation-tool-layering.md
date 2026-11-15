@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | [`annotation_tool_interaction.h/.cpp`](../src/annotation_tool_interaction.h) | 独立定义工具种类，维护笔触、图形、多边形、平移和选区变换的交互状态与矩阵计算；输出轨迹或几何结果。 | 不包含 mask、类别、TaskNode、撤销栈或持久化。`TransformSelection` 是通用手势；选择哪个带标签 Region 由 SG 决定。 |
 | [`segmentation_annotation.h/.cpp`](../src/segmentation_annotation.h) 的 `MaskCanvas` | 接收工具手势，编辑 SG 暂态 mask，维护每张图的撤销历史、类别可视化和 Region 选择，并提供 SG 编辑视图。 | 是 SG target 编辑边界，不是通用工具定义。直接 PNG `load/save` 供局部画布使用；产品提交仍由 TaskWorkspaceService 处理。 |
-| [`segmentation_annotation.cpp`](../src/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 选择 SG 工具及初始笔刷/显示参数，创建按钮和快捷键，连接画布、当前类别及 Task 提交。 | 是 SG 的工具组装点。 |
+| [`segmentation_annotation.cpp`](../src/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 组装 SG 工具、画布和样本切换，发起 Task 标注保存。 | Classes 面板与类别确认由 TaskWorkspace 组装，类别数据由 TaskNode 持有。 |
 | [`image_viewport_transform.*`](../src/image_viewport_transform.h) | 独立维护缩放、平移和坐标转换。 | 已处于合适层级，迁移时直接复用。 |
 | [`annotation_region_edit_service.*`](../src/annotation_region_edit_service.h) | 选择带标签的连通 Region，并对该 Region 做变换。 | 已抽离画布，但标签值和 Core Region 仍属于 mask/SG 适配语义；不要将其整体误认作所有任务通用工具。 |
 | [`segmentation_annotation_state.*`](../src/segmentation_annotation_state.h)、[`classification_annotation_state.*`](../src/classification_annotation_state.h) | 分别确定有效 target、两态和 Core 数据转换。 | 留在各自 Task；工具不得决定 `annotation_state`。 |
@@ -25,7 +25,7 @@
 
 依赖只从 Task 组装层指向工具层。工具层不得反向调用 Task 服务、持久化或 Core 的任务结果逻辑。Core 仍负责 Region 几何、target 表示、推理后处理与指标；Task 的编辑边界负责暂态 target 和提交，TaskNode 仍是持久 Annotation 的唯一 owner。
 
-例如：Brush 产生图像坐标下的连续轨迹段和宽度；SG 把轨迹段按当前类别写入暂态 mask，Eraser 则按 SG 规则写入背景 `0`；保存时才转换并提交 Regions。Pick 只交付坐标，由 SG 读取该处 mask 值并映射到类别。工具本身不解释“前景”“背景”或“有效标注”。
+Brush 产生图像坐标下的连续轨迹段和宽度。SG 将已选类的轨迹写入编辑 mask，未选类的轨迹先显示为几何预览，确认类别后写入编辑 mask。Eraser 写入背景 `0`。Save 或自动保存将编辑 mask 转换成 Regions。Pick 交付坐标，SG 读取该处 mask 值并映射到类别。
 
 可复用的纯几何或栅格计算可以帮助生成受影响的坐标或像素集合；调用它的 Task 仍决定写入值、target、编辑事务和提交时机。不要为共享计算引入新的 target owner。
 
@@ -42,7 +42,7 @@
 1. 工具 enum、笔触/图形/多边形手势、平移状态和选区变换矩阵已移出 SG 文件。SG 保留按 mask 值进行的像素修改、Region 选择、编辑撤销和类别有效性解释。
 2. 推理与结果页改用 `ImageResultCanvas`。它只绘制输入图像及 prediction overlay，复用 `ImageViewportTransform` 和平移手势，不创建空 mask 或撤销栈。
 3. 测试边界：业务语义是合同，界面呈现不是。
-   - [`dataset_visual_test.cpp`](../test/dataset_visual_test.cpp) 的合同是编辑结果：笔刷连续描画、填充、图形与多边形的完成/取消、阈值区间及内外选择、带同标签连通域的变换、撤销/重做、标注/空标注/纯背景提交后的 target 与状态，以及无类别时第一次描画先建立类别且不产生错误 target。
+   - [`dataset_visual_test.cpp`](../test/dataset_visual_test.cpp) 验证笔刷、填充、图形与多边形、阈值、Region 变换、撤销重做和纯背景标注。[`main_window_test.cpp`](../test/main_window_test.cpp) 验证类别管理及绘制结束后的类别确认。
    - [`main_window_test.cpp`](../test/main_window_test.cpp) 的合同是归属与同步：Task 切换后各页面仍可操作；DataNode 删除/替换只处理当前连接的 Task；Training/Inference/Results/Annotation 的模型清单跟随所属 TaskNode；Annotation、Inference、Results 共享 model_id + weight_id，分支无结果时清空 overlay；外部权重导入保留匹配结果、报告和独立 Node 资产。
    - 以下只是界面探针，可随设计修改：splitter 宽度和句柄收放、`responsiveMode` 等响应式属性、控件层级/父子关系/顺序、页面索引和数量、按钮文案/工具提示/图标文字、空状态由哪些具体控件组成。这些不再由常规 CTest 断言，测试也不再通过环境变量截图；视觉检查改为手动运行应用查看页面。
 4. 若新增 Task 需要现有手势，直接组合已有工具状态并在自己的编辑边界解释结果。只在发现第二个真实消费者及重复行为时再提取额外共享能力；不引入 ToolRegistry、插件基类、通用 Builder 或第二份 target 状态。

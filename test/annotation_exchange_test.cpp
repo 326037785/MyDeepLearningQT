@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
         75, 25, 0, 1234, "stratified"};
     binding.classes.push_back({
         "vehicle", 1, "vehicle", "#1F8A9E",
-        true, false, true});
+        true, false});
 
     studio::TaskSampleBinding annotated;
     annotated.sample_id = "sample-input";
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
         invalid_native.value("classes").toArray();
     auto annotation_class =
         classes.at(0).toObject();
-    annotation_class.remove("active");
+    annotation_class.remove("locked");
     classes[0] = annotation_class;
     invalid_native["classes"] = classes;
     const QString invalid_native_path =

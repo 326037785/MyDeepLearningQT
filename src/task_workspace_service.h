@@ -81,15 +81,14 @@ public:
                                    int test_percent,
                                    std::uint32_t seed,
                                    bool replace_manual_overrides = false);
-    void set_segmentation_mask_for_image(const std::string& image_path,
-                                         const QImage& mask);
+    void set_segmentation_mask(const std::string& sample_id, const QImage& mask);
     void set_segmentation_sample_empty(const std::string& sample_id);
     void set_class_for_sample(const std::string& sample_id,
                               const std::string& class_id);
 
     std::string add_class(const std::string& name, const std::string& color = {});
     void rename_class(const std::string& class_id, const std::string& name);
-    void retire_class(const std::string& class_id);
+    void remove_class(const std::string& class_id);
     void move_class(const std::string& class_id, int direction);
     void set_class_visible(const std::string& class_id, bool visible);
     void set_class_locked(const std::string& class_id, bool locked);

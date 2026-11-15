@@ -3,17 +3,24 @@
 #include "classification_annotation.h"
 #include "icon_provider.h"
 #include "segmentation_annotation.h"
+#include "task_dataset_binding.h"
 #include "task_workspace_pages.h"
 #include "project_model_browser.h"
 #include "task_module_catalog.h"
 #include "ui_metrics.h"
 
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStackedWidget>
@@ -26,6 +33,20 @@
 #include <stdexcept>
 
 namespace studio {
+
+namespace {
+
+bool has_class_pixels(const TaskSampleBinding& sample, int mask_value) {
+    for (const jocelin::geo::Region& region : sample.regions) {
+        if (std::any_of(region.vRun.begin(), region.vRun.end(),
+                [mask_value](const jocelin::geo::Run& run) { return run.label == mask_value; })) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     setObjectName("taskWorkspace");
@@ -101,8 +122,15 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
         if (dataset_requested) dataset_requested(node_id);
     };
     data_->dataset_replace_requested = [this](int source, DatasetConfig dataset, int owner, const TaskDatasetBinding* imported) {
-        if (!dataset_replace_requested) throw std::runtime_error("Dataset replacement handler unavailable");
-        return dataset_replace_requested(source, std::move(dataset), owner, imported);
+        if (!dataset_replace_requested) {
+            throw std::runtime_error("Dataset replacement handler unavailable");
+        }
+        const bool replaced = dataset_replace_requested(source, std::move(dataset), owner, imported);
+        if (replaced && imported) {
+            // The accepted import has replaced the Task labels and targets.
+            segmentation_->canvas()->clear();
+        }
+        return replaced;
     };
     split_->changed = [this] { domain_changed(); };
     split_->status = [this](const QString& text) { if (status) status(text); };
@@ -188,6 +216,7 @@ QWidget* TaskWorkspace::build_annotation_page() {
     classification_inspector_ = new QTabWidget(page);
     segmentation_ = new SegmentationAnnotationWidget(page, segmentation_inspector_);
     classification_ = new ClassificationAnnotationWidget(page, classification_inspector_);
+    build_segmentation_classes();
     annotation_models_tab_ = new QWidget(page);
     QVBoxLayout* models_layout = new QVBoxLayout(annotation_models_tab_);
     models_layout->setContentsMargins(8, 8, 8, 8);
@@ -233,69 +262,20 @@ QWidget* TaskWorkspace::build_annotation_page() {
     segmentation_->status = [this](const QString& text) {
         if (status) status(text);
     };
-    segmentation_->mask_saved = [this](const QString& image, const QImage& mask) {
-        if (!service_) return;
+    segmentation_->save_mask = [this](const std::string& sample_id, const QImage& mask) {
+        if (!service_) {
+            return false;
+        }
         try {
-            service_->set_segmentation_mask_for_image(image.toStdString(), mask);
+            service_->set_segmentation_mask(sample_id, mask);
             segmentation_->refresh_samples(service_->binding().samples, {});
             domain_changed();
+            return true;
         } catch (const std::exception& error) {
             QMessageBox::warning(this, tr("Mask metadata failed"),
                                  QString::fromUtf8(error.what()));
+            return false;
         }
-    };
-    segmentation_->class_add_requested = [this](const QString& name) {
-        if (!service_) return;
-        try {
-            service_->add_class(name.toStdString());
-            segmentation_->set_class_schema(service_->binding().classes);
-            domain_changed();
-        } catch (const std::exception& error) {
-            QMessageBox::warning(this, tr("Cannot add class"),
-                                 QString::fromUtf8(error.what()));
-        }
-    };
-    segmentation_->class_rename_requested =
-        [this](const QString& node_id, const QString& name) {
-        if (!service_) return;
-        try {
-            service_->rename_class(node_id.toStdString(), name.toStdString());
-            segmentation_->set_class_schema(service_->binding().classes);
-            domain_changed();
-        } catch (const std::exception& error) {
-            QMessageBox::warning(this, tr("Cannot rename class"),
-                                 QString::fromUtf8(error.what()));
-        }
-    };
-    segmentation_->class_retire_requested = [this](const QString& node_id) {
-        if (!service_) return;
-        try {
-            service_->retire_class(node_id.toStdString());
-            segmentation_->set_class_schema(service_->binding().classes);
-            domain_changed();
-        } catch (const std::exception& error) {
-            QMessageBox::warning(this, tr("Cannot delete class"),
-                                 QString::fromUtf8(error.what()));
-        }
-    };
-    segmentation_->class_move_requested = [this](const QString& node_id, int direction) {
-        if (!service_) return;
-        service_->move_class(node_id.toStdString(), direction);
-        segmentation_->set_class_schema(service_->binding().classes);
-        domain_changed();
-    };
-    segmentation_->class_visibility_changed =
-        [this](const QString& node_id, bool visible) {
-        if (!service_) return;
-        service_->set_class_visible(node_id.toStdString(), visible);
-        segmentation_->set_class_schema(service_->binding().classes);
-        domain_changed();
-    };
-    segmentation_->class_lock_changed = [this](const QString& node_id, bool locked) {
-        if (!service_) return;
-        service_->set_class_locked(node_id.toStdString(), locked);
-        segmentation_->set_class_schema(service_->binding().classes);
-        domain_changed();
     };
     auto assign_sample_split = [this](
         const std::vector<std::string>& sample_ids, const std::string& split) {
@@ -318,11 +298,10 @@ QWidget* TaskWorkspace::build_annotation_page() {
     segmentation_->sample_split_requested = assign_sample_split;
     classification_->sample_split_requested = assign_sample_split;
     classification_->class_assigned = [this](const QString& image, int class_index) {
-        if (!service_ || class_index < 0) return;
-        std::vector<const AnnotationClass*> active;
-        for (const auto& value : service_->binding().classes)
-            if (value.active) active.push_back(&value);
-        if (class_index >= static_cast<int>(active.size())) return;
+        if (!service_ || class_index < 0 ||
+            class_index >= static_cast<int>(service_->binding().classes.size())) {
+            return;
+        }
         const QString absolute = QFileInfo(image).absoluteFilePath();
         for (const auto& sample : service_->binding().samples) {
             const bool matches = std::any_of(
@@ -331,7 +310,8 @@ QWidget* TaskWorkspace::build_annotation_page() {
                     return QFileInfo(QString::fromStdString(path)).absoluteFilePath() == absolute;
                 });
             if (!matches) continue;
-            service_->set_class_for_sample(sample.sample_id, active[class_index]->id);
+            service_->set_class_for_sample(sample.sample_id,
+                service_->binding().classes[static_cast<size_t>(class_index)].id);
             domain_changed();
             break;
         }
@@ -350,11 +330,289 @@ QWidget* TaskWorkspace::build_annotation_page() {
     return page;
 }
 
+void TaskWorkspace::build_segmentation_classes() {
+    QWidget* panel = new QWidget(segmentation_inspector_);
+    panel->setObjectName("annotationClassesPanel");
+    QVBoxLayout* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    segmentation_classes_ = new QListWidget(panel);
+    segmentation_classes_->setObjectName("segmentationClassList");
+    segmentation_classes_->setAccessibleName(tr("Annotation classes"));
+    segmentation_classes_->setIconSize(QSize(14, 14));
+    layout->addWidget(segmentation_classes_, 1);
+
+    QHBoxLayout* actions = new QHBoxLayout;
+    const auto button = [panel, actions](const char* name, const char* icon, const QString& text) {
+        QToolButton* tool = new QToolButton(panel);
+        tool->setObjectName(name);
+        IconProvider::configure(tool, icon, text);
+        actions->addWidget(tool);
+        return tool;
+    };
+    QToolButton* add = button("segmentationAddClassButton", "add", tr("Add class"));
+    QToolButton* rename = button("segmentationRenameClassButton", "rename", tr("Rename class"));
+    QToolButton* remove = button("segmentationDeleteClassButton", "trash", tr("Delete class"));
+    QToolButton* lock = button("segmentationLockClassButton", "lock", tr("Lock or unlock the selected class"));
+    QToolButton* up = button("segmentationMoveClassUpButton", "up", tr("Move class up"));
+    QToolButton* down = button("segmentationMoveClassDownButton", "down", tr("Move class down"));
+    lock->setCheckable(true);
+    layout->addLayout(actions);
+    segmentation_inspector_->insertTab(0, panel, tr("Classes"));
+
+    MaskCanvas* canvas = segmentation_->canvas();
+    connect(segmentation_classes_, &QListWidget::currentItemChanged, this,
+            [this, canvas, rename, remove, lock, up, down] {
+        const AnnotationClass* selected = selected_segmentation_class();
+        const bool locked = selected && selected->locked;
+        canvas->set_class_value(selected ? selected->mask_value : 0);
+        canvas->set_editing_enabled(!locked);
+        const QSignalBlocker blocker(lock);
+        lock->setChecked(locked);
+        lock->setEnabled(selected != nullptr);
+        rename->setEnabled(selected != nullptr);
+        remove->setEnabled(selected != nullptr);
+        up->setEnabled(segmentation_classes_->currentRow() > 1);
+        down->setEnabled(selected && segmentation_classes_->currentRow() + 1 < segmentation_classes_->count());
+    });
+    canvas->class_picked = [this](int value) {
+        const AnnotationClass* schema = service_
+            ? find_annotation_class_by_mask(service_->binding(), value) : nullptr;
+        if (schema) {
+            const QString id = QString::fromStdString(schema->id);
+            for (int row = 1; row < segmentation_classes_->count(); ++row) {
+                if (segmentation_classes_->item(row)->data(Qt::UserRole).toString() == id) {
+                    segmentation_classes_->setCurrentRow(row);
+                    return;
+                }
+            }
+        }
+    };
+    canvas->choose_class = [this] { return choose_segmentation_class(); };
+    connect(add, &QToolButton::clicked, this, [this] {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(this, tr("Add class"), tr("Class name"),
+            QLineEdit::Normal, {}, &accepted).trimmed();
+        if (accepted && !name.isEmpty()) {
+            add_segmentation_class(name);
+        }
+    });
+    connect(rename, &QToolButton::clicked, this, [this] {
+        const AnnotationClass* schema = selected_segmentation_class();
+        if (!schema) {
+            return;
+        }
+        const std::string id = schema->id;
+        const QString name = QString::fromStdString(schema->name);
+        bool accepted = false;
+        const QString renamed = QInputDialog::getText(this, tr("Rename class"), tr("Class name"),
+            QLineEdit::Normal, name, &accepted).trimmed();
+        if (!accepted || renamed.isEmpty() || renamed == name) {
+            return;
+        }
+        try {
+            service_->rename_class(id, renamed.toStdString());
+            refresh_segmentation_classes(id);
+            domain_changed();
+        } catch (const std::exception& error) {
+            QMessageBox::warning(this, tr("Cannot rename class"), QString::fromUtf8(error.what()));
+        }
+    });
+    connect(remove, &QToolButton::clicked, this, [this, canvas] {
+        const AnnotationClass* schema = selected_segmentation_class();
+        if (!schema) {
+            return;
+        }
+        const std::string id = schema->id;
+        const int value = schema->mask_value;
+        const auto& samples = service_->binding().samples;
+        const int affected = static_cast<int>(std::count_if(samples.begin(), samples.end(),
+            [value](const TaskSampleBinding& sample) { return has_class_pixels(sample, value); }));
+        if (affected > 0) {
+            const QString message = tr("Delete '%1' and its annotations in %2 sample(s)?")
+                .arg(QString::fromStdString(schema->name)).arg(affected);
+            if (QMessageBox::question(this, tr("Delete class"), message,
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) {
+                return;
+            }
+        }
+        service_->remove_class(id);
+        canvas->remove_class_pixels(value);
+        refresh_segmentation_classes({});
+        segmentation_->refresh_samples(samples, {});
+        data_->refresh();
+        domain_changed();
+    });
+    const auto move = [this](int direction) {
+        if (const AnnotationClass* schema = selected_segmentation_class()) {
+            const std::string id = schema->id;
+            service_->move_class(id, direction);
+            refresh_segmentation_classes(id);
+            domain_changed();
+        }
+    };
+    connect(up, &QToolButton::clicked, this, [move] { move(-1); });
+    connect(down, &QToolButton::clicked, this, [move] { move(1); });
+    connect(lock, &QToolButton::toggled, this, [this](bool locked) {
+        if (const AnnotationClass* schema = selected_segmentation_class()) {
+            const std::string id = schema->id;
+            service_->set_class_locked(id, locked);
+            refresh_segmentation_classes(id);
+            domain_changed();
+        }
+    });
+    connect(segmentation_classes_, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem* item) {
+        const std::string id = item->data(Qt::UserRole).toString().toStdString();
+        if (id.empty() || !service_) {
+            return;
+        }
+        const AnnotationClass* selected = selected_segmentation_class();
+        const std::string selected_id = selected ? selected->id : std::string{};
+        service_->set_class_visible(id, item->checkState() == Qt::Checked);
+        refresh_segmentation_classes(selected_id);
+        domain_changed();
+    });
+    refresh_segmentation_classes({});
+}
+
+void TaskWorkspace::refresh_segmentation_classes(const std::string& class_id) {
+    QHash<int, QColor> colors;
+    QSet<int> hidden;
+    int row = 0;
+    {
+        const QSignalBlocker blocker(segmentation_classes_);
+        segmentation_classes_->clear();
+        new QListWidgetItem(tr("No class selected"), segmentation_classes_);
+        if (service_ && service_->task().task == "sg") {
+            for (const AnnotationClass& schema : service_->binding().classes) {
+                QColor color(QString::fromStdString(schema.color));
+                if (!color.isValid()) {
+                    color = QColor(QString::fromStdString(default_class_color(schema.mask_value)));
+                }
+                colors.insert(schema.mask_value, color);
+                if (!schema.visible) {
+                    hidden.insert(schema.mask_value);
+                }
+                QPixmap chip(14, 14);
+                chip.fill(color);
+                const QString id = QString::fromStdString(schema.id);
+                const QString name = QString::fromStdString(schema.name);
+                QListWidgetItem* item = new QListWidgetItem(QIcon(chip),
+                    schema.locked ? tr("%1 · locked").arg(name) : name, segmentation_classes_);
+                item->setData(Qt::UserRole, id);
+                item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+                item->setCheckState(schema.visible ? Qt::Checked : Qt::Unchecked);
+                item->setToolTip(tr("Stable class ID: %1\nMask value: %2").arg(id).arg(schema.mask_value));
+                if (schema.id == class_id) {
+                    row = segmentation_classes_->row(item);
+                }
+            }
+        }
+    }
+    segmentation_classes_->setCurrentRow(row);
+    segmentation_->canvas()->set_class_display(colors, hidden);
+}
+
+const AnnotationClass* TaskWorkspace::selected_segmentation_class() const {
+    const QListWidgetItem* item = segmentation_classes_->currentItem();
+    return service_ && item
+        ? find_annotation_class(service_->binding(), item->data(Qt::UserRole).toString().toStdString())
+        : nullptr;
+}
+
+std::string TaskWorkspace::add_segmentation_class(const QString& name) {
+    try {
+        const std::string id = service_->add_class(name.toStdString());
+        const AnnotationClass* selected = selected_segmentation_class();
+        refresh_segmentation_classes(selected ? selected->id : std::string{});
+        domain_changed();
+        return id;
+    } catch (const std::exception& error) {
+        QMessageBox::warning(this, tr("Cannot add class"), QString::fromUtf8(error.what()));
+        return {};
+    }
+}
+
+int TaskWorkspace::choose_segmentation_class() {
+    if (!service_) {
+        return 0;
+    }
+    QDialog board(this);
+    board.setObjectName("annotationClassBoard");
+    board.setWindowTitle(tr("Choose annotation class"));
+    QVBoxLayout* layout = new QVBoxLayout(&board);
+    QComboBox* existing = new QComboBox(&board);
+    existing->setObjectName("annotationExistingClass");
+    existing->setAccessibleName(tr("Existing class"));
+    for (const AnnotationClass& schema : service_->binding().classes) {
+        if (!schema.locked) {
+            existing->addItem(QString::fromStdString(schema.name), QString::fromStdString(schema.id));
+        }
+    }
+    QLineEdit* name = new QLineEdit(&board);
+    name->setObjectName("annotationNewClassName");
+    name->setPlaceholderText(tr("Class name"));
+    name->setAccessibleName(tr("New class name"));
+    QToolButton* add = new QToolButton(&board);
+    add->setObjectName("annotationAddClassButton");
+    IconProvider::configure(add, "add", tr("Add class"));
+    add->setFocusPolicy(Qt::StrongFocus);
+    add->setCheckable(true);
+    const bool has_existing = existing->count() > 0;
+    add->setVisible(has_existing);
+    add->setChecked(!has_existing);
+    QHBoxLayout* input = new QHBoxLayout;
+    input->addWidget(existing, 1);
+    input->addWidget(name, 1);
+    input->addWidget(add);
+    layout->addLayout(input);
+    QDialogButtonBox* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &board);
+    layout->addWidget(buttons);
+    QPushButton* confirm = buttons->button(QDialogButtonBox::Ok);
+    const auto update_confirm = [add, name, confirm] {
+        confirm->setEnabled(!add->isChecked() || !name->text().trimmed().isEmpty());
+    };
+    const auto show_input = [existing, name, update_confirm](bool creating) {
+        existing->setVisible(!creating);
+        name->setVisible(creating);
+        if (creating) {
+            name->setFocus();
+        } else {
+            existing->setFocus();
+        }
+        update_confirm();
+    };
+    connect(add, &QToolButton::toggled, &board, show_input);
+    connect(name, &QLineEdit::textChanged, &board, update_confirm);
+    show_input(add->isChecked());
+    int value = 0;
+    connect(buttons, &QDialogButtonBox::accepted, &board,
+            [this, &board, &value, add, existing, name] {
+        const std::string id = add->isChecked()
+            ? add_segmentation_class(name->text().trimmed())
+            : existing->currentData().toString().toStdString();
+        const AnnotationClass* schema = find_annotation_class(service_->binding(), id);
+        if (schema && !schema->locked) {
+            value = schema->mask_value;
+            board.accept();
+        }
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &board, &QDialog::reject);
+    board.exec();
+    return value;
+}
+
 void TaskWorkspace::bind(
     WorkflowGraph* graph, int node_id)
 {
     graph_ = graph;
     node_id_ = node_id;
+    segmentation_->canvas()->clear();
+    {
+        const QSignalBlocker blocker(segmentation_classes_);
+        segmentation_classes_->setCurrentRow(0);
+    }
     training_->set_service(nullptr);
     inference_->set_service(nullptr);
     results_->set_service(nullptr);
@@ -404,6 +662,8 @@ void TaskWorkspace::clear() {
     graph_ = nullptr;
     node_id_ = 0;
     annotation_binding_dirty_ = true;
+    segmentation_->canvas()->clear();
+    refresh_segmentation_classes({});
     identity_->setText(tr("Task"));
     context_->clear();
     data_->set_service(nullptr);
@@ -420,15 +680,14 @@ void TaskWorkspace::clear() {
 }
 
 void TaskWorkspace::refresh_annotation() {
-    if (!service_ || service_->source_node_id() == 0) {
-        segmentation_->set_task_dataset({}, {}, {});
+    if (!service_) {
+        segmentation_->set_task_dataset({});
         classification_->set_dataset({}, {}, {});
         segmentation_->set_inference_result(nullptr);
         classification_->set_inference_result(nullptr);
         return;
     }
-    const auto& task = service_->task();
-    const QString directory = QString::fromStdString(service_->source_dataset().directory);
+    const TaskNodeConfig& task = service_->task();
     const bool segmentation = task.task == "sg";
     QTabWidget* inspector = segmentation ? segmentation_inspector_ : classification_inspector_;
     QTabWidget* other_inspector = segmentation ? classification_inspector_ : segmentation_inspector_;
@@ -442,22 +701,30 @@ void TaskWorkspace::refresh_annotation() {
     segmentation_->setVisible(segmentation);
     classification_->setVisible(!segmentation);
     if (segmentation) {
-        segmentation_->set_task_dataset(
-            directory, service_->binding().samples,
-            service_->binding().classes);
+        const AnnotationClass* selected = selected_segmentation_class();
+        refresh_segmentation_classes(selected ? selected->id : std::string{});
+        if (service_->source_node_id() != 0) {
+            segmentation_->set_task_dataset(service_->binding().samples);
+        } else {
+            segmentation_->set_task_dataset({});
+        }
+    } else if (service_->source_node_id() == 0) {
+        classification_->set_dataset({}, {}, {});
     } else {
         QVector<int> labels;
         QStringList class_names;
-        std::vector<const AnnotationClass*> active;
-        for (const auto& value : service_->binding().classes) {
-            if (!value.active) continue;
-            active.push_back(&value);
+        const std::vector<AnnotationClass>& classes = service_->binding().classes;
+        for (const AnnotationClass& value : classes) {
             class_names.push_back(QString::fromStdString(value.name));
         }
         for (const auto& sample : service_->binding().samples) {
             int label = -1;
-            for (int index = 0; index < static_cast<int>(active.size()); ++index)
-                if (active[index]->id == sample.class_id) label = index;
+            for (int index = 0; index < static_cast<int>(classes.size()); ++index) {
+                if (classes[static_cast<size_t>(index)].id == sample.class_id) {
+                    label = index;
+                    break;
+                }
+            }
             labels.push_back(label);
         }
         classification_->set_dataset(
@@ -527,8 +794,10 @@ void TaskWorkspace::refresh() {
 void TaskWorkspace::refresh_step_availability() {
     const bool bound = service_ && service_->source_node_id() != 0;
     const bool has_samples = bound && !service_->binding().samples.empty();
+    const bool manage_classes = service_ && service_->task().task == "sg";
     for (int index = 0; index < static_cast<int>(step_buttons_.size()); ++index) {
         const bool enabled = index == static_cast<int>(Step::Data) ||
+            (index == static_cast<int>(Step::Annotation) && manage_classes) ||
             (index == static_cast<int>(Step::Training) && bound) ||
             (index == static_cast<int>(Step::Inference) && bound) ||
             (index == static_cast<int>(Step::Results) && bound) ||

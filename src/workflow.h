@@ -61,9 +61,6 @@ struct AnnotationClass {
     std::string color;
     bool visible = true;
     bool locked = false;
-    // Deletion retires a class instead of recycling its mask value. This
-    // preserves the meaning of pixels in existing masks.
-    bool active = true;
 };
 
 struct TaskSampleBinding {

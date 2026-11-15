@@ -54,7 +54,7 @@ Annotation state describes supervision validity and has exactly two values:
 - `Unannotated`: no valid supervision has been supplied for the sample.
 - `Annotated`: the sample contains valid task supervision.
 
-Each task owns target validity and annotation-state transitions. Classification requires an active, valid class. Semantic segmentation supports valid foreground regions and explicitly confirmed pure background as `Annotated` with empty regions. Empty regions alone leave an unfinished sample `Unannotated`.
+Each task owns target validity and annotation-state transitions. Classification requires a valid class reference. Semantic segmentation supports valid foreground regions and explicitly confirmed pure background as `Annotated` with empty regions. Empty regions alone leave an unfinished sample `Unannotated`.
 
 Qt provides task-owned annotation actions. Classification disables `Set as empty`; segmentation asks the user to confirm pure background before clearing foreground and marking the sample `Annotated`.
 

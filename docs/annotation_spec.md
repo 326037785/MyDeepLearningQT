@@ -30,6 +30,12 @@ SG 根据区域边界、类别和输入尺寸检查 target。不成立的 target
 
 Task/service 更新 Annotation。界面从 TaskNode 刷新展示。SG 画布中的像素是编辑表示，应用编辑时转换成 Core Regions。
 
+SG 右侧 Classes 管理 TaskNode 的类别，当前样本及其标注状态独立。列表通过 `class_id` 选择类别，`No class selected` 清空选择。重命名、排序、显隐和锁定只修改类别属性。Region 的 `run.label` 对应类别的 `mask_value`。
+
+删除无引用类别直接生效。有样本引用时先确认影响范围，然后删除类别及其 runs。同一 Region 中的其他标签保留。受影响样本失去全部前景后回到 Unannotated。其余类别的身份和 mask 值保持原值。
+
+选定类别时完成绘制即可赋类。未选类别时，绘制完成后通过 Board 选择已有类别或创建类别。确认后将带标签的像素编辑加入画布撤销历史，由 Save 或自动保存转换为 Task Regions。取消会丢弃本次几何，类别表、标注和撤销历史保持原状。
+
 Classification 的 Set as empty 不可用。SG 的 Set as empty 要求用户确认。确认后清空前景 Regions，并设为 Annotated。取消保留已有 target 和状态。
 
 普通空白编辑提交保持 Unannotated。未修改的、已确认纯背景 target 保留 Annotated。

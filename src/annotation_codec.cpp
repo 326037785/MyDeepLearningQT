@@ -247,8 +247,7 @@ std::vector<AnnotationClass> AnnotationClassResolver::resolve(
             name.toStdString(),
             default_class_color(category.mask_value),
             true,
-            false,
-            true});
+            false});
     }
     return result;
 }

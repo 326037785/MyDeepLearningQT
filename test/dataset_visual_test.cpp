@@ -22,7 +22,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
-#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QComboBox>
@@ -40,24 +39,6 @@
 #include <algorithm>
 #include <fstream>
 #include <cmath>
-
-namespace {
-
-void accept_input_dialog(const QString& value, int attempts = 50) {
-    if (auto* dialog = qobject_cast<QInputDialog*>(
-            QApplication::activeModalWidget())) {
-        dialog->setTextValue(value);
-        dialog->accept();
-        return;
-    }
-    if (attempts > 0)
-        QTimer::singleShot(
-            10, [value, attempts] {
-                accept_input_dialog(value, attempts - 1);
-            });
-}
-
-} // namespace
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
@@ -166,18 +147,13 @@ int main(int argc, char** argv) {
     annotation_sample.image_paths = {
         directory.filePath("images/segment.png").toStdString()};
     annotation_sample.selected = true;
-    studio::import_segmentation_annotation({{"foreground", 1, "foreground", "#1F8A9E", true, false, true}},
+    studio::import_segmentation_annotation({{"foreground", 1, "foreground", "#1F8A9E", true, false}},
         annotation_sample, directory.filePath("masks/segment.png"));
     annotation_sample.split = "train";
     annotation_sample.annotation_state = "annotated";
     studio::SegmentationAnnotationWidget annotation;
     annotation.resize(1000, 600);
-    annotation.set_task_dataset(
-        directory.path(),
-        {annotation_sample},
-        {studio::AnnotationClass{
-            "foreground", 1, "foreground", "#1F8A9E",
-            true, false, true}});
+    annotation.set_task_dataset({annotation_sample});
     studio::InferenceResultSet segmentation_results;
     jocelin::result::sg::SgResult prediction;
     prediction.image_path = annotation_sample.image_paths.front();
@@ -196,10 +172,9 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
     auto* canvas = annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
     auto* annotation_list = annotation.findChild<QListWidget*>("annotationImageList");
-    auto* segmentation_classes = annotation.findChild<QListWidget*>("segmentationClassList");
     auto* annotation_quality = annotation.findChild<QLabel*>("annotationQualitySummary");
     if (!canvas || !annotation_list || annotation_list->count() != 1 ||
-        annotation_list->item(0)->icon().isNull() || !segmentation_classes)
+        annotation_list->item(0)->icon().isNull())
         return 11;
     if (!annotation_quality || annotation_quality->isVisible()) return 86;
     const auto* annotation_item = annotation_list->item(0);
@@ -263,7 +238,6 @@ int main(int argc, char** argv) {
     studio::SegmentationAnnotationWidget background_annotation;
     background_annotation.resize(900, 600);
     background_annotation.set_task_dataset(
-        directory.path(),
         {studio::TaskSampleBinding{
             "invalid-sample",
             {directory.filePath("images/segment.png").toStdString()},
@@ -273,10 +247,7 @@ int main(int argc, char** argv) {
             {},
             "train",
             "annotated",
-            {}}},
-        {studio::AnnotationClass{
-            "foreground", 1, "foreground", "#1F8A9E",
-            true, false, true}});
+            {}}});
     background_annotation.show();
     QApplication::processEvents();
     auto* background_list = background_annotation.findChild<QListWidget*>("annotationImageList");
@@ -286,23 +257,19 @@ int main(int argc, char** argv) {
     studio::SegmentationAnnotationWidget no_class_annotation;
     no_class_annotation.resize(900, 600);
     no_class_annotation.set_task_dataset(
-        directory.filePath("late-import"),
         {studio::TaskSampleBinding{
             "late-sample",
             {directory.filePath(
                 "late-import/connected-after-import.jpg").toStdString()},
-            true, {}, {}, {}, "unassigned", "unannotated", {}}},
-        {});
+            true, {}, {}, {}, "unassigned", "unannotated", {}}});
     no_class_annotation.show();
     QApplication::processEvents();
     auto* no_class_list = no_class_annotation.findChild<QListWidget*>("annotationImageList");
-    auto* class_combo = no_class_annotation.findChild<QComboBox*>("segmentationClassCombo");
     auto* brush_button = no_class_annotation.findChild<QToolButton*>("segmentationBrushButton");
     auto* no_class_canvas = no_class_annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
-    if (!no_class_list || no_class_list->count() != 1 || !class_combo || class_combo->count() != 0 ||
+    if (!no_class_list || no_class_list->count() != 1 ||
         !brush_button || !brush_button->isEnabled() || !no_class_canvas) return 20;
-    std::vector<studio::AnnotationClass> emitted_classes;
-    QString saved_image;
+    std::string saved_sample_id;
     QImage saved_mask;
     bool saved_empty = false;
     studio::WorkflowGraph empty_graph;
@@ -313,29 +280,15 @@ int main(int argc, char** argv) {
     empty_graph.connect(source_node_id, 0, node_id, 0);
     studio::TaskWorkspaceService empty_service(empty_graph, node_id);
     empty_service.synchronize();
-    no_class_annotation.class_add_requested =
-        [&](const QString& name) {
-            const int mask_value =
-                static_cast<int>(emitted_classes.size()) + 1;
-            emitted_classes.push_back({
-                "class-" + std::to_string(mask_value),
-                mask_value,
-                name.toStdString(),
-                studio::default_class_color(mask_value),
-                true, false, true});
-            empty_service.binding().classes = emitted_classes;
-            no_class_annotation.set_class_schema(
-                emitted_classes);
-        };
-    no_class_annotation.mask_saved = [&](const QString& image, const QImage& mask) {
-        saved_image = image;
+    empty_service.add_class("vehicle");
+    no_class_canvas->set_class_value(1);
+    no_class_annotation.save_mask = [&](const std::string& sample_id, const QImage& mask) {
+        saved_sample_id = sample_id;
         saved_mask = mask.copy();
-        empty_service.set_segmentation_mask_for_image(image.toStdString(), mask);
+        empty_service.set_segmentation_mask(sample_id, mask);
         no_class_annotation.refresh_samples(empty_service.binding().samples, {});
+        return true;
     };
-    QTimer::singleShot(0, [] {
-        accept_input_dialog("vehicle");
-    });
     brush_button->click();
     QApplication::processEvents();
     const QPoint paint_point = no_class_canvas->rect().center();
@@ -344,34 +297,11 @@ int main(int argc, char** argv) {
     QMouseEvent first_annotation_release(QEvent::MouseButtonRelease, paint_point, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(no_class_canvas, &first_annotation_release);
     QApplication::processEvents();
-    if (emitted_classes.size() != 1 ||
-        emitted_classes.front().name != "vehicle" ||
-        !no_class_canvas->is_dirty()) return 21;
-
-    class_combo->setEditText("road");
-    auto* add_class = no_class_annotation.findChild<QPushButton*>("segmentationAddClassButton");
-    if (!add_class) return 22;
-    add_class->click();
-    QApplication::processEvents();
-    auto* class_list = no_class_annotation.findChild<QListWidget*>("segmentationClassList");
-    auto* polygon_button = no_class_annotation.findChild<QToolButton*>("segmentationPolygonButton");
-    auto* rectangle_button = no_class_annotation.findChild<QToolButton*>("segmentationRectangleButton");
-    auto* ellipse_button = no_class_annotation.findChild<QToolButton*>("segmentationEllipseButton");
-    auto* threshold_button = no_class_annotation.findChild<QToolButton*>("segmentationThresholdButton");
-    auto* fill_button = no_class_annotation.findChild<QToolButton*>("segmentationFillButton");
-    if (emitted_classes.size() != 2 ||
-        emitted_classes.back().name != "road" ||
-        class_combo->count() != 2 || !brush_button->isEnabled() ||
-        !class_list || class_list->count() != 2 || class_list->item(0)->icon().isNull() ||
-        !polygon_button || !polygon_button->isEnabled() || !rectangle_button || !rectangle_button->isEnabled() ||
-        !ellipse_button || !ellipse_button->isEnabled() ||
-        !threshold_button || !threshold_button->isEnabled() ||
-        !fill_button || !fill_button->isEnabled()) return 23;
     auto* save_mask = no_class_annotation.findChild<QToolButton*>("segmentationSaveMaskButton");
     if (!no_class_canvas->is_dirty() || !save_mask) return 24;
     save_mask->click();
     QApplication::processEvents();
-    if (saved_image.isEmpty() || saved_mask.isNull()) return 25;
+    if (saved_sample_id != "late-sample" || saved_mask.isNull()) return 25;
     auto* saved_samples =
         no_class_annotation.findChild<QListWidget*>("annotationImageList");
     if (!saved_samples || saved_samples->count() != 1 ||
@@ -388,6 +318,8 @@ int main(int argc, char** argv) {
         no_class_annotation.refresh_samples(empty_service.binding().samples, ids);
     };
     const QImage foreground_before_empty = saved_mask.copy();
+    empty_service.add_class("road");
+    no_class_canvas->set_class_value(2);
     const QDir mask_directory(directory.filePath("late-import"));
     const auto files_before_empty = mask_directory.entryList(QDir::Files);
     bool empty_action_found = false;
@@ -426,8 +358,7 @@ int main(int argc, char** argv) {
     if (saved_mask != foreground_before_empty ||
         !saved_samples->item(0)->text().contains("Annotated")) return 92;
     // Revisiting the sample must not rediscover its old file as the current target.
-    no_class_annotation.set_task_dataset(directory.filePath("late-import"),
-        empty_service.binding().samples, emitted_classes);
+    no_class_annotation.set_task_dataset(empty_service.binding().samples);
     // Inspect the canvas through its existing export API, inside the temporary test fixture.
     const QString canvas_capture = directory.filePath("empty-canvas.png");
     QString canvas_error;
@@ -687,14 +618,13 @@ int main(int argc, char** argv) {
     studio::TaskSampleBinding second_threshold_sample;
     second_threshold_sample.sample_id = "threshold-second";
     second_threshold_sample.image_paths = {directory.filePath("val.png").toStdString()};
-    remembered_annotation.set_task_dataset(directory.path(),
-        {first_threshold_sample, second_threshold_sample},
-        {{"threshold-class", 1, "foreground", "#00ff00", true, false, true}});
+    remembered_annotation.set_task_dataset({first_threshold_sample, second_threshold_sample});
     auto* remembered_canvas = remembered_annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
     auto* remembered_samples = remembered_annotation.findChild<QListWidget*>("annotationImageList");
     if (!remembered_canvas || !remembered_samples) {
         return 100;
     }
+    remembered_canvas->set_class_value(1);
     for (int step = 0; step < 4; ++step) {
         remembered_canvas->mark_saved();
         remembered_samples->setCurrentRow(step % 2);

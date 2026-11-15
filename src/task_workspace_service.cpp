@@ -588,31 +588,28 @@ void TaskWorkspaceService::assign_reproducible_split(
             binding().samples[automatic[cursor++]].split = names[split_index];
 }
 
-void TaskWorkspaceService::set_segmentation_mask_for_image(
-    const std::string& image_path,
-    const QImage& mask)
+void TaskWorkspaceService::set_segmentation_mask(
+    const std::string& sample_id, const QImage& mask)
 {
-    const QString absolute = QFileInfo(QString::fromStdString(image_path)).absoluteFilePath();
-    for (auto& sample : binding().samples) {
-        const bool owns_image = std::any_of(
-            sample.image_paths.begin(), sample.image_paths.end(),
-            [&absolute](const std::string& candidate) {
-                return QFileInfo(QString::fromStdString(candidate)).absoluteFilePath() == absolute;
-            });
-        if (!owns_image) continue;
-        commit_segmentation_mask(binding().classes, sample, mask);
-        refresh_quality();
-        return;
+    if (task().task != "sg") {
+        throw std::runtime_error("segmentation targets are not supported by this Task");
     }
-    throw std::runtime_error("saved mask does not belong to the Task binding");
+    TaskSampleBinding& sample = require_sample(sample_id);
+    TaskSampleBinding edited;
+    edited.image_paths = sample.image_paths;
+    if (!commit_segmentation_mask(binding().classes, edited, mask)) {
+        throw std::runtime_error(edited.quality_issues.front());
+    }
+    sample.regions = std::move(edited.regions);
+    sample.annotation_state = std::move(edited.annotation_state);
+    refresh_quality();
 }
 
 void TaskWorkspaceService::set_class_for_sample(
     const std::string& sample_id,
     const std::string& class_id)
 {
-    const auto& schema = require_class(class_id);
-    if (!schema.active) throw std::runtime_error("cannot assign a retired class");
+    require_class(class_id);
     auto& sample = require_sample(sample_id);
     sample.class_id = class_id;
     refresh_classification_annotation(binding().classes, sample);
@@ -622,57 +619,89 @@ std::string TaskWorkspaceService::add_class(
     const std::string& name,
     const std::string& color)
 {
-    if (name.empty()) throw std::runtime_error("class name cannot be empty");
+    if (name.empty()) {
+        throw std::runtime_error("class name cannot be empty");
+    }
     if (std::any_of(binding().classes.begin(), binding().classes.end(),
                     [&name](const AnnotationClass& value) {
-                        return value.active && equal_folded(value.name, name);
-                    }))
+                        return equal_folded(value.name, name);
+                    })) {
         throw std::runtime_error("class name already exists");
-    if (task().task == "cls") {
-        const std::string id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-        binding().classes.push_back({id, 0, name,
-            color.empty() ? default_class_color(static_cast<int>(binding().classes.size()) + 1) : color,
-            true, false, true});
-        return id;
     }
-    std::set<int> used;
-    std::set<std::string> ids;
-    for (const auto& value : binding().classes) {
-        used.insert(value.mask_value);
-        ids.insert(value.id);
+    int mask_value = 0;
+    int color_index = static_cast<int>(binding().classes.size()) + 1;
+    if (task().task != "cls") {
+        std::set<int> used;
+        for (const AnnotationClass& value : binding().classes) {
+            used.insert(value.mask_value);
+        }
+        mask_value = 1;
+        while (mask_value <= 255 && used.count(mask_value) != 0) {
+            ++mask_value;
+        }
+        if (mask_value > 255) {
+            throw std::runtime_error("all foreground mask values are in use");
+        }
+        color_index = mask_value;
     }
-    int mask_value = 1;
-    while (mask_value <= 254 && used.count(mask_value) != 0) ++mask_value;
-    if (mask_value > 254)
-        throw std::runtime_error(
-            "training reserves class zero for background and supports at most 254 foreground classes");
-    std::string id = "class-" + stable_sample_id({name, std::to_string(mask_value)}).substr(7);
-    for (int suffix = 2; ids.count(id) != 0; ++suffix)
-        id = "class-" + stable_sample_id({name, std::to_string(mask_value), std::to_string(suffix)}).substr(7);
-    binding().classes.push_back(
-        {id, mask_value, name, color.empty() ? default_class_color(mask_value) : color,
-         true, false, true});
+    const std::string id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    binding().classes.push_back({
+        id, mask_value, name, color.empty() ? default_class_color(color_index) : color});
     return id;
 }
 
 void TaskWorkspaceService::rename_class(const std::string& class_id, const std::string& name) {
-    if (name.empty()) throw std::runtime_error("class name cannot be empty");
+    if (name.empty()) {
+        throw std::runtime_error("class name cannot be empty");
+    }
     if (std::any_of(binding().classes.begin(), binding().classes.end(),
                     [&class_id, &name](const AnnotationClass& value) {
-                        return value.id != class_id && value.active && equal_folded(value.name, name);
-                    }))
+                        return value.id != class_id && equal_folded(value.name, name);
+                    })) {
         throw std::runtime_error("class name already exists");
-    auto& value = require_class(class_id);
+    }
+    AnnotationClass& value = require_class(class_id);
     value.name = name;
 }
 
-void TaskWorkspaceService::retire_class(const std::string& class_id) {
-    auto& value = require_class(class_id);
-    if (!value.active) return;
-    value.active = false;
-    value.visible = false;
-    value.locked = true;
-    refresh_quality();
+void TaskWorkspaceService::remove_class(const std::string& class_id) {
+    auto& classes = binding().classes;
+    const auto found = std::find_if(classes.begin(), classes.end(),
+        [&class_id](const AnnotationClass& value) { return value.id == class_id; });
+    if (found == classes.end()) {
+        throw std::runtime_error("Annotation class does not exist");
+    }
+    const bool classification = task().task == "cls";
+    const int mask_value = found->mask_value;
+    const std::string removed_id = found->id;
+    classes.erase(found);
+    for (TaskSampleBinding& sample : binding().samples) {
+        if (classification) {
+            if (sample.class_id == removed_id) {
+                sample.class_id.clear();
+                sample.annotation_state = "unannotated";
+            }
+            continue;
+        }
+        bool removed = false;
+        for (jocelin::geo::Region& region : sample.regions) {
+            const auto end = std::remove_if(region.vRun.begin(), region.vRun.end(),
+                [mask_value](const jocelin::geo::Run& run) { return run.label == mask_value; });
+            if (end != region.vRun.end()) {
+                region.vRun.erase(end, region.vRun.end());
+                removed = true;
+            }
+        }
+        if (removed) {
+            sample.regions.erase(std::remove_if(sample.regions.begin(), sample.regions.end(),
+                [](const jocelin::geo::Region& region) { return region.empty(); }),
+                sample.regions.end());
+            if (sample.regions.empty()) {
+                sample.annotation_state = "unannotated";
+            }
+            refresh_segmentation_annotation(classes, sample);
+        }
+    }
 }
 
 void TaskWorkspaceService::move_class(const std::string& class_id, int direction) {
@@ -722,8 +751,9 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             ordered_classes.clear();
             for (const auto& model_class : resume_model->classes) {
                 const auto* schema = find_annotation_class(binding(), model_class.id);
-                if (!schema || !schema->active)
+                if (!schema) {
                     throw std::runtime_error("paused model class schema does not match the current task");
+                }
                 ordered_classes.push_back(schema);
             }
             if (ordered_classes.size() != classification_classes(binding().classes).size())
@@ -734,8 +764,16 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             classification_labels.emplace(schema->id, static_cast<int>(class_names.size()));
         }
     } else {
-        for (const auto& schema : binding().classes) {
+        for (const AnnotationClass& schema : binding().classes) {
             maximum_mask_value = std::max(maximum_mask_value, schema.mask_value);
+        }
+        if (resume_model && (resume_model->classes.size() != binding().classes.size() ||
+            std::any_of(resume_model->classes.begin(), resume_model->classes.end(),
+                [this](const jocelin::model::ModelClass& model_class) {
+                    const AnnotationClass* schema = find_annotation_class(binding(), model_class.id);
+                    return !schema || schema->mask_value != model_class.mask_value;
+                }))) {
+            throw std::runtime_error("paused model class schema does not match the current task");
         }
     }
     if (maximum_mask_value == 0 && classification_labels.empty())
@@ -896,8 +934,7 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
         class_names.front() = "background";
         for (const auto& schema : binding().classes) {
             if (schema.mask_value <= 0 || schema.mask_value > maximum_mask_value) continue;
-            class_names[static_cast<size_t>(schema.mask_value)] =
-                schema.active ? schema.name : "[retired] " + schema.name;
+            class_names[static_cast<size_t>(schema.mask_value)] = schema.name;
         }
         for (size_t index = 0; index < class_names.size(); ++index)
             if (class_names[index].empty())
@@ -940,6 +977,18 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
 
     const std::set<std::string> requested(
         config.inference_images.begin(), config.inference_images.end());
+    std::set<int> compatible_mask_values;
+    int num_classes = static_cast<int>(model.classes.size());
+    if (task_type == jocelin::config::ToolType::Sg) {
+        num_classes = 1;
+        for (const jocelin::model::ModelClass& model_class : model.classes) {
+            num_classes = std::max(num_classes, model_class.mask_value + 1);
+            const AnnotationClass* schema = find_annotation_class(binding(), model_class.id);
+            if (schema && schema->mask_value == model_class.mask_value) {
+                compatible_mask_values.insert(schema->mask_value);
+            }
+        }
+    }
     std::vector<std::string> images;
     std::vector<jocelin::inference::InferenceTarget> targets;
     for (const auto& sample : binding().samples) {
@@ -956,7 +1005,16 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
             if (target.available)
                 target.class_label = static_cast<int>(std::distance(model.classes.begin(), found)) + 1;
         } else if (target.available && task_type == jocelin::config::ToolType::Sg) {
-            target.regions = sample.regions;
+            target.available = std::all_of(sample.regions.begin(), sample.regions.end(),
+                [&compatible_mask_values](const jocelin::geo::Region& region) {
+                    return std::all_of(region.vRun.begin(), region.vRun.end(),
+                        [&compatible_mask_values](const jocelin::geo::Run& run) {
+                            return compatible_mask_values.count(run.label) != 0;
+                        });
+                });
+            if (target.available) {
+                target.regions = sample.regions;
+            }
         }
         for (const auto& image : sample.image_paths) {
             const auto name = QFileInfo(QString::fromStdString(image)).fileName().toStdString();
@@ -978,8 +1036,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.model_depth = 12;
     backend.model_num_heads = 12;
     backend.batch_size = config.inference_batch_size;
-    backend.num_classes = static_cast<int>(model.classes.size()) +
-        (task_type == jocelin::config::ToolType::Sg ? 1 : 0);
+    backend.num_classes = num_classes;
     backend.image_width = model.image_width;
     backend.image_height = model.image_height;
     backend.weight_type = weight.format;

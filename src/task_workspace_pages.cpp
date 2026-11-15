@@ -1479,8 +1479,7 @@ QString TrainingWorkspace::training_source_mode() const {
         for (const auto* value : classification_classes(service_->binding().classes))
             current_classes.push_back({value->id, value->name, 0});
     } else {
-        for (const auto& value : service_->binding().classes) {
-            if (!value.active) continue;
+        for (const AnnotationClass& value : service_->binding().classes) {
             current_classes.push_back({value.id, value.name, value.mask_value});
         }
         std::sort(current_classes.begin(), current_classes.end(),

@@ -237,7 +237,7 @@ AnnotationClass class_from_json(const QJsonObject& value) {
     require_exact_fields(
         value,
         {"id", "mask_value", "name", "color",
-         "visible", "locked", "active"},
+         "visible", "locked"},
         context);
     AnnotationClass result{
         required_string(
@@ -251,9 +251,7 @@ AnnotationClass class_from_json(const QJsonObject& value) {
         required_bool(
             value, "visible", context),
         required_bool(
-            value, "locked", context),
-        required_bool(
-            value, "active", context)};
+            value, "locked", context)};
     if (result.id.empty() || result.name.empty() ||
         result.color.empty() ||
         result.mask_value < 1 || result.mask_value > 255)
@@ -502,8 +500,7 @@ AnnotationImportResult import_ilabelled(const QString& label_map_path) {
             name.toStdString(),
             default_class_color(mask_value),
             true,
-            false,
-            true});
+            false});
     }
 
     result.dataset.directory = root.absolutePath().toStdString();
@@ -613,8 +610,7 @@ QString export_bundle(
             {"name", QString::fromStdString(value.name)},
             {"color", QString::fromStdString(value.color)},
             {"visible", value.visible},
-            {"locked", value.locked},
-            {"active", value.active}});
+            {"locked", value.locked}});
     }
     write_object(output.filePath(NativeManifest), QJsonObject{
         {"format", "deep_learning_annotation_bundle"},
@@ -653,9 +649,7 @@ AnnotationImportStats AnnotationExchange::import_stats(
     }
     if (result.image_count == 0)
         result.image_count = static_cast<int>(imported.dataset.items.size());
-    result.class_count = static_cast<int>(std::count_if(
-        imported.binding.classes.begin(), imported.binding.classes.end(),
-        [](const AnnotationClass& value) { return value.active; }));
+    result.class_count = static_cast<int>(imported.binding.classes.size());
     result.review_count += imported.warnings.size();
     return result;
 }

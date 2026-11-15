@@ -52,8 +52,8 @@ int main() {
     task.inference_use_all_images = false;
     task.inference_images = {"dataset/input.png"};
     task.dataset_binding.classes = {
-        {"class-road", 1, "road", "#112233", true, false, true},
-        {"class-car", 2, "car", "#445566", false, true, true}};
+        {"class-road", 1, "road", "#112233", true, false},
+        {"class-car", 2, "car", "#445566", false, true}};
     auto& sample = task.dataset_binding.samples.front();
     sample.training_mask_path = "masks/exclusion.png";
     sample.class_id = "class-road";

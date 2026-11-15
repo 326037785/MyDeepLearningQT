@@ -677,8 +677,7 @@ void ExecutionModule::start_training(
                 for (const auto* value : classification_classes(service.binding().classes))
                     model.classes.push_back({value->id, value->name, 0});
             } else {
-                for (const auto& value : service.binding().classes) {
-                    if (!value.active) continue;
+                for (const AnnotationClass& value : service.binding().classes) {
                     model.classes.push_back({value.id, value.name, value.mask_value});
                 }
                 std::sort(model.classes.begin(), model.classes.end(),

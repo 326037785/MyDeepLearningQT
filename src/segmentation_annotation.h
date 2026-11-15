@@ -20,12 +20,9 @@
 #include <optional>
 #include <vector>
 
-class QComboBox;
 class QCheckBox;
 class QKeyEvent;
 class QLabel;
-class QListWidget;
-class QPushButton;
 class QResizeEvent;
 class QSlider;
 class QSplitter;
@@ -49,9 +46,9 @@ public:
     bool save(const QString& mask_path, QString* error);
     void set_brush_size(int size) { interaction_.set_brush_size(size); }
     void set_class_value(int value) { class_value_ = value; }
-    void set_class_colors(const QHash<int, QColor>& colors);
-    void set_hidden_class_values(const QSet<int>& values);
+    void set_class_display(const QHash<int, QColor>& colors, const QSet<int>& hidden);
     void set_editing_enabled(bool enabled) { editing_enabled_ = enabled; }
+    void remove_class_pixels(int mask_value);
     void set_eraser(bool eraser) { set_tool(eraser ? AnnotationTool::Eraser : AnnotationTool::Brush); }
     void set_tool(AnnotationTool tool);
     void set_overlay_visible(bool visible) { overlay_visible_ = visible; update(); }
@@ -69,7 +66,7 @@ public:
     void redo();
     bool can_undo() const;
     bool can_redo() const;
-    bool is_dirty() const { return dirty_; }
+    bool is_dirty() const { return mask_ != saved_mask_; }
     void apply_mask(const QImage& mask, bool dirty);
     void apply_ellipse(const QRect& roi);
     void apply_threshold_roi(const QRect& roi,
@@ -81,7 +78,7 @@ public:
 
     std::function<void(bool)> dirty_changed;
     std::function<void(int)> class_picked;
-    std::function<int()> class_required;
+    std::function<int()> choose_class;
     std::function<void(int)> zoom_changed;
     std::function<void(bool, bool)> undo_state_changed;
     std::function<void(bool)> polygon_active_changed;
@@ -104,6 +101,7 @@ private:
     QPointF image_position(const QPointF& widget_point) const;
     QPointF widget_position(const QPointF& image_point) const;
     QRectF image_target() const;
+    int resolve_class() const;
     void paint_at(const QPoint& point);
     void paint_segment(const QPoint& from, const QPoint& to);
     void fill_at(const QPoint& point);
@@ -123,11 +121,13 @@ private:
 
     QImage image_;
     QImage mask_;
+    QImage saved_mask_;
     QImage overlay_;
     QImage prediction_overlay_;
     QImage heatmap_overlay_;
     QImage mask_overlay_;
     QImage stroke_before_;
+    QImage stroke_preview_;
 
     ImageViewportTransform viewport_;
     bool editing_enabled_ = true;
@@ -138,7 +138,6 @@ private:
     std::optional<LabelRegionSelection> transform_region_;
     QImage transform_base_mask_;
     QImage transform_drag_before_;
-    bool dirty_ = false;
     bool overlay_visible_ = true;
     bool mask_visible_ = true;
     bool prediction_visible_ = true;
@@ -153,22 +152,14 @@ class SegmentationAnnotationWidget final : public QWidget {
 public:
     explicit SegmentationAnnotationWidget(QWidget* parent = nullptr, QTabWidget* inspector = nullptr);
 
-    void set_task_dataset(const QString& directory,
-                          const std::vector<TaskSampleBinding>& samples,
-                          const std::vector<AnnotationClass>& classes);
+    void set_task_dataset(const std::vector<TaskSampleBinding>& samples);
     void refresh_samples(const std::vector<TaskSampleBinding>& samples,
                          const std::vector<std::string>& reload_sample_ids);
-    void set_class_schema(const std::vector<AnnotationClass>& classes);
+    MaskCanvas* canvas() const { return canvas_; }
     void set_inference_result(const InferenceResultSet* result);
     void refresh_inference_layers();
     std::function<void(const QString&)> status;
-    std::function<void(const QString&, const QImage&)> mask_saved;
-    std::function<void(const QString&)> class_add_requested;
-    std::function<void(const QString&, const QString&)> class_rename_requested;
-    std::function<void(const QString&)> class_retire_requested;
-    std::function<void(const QString&, int)> class_move_requested;
-    std::function<void(const QString&, bool)> class_visibility_changed;
-    std::function<void(const QString&, bool)> class_lock_changed;
+    std::function<bool(const std::string&, const QImage&)> save_mask;
     std::function<void(const std::vector<std::string>&, const std::string&)>
         sample_split_requested;
     std::function<void(const std::vector<std::string>&)> samples_empty_requested;
@@ -178,55 +169,32 @@ protected:
 
 private:
     bool confirm_transition();
-    void reload_dataset();
     void load_index(int index);
     bool save_current();
     void set_selected_empty(const std::vector<std::string>& ids);
     void update_layer_controls();
-    void update_class_state();
-    void rebuild_class_list();
-    void apply_class_schema();
     void update_context_label();
-    int class_index_for_mask_value(int mask_value) const;
-    int current_mask_value() const;
-    QString current_class_id() const;
     void refresh_sample_status();
-    int prompt_for_class();
-    int add_or_select_class(const QString& name);
     void apply_responsive_layout(bool force = false);
     void set_side_panel_width(int index, bool shown, int preferred_width);
 
-    QString dataset_directory_;
-    QStringList imported_image_paths_;
-    std::vector<AnnotationClass> configured_classes_;
     std::vector<TaskSampleBinding> sample_bindings_;
-    QStringList sample_ids_;
-    QList<QStringList> sample_image_sets_;
     QStringList display_names_;
     std::vector<ResultReference> inference_results_;
-    QStringList image_files_;
     int current_index_ = -1;
     int threshold_low_ = 64;
     int threshold_high_ = 192;
     bool threshold_outside_ = false;
     bool remember_thresholds_ = false;
     SampleBrowser* images_ = nullptr;
-    QListWidget* class_list_ = nullptr;
     QSplitter* content_splitter_ = nullptr;
-    QWidget* samples_panel_ = nullptr;
-    QWidget* classes_panel_ = nullptr;
     QToolButton* toggle_samples_ = nullptr;
     QToolButton* toggle_classes_ = nullptr;
     MaskCanvas* canvas_ = nullptr;
-    QComboBox* classes_ = nullptr;
-    QToolButton* brush_ = nullptr;
-    QPushButton* add_class_ = nullptr;
     QLabel* context_ = nullptr;
     QLabel* state_ = nullptr;
     QLabel* samples_title_ = nullptr;
     QLabel* quality_ = nullptr;
-    QLabel* class_identity_ = nullptr;
-    QLabel* class_empty_hint_ = nullptr;
     QLabel* result_details_ = nullptr;
     QLabel* brush_size_caption_ = nullptr;
     QLabel* layer_caption_ = nullptr;
@@ -237,7 +205,6 @@ private:
     QCheckBox* mask_layer_ = nullptr;
     QSlider* brush_size_slider_ = nullptr;
     QSlider* opacity_slider_ = nullptr;
-    bool rebuilding_classes_ = false;
     bool current_image_portrait_ = false;
     int responsive_layout_mode_ = -1;
 };

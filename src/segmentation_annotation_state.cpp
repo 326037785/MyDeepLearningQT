@@ -50,7 +50,7 @@ void refresh_segmentation_annotation(
     else if (has_foreground(sample)) sample.annotation_state = "annotated";
 }
 
-void commit_segmentation_mask(
+bool commit_segmentation_mask(
     const std::vector<AnnotationClass>& classes, TaskSampleBinding& sample,
     const QImage& mask)
 {
@@ -58,19 +58,26 @@ void commit_segmentation_mask(
     sample.annotation_state = "unannotated";
     if (mask.isNull()) {
         sample.quality_issues.push_back("mask is unreadable");
-        return;
+        return false;
     }
     const QSize dimensions = sample.image_paths.empty() ? QSize{}
         : QImageReader(QString::fromStdString(sample.image_paths.front())).size();
     if (dimensions.isValid() && mask.size() != dimensions) {
         sample.quality_issues.push_back("mask dimensions do not match the sample image");
-        return;
+        return false;
     }
     const auto labels = mask.convertToFormat(QImage::Format_Grayscale8);
     auto region = jocelin::geo::label_image_to_region_simd_omp({labels.constBits(), labels.height(),
         labels.width(), static_cast<size_t>(labels.bytesPerLine())});
     if (!region.empty()) sample.regions.push_back(std::move(region));
-    refresh_segmentation_annotation(classes, sample);
+    if (!valid_target(classes, sample)) {
+        sample.regions.clear();
+        return false;
+    }
+    if (has_foreground(sample)) {
+        sample.annotation_state = "annotated";
+    }
+    return true;
 }
 
 void import_segmentation_annotation(
@@ -83,11 +90,8 @@ void import_segmentation_annotation(
         return;
     }
     const QImage mask(mask_path);
-    commit_segmentation_mask(classes, sample, mask);
-    if (!mask.isNull() && !has_foreground(sample)) {
-        const auto dimensions = QImageReader(QString::fromStdString(sample.image_paths.front())).size();
-        if ((!dimensions.isValid() || mask.size() == dimensions) && valid_target(classes, sample))
-            sample.annotation_state = "annotated";
+    if (commit_segmentation_mask(classes, sample, mask) && !has_foreground(sample)) {
+        sample.annotation_state = "annotated";
     }
 }
 

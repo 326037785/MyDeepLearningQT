@@ -8,7 +8,7 @@ namespace {
 
 bool valid_class(const std::vector<AnnotationClass>& classes, const TaskSampleBinding& sample) {
     return std::any_of(classes.begin(), classes.end(), [&](const auto& value) {
-        return !value.id.empty() && value.id == sample.class_id && value.active;
+        return !value.id.empty() && value.id == sample.class_id;
     });
 }
 
@@ -22,8 +22,11 @@ std::vector<const AnnotationClass*> classification_classes(
     const std::vector<AnnotationClass>& classes)
 {
     std::vector<const AnnotationClass*> result;
-    for (const auto& value : classes)
-        if (value.active && !value.id.empty()) result.push_back(&value);
+    for (const AnnotationClass& value : classes) {
+        if (!value.id.empty()) {
+            result.push_back(&value);
+        }
+    }
     std::sort(result.begin(), result.end(), [](const auto* left, const auto* right) {
         return left->id < right->id;
     });

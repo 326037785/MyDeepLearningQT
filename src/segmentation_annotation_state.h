@@ -11,7 +11,7 @@ void refresh_segmentation_annotation(
 void import_segmentation_annotation(
     const std::vector<AnnotationClass>& classes, TaskSampleBinding& sample,
     const QString& mask_path);
-void commit_segmentation_mask(
+bool commit_segmentation_mask(
     const std::vector<AnnotationClass>& classes, TaskSampleBinding& sample,
     const QImage& mask);
 QImage segmentation_annotation_image(const TaskSampleBinding& sample);

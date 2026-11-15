@@ -12,6 +12,7 @@
 
 class QComboBox;
 class QLabel;
+class QListWidget;
 class QPushButton;
 class QStackedWidget;
 class QTabWidget;
@@ -70,6 +71,11 @@ public:
 
 private:
     QWidget* build_annotation_page();
+    void build_segmentation_classes();
+    void refresh_segmentation_classes(const std::string& class_id);
+    const AnnotationClass* selected_segmentation_class() const;
+    std::string add_segmentation_class(const QString& name);
+    int choose_segmentation_class();
     void refresh_annotation();
     void refresh_inference_result();
     void refresh_step_availability();
@@ -92,6 +98,7 @@ private:
     QWidget* annotation_models_tab_ = nullptr;
     QComboBox* annotation_weight_branch_ = nullptr;
     QTabWidget* segmentation_inspector_ = nullptr;
+    QListWidget* segmentation_classes_ = nullptr;
     QTabWidget* classification_inspector_ = nullptr;
     std::array<QPushButton*, 6> step_buttons_{};
     Step active_step_ = Step::Data;

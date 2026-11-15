@@ -302,8 +302,7 @@ QJsonObject binding_to_json(const TaskDatasetBinding& binding, const std::string
             {"name", QString::fromStdString(value.name)},
             {"color", QString::fromStdString(value.color)},
             {"visible", value.visible},
-            {"locked", value.locked},
-            {"active", value.active}});
+            {"locked", value.locked}});
     }
     QJsonArray samples;
     for (const auto& value : binding.samples) {
@@ -408,7 +407,7 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::strin
         require_exact_fields(
             value,
             {"id", "mask_value", "name", "color",
-             "visible", "locked", "active"},
+             "visible", "locked"},
             class_context);
         AnnotationClass annotation_class;
         annotation_class.id =
@@ -429,9 +428,6 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::strin
         annotation_class.locked =
             required_bool(
                 value, "locked", class_context);
-        annotation_class.active =
-            required_bool(
-                value, "active", class_context);
         if (annotation_class.id.empty() ||
             annotation_class.name.empty() ||
             annotation_class.color.empty() ||
@@ -486,6 +482,13 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::strin
                 if (node_asset_root.isEmpty() || file != region_file_name(node_id, sample.sample_id))
                     invalid_document(sample_context, "region asset must belong to this Node and sample");
                 sample.regions = load_segmentation_regions(QDir(node_asset_root).filePath(file));
+                for (const jocelin::geo::Region& region : sample.regions) {
+                    for (const jocelin::geo::Run& run : region.vRun) {
+                        if (mask_values.count(run.label) == 0) {
+                            invalid_document(sample_context, "region label does not reference a Task class");
+                        }
+                    }
+                }
             }
         }
         sample.split =

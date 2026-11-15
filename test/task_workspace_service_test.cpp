@@ -105,7 +105,6 @@ int main(int argc, char** argv) try {
         });
     if (renamed == service.binding().classes.end() ||
         renamed->name != "drivable" || renamed->mask_value != road_mask) return 7;
-    service.retire_class(road_id);
     const std::string person_id = service.add_class("person");
     const auto person = std::find_if(
         service.binding().classes.begin(), service.binding().classes.end(),
@@ -151,28 +150,29 @@ int main(int argc, char** argv) try {
         service.binding().split_settings.seed != 271828)
         return 22;
 
-    // Removing a target makes the sample unannotated. Raw images must not be
-    // promoted to background supervision implicitly.
-    service.binding().samples.front().annotation_state = "unannotated";
-    service.binding().samples.front().regions.clear();
-    service.refresh_quality();
+    // A stored Region can contain runs belonging to several classes.
+    service.binding().samples[1].regions.front().vRun.emplace_back(0, 0, 1, road_mask);
+    service.remove_class(road_id);
     if (service.binding().samples.front().annotation_state !=
             "unannotated" ||
-        !service.binding().samples.front().quality_issues.empty())
+        !service.binding().samples.front().regions.empty() ||
+        !service.binding().samples.front().quality_issues.empty() ||
+        service.binding().samples[1].annotation_state != "annotated" ||
+        service.binding().samples[1].regions.front().vRun.size() != 12)
         return 12;
     for (size_t index = 1; index < service.binding().samples.size(); ++index)
         if (!service.binding().samples[index].quality_issues.empty())
             return 12;
     service.binding().preprocessing.normalize = false;
     const auto request = service.build_training_request(jocelin::config::cpu_device());
-    if (request.samples.samples.size() != 9 ||
+    if (request.samples.samples.size() != 5 ||
         request.config.bucket_capacity != 2 || request.config.normalize ||
         request.config.batch_size != task.training.batch_size ||
         std::abs(request.config.augment.probability - 0.8f) > 1e-6f ||
         !request.config.augment.enable.rotate ||
         request.config.augment.rotation_ranges.front().high != 20.0 ||
         request.config.num_classes != 4 ||
-        request.class_names.front() != "background")
+        request.class_names != std::vector<std::string>{"background", "[reserved] 1", "vehicle", "person"})
         return 13;
     const auto transfer_request = service.build_training_request(
         jocelin::config::cpu_device(),
@@ -186,7 +186,7 @@ int main(int argc, char** argv) try {
     inference_model.model_scale = jocelin::config::ModelScale::M;
     inference_model.image_width = 640;
     inference_model.image_height = 480;
-    inference_model.classes = {{"a", "a", 1}, {"b", "b", 2}, {"c", "c", 3}};
+    inference_model.classes = {{vehicle_id, "vehicle", 2}, {person_id, "person", 3}};
     jocelin::model::ModelWeight inference_weight;
     inference_weight.id = "libtorch_fp32";
     inference_weight.path = "same-task-medium.pt";
@@ -215,7 +215,9 @@ int main(int argc, char** argv) try {
         inference_request.config.morphological_refine ||
         inference_request.config.morph_iterations != 7 ||
         inference_request.weight_path != "same-task-medium.pt" ||
-        inference_request.image_paths.empty()) {
+        inference_request.image_paths.empty() ||
+        std::count_if(inference_request.targets.begin(), inference_request.targets.end(),
+            [](const jocelin::inference::InferenceTarget& target) { return target.available; }) != 10) {
         return 33;
     }
 
@@ -235,13 +237,17 @@ int main(int argc, char** argv) try {
         if (!QDir().mkpath(QFileInfo(destination).absolutePath())) return 72;
         studio::ProjectStorage::write_atomic(destination, data);
     }
-    const auto decoded = studio::parse_workflow(encoded.json, temporary.path());
+    auto decoded = studio::parse_workflow(encoded.json, temporary.path());
     const auto& decoded_task = std::get<studio::TaskNodeConfig>(
         decoded.graph.node(node_id).config);
     if (decoded_task.dataset_binding.samples.size() != 10 ||
-        decoded_task.dataset_binding.classes.size() != 3 ||
-        decoded_task.dataset_binding.classes[1].id != road_id ||
-        decoded_task.dataset_binding.classes[1].mask_value != road_mask ||
+        decoded_task.dataset_binding.classes.size() != 2 ||
+        decoded_task.dataset_binding.classes[0].id != vehicle_id ||
+        decoded_task.dataset_binding.classes[0].mask_value != 2 ||
+        decoded_task.dataset_binding.classes[1].id != person_id ||
+        decoded_task.dataset_binding.classes[1].mask_value != 3 ||
+        !decoded_task.dataset_binding.samples.front().regions.empty() ||
+        decoded_task.dataset_binding.samples.front().annotation_state != "unannotated" ||
         decoded_task.dataset_binding.split_settings.seed != 271828 ||
         !decoded_task.dataset_binding.samples.front().split_manual ||
         decoded_task.inference_config.confidence_threshold != 0.625f ||
@@ -253,6 +259,35 @@ int main(int argc, char** argv) try {
         decoded_task.inference_config.morphological_refine ||
         decoded_task.inference_config.morph_iterations != 7) {
         return 14;
+    }
+    studio::TaskWorkspaceService reopened_sg(decoded.graph, node_id);
+    const auto reopened_training = reopened_sg.build_training_request(jocelin::config::cpu_device());
+    if (reopened_training.class_names != request.class_names ||
+        reopened_training.samples.samples.size() != request.samples.samples.size()) {
+        return 73;
+    }
+    for (const auto& sample : reopened_training.samples.samples) {
+        for (const auto& region : sample.regions) {
+            for (const auto& run : region.vRun) {
+                if (run.label != 2) {
+                    return 74;
+                }
+            }
+        }
+    }
+    const std::string replacement = reopened_sg.add_class("drivable");
+    if (replacement == road_id || reopened_sg.binding().classes.back().mask_value != road_mask) {
+        return 75;
+    }
+    QImage new_target(16, 12, QImage::Format_Grayscale8);
+    new_target.fill(road_mask);
+    reopened_sg.set_segmentation_mask("sample-0", new_target);
+    auto prior_model = inference_model;
+    prior_model.classes.push_back({road_id, "drivable", road_mask});
+    const auto prior_inference = reopened_sg.build_inference_request(
+        jocelin::config::cpu_device(), prior_model, inference_weight);
+    if (prior_inference.targets.front().available) {
+        return 76;
     }
 
     // A one-image dataset shares its sole train sample with an automatically
@@ -321,7 +356,7 @@ int main(int argc, char** argv) try {
     QImage empty_target(16, 12, QImage::Format_Grayscale8);
     empty_target.fill(0);
     if (!empty_target.save(empty_mask)) return 34;
-    single_service.set_segmentation_mask_for_image(single_image_path.toStdString(), QImage(empty_mask));
+    single_service.set_segmentation_mask("single", QImage(empty_mask));
     single_service.refresh_quality();
     if (single_service.binding().samples.front().annotation_state != "unannotated") return 35;
     single_service.set_segmentation_sample_empty("single");
@@ -348,7 +383,7 @@ int main(int argc, char** argv) try {
             ~(QFileDevice::WriteOwner | QFileDevice::WriteUser |
               QFileDevice::WriteGroup | QFileDevice::WriteOther))) return 51;
     const bool read_only = !QFileInfo(validity_mask).isWritable();
-    single_service.set_segmentation_mask_for_image(single_image_path.toStdString(), QImage(validity_mask));
+    single_service.set_segmentation_mask("single", QImage(validity_mask));
     single_service.refresh_quality();
     const auto read_only_sample = single_service.binding().samples.front();
     if (!QFile::setPermissions(validity_mask, original_permissions)) return 52;
@@ -400,8 +435,8 @@ int main(int argc, char** argv) try {
     if (cls_service.binding().classes.front().mask_value != 0) return 40;
     const std::string cat = "class-cat", dog = "class-dog";
     cls_service.binding().classes = {
-        {dog, 93, "dog", "#112233", true, false, true},
-        {cat, 0, "cat", "#445566", true, false, true}};
+        {dog, 93, "dog", "#112233", true, false},
+        {cat, 0, "cat", "#445566", true, false}};
     cls_service.set_sample_split("cls-sample", "train");
     if (cls_service.binding().samples.front().annotation_state != "unannotated") return 41;
     auto cls_model = inference_model;
@@ -444,8 +479,9 @@ int main(int argc, char** argv) try {
     cls_service.refresh_quality();
     if (cls_service.binding().samples.front().annotation_state != "unannotated") return 46;
     cls_service.set_class_for_sample("cls-sample", dog);
-    cls_service.retire_class(dog);
-    if (cls_service.binding().samples.front().annotation_state != "unannotated") return 47;
+    cls_service.remove_class(dog);
+    if (cls_service.binding().samples.front().annotation_state != "unannotated" ||
+        !cls_service.binding().samples.front().class_id.empty()) return 47;
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

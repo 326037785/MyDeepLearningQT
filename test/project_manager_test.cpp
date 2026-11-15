@@ -42,7 +42,7 @@ void dataset_lifecycle_roundtrip(const studio::ProjectModel& prototype) {
     for (int id : {owner, peer, detached}) {
         graph.connect(source, 0, id, 0);
         studio::TaskWorkspaceService service(graph, id);
-        service.binding().classes = {{"foreground", 1, "foreground", "#112233", true, false, true}};
+        service.binding().classes = {{"foreground", 1, "foreground", "#112233", true, false}};
         service.binding().split_settings = {60, 30, 10, 17, "stratified"};
         service.binding().preprocessing = {false, false};
         auto& sample = service.binding().samples.front();
@@ -634,7 +634,7 @@ void annotation_persistence_roundtrip() {
     const auto expected_runs = foreground.binding().samples.front().regions.front().vRun;
     QImage distinct_target = mask;
     distinct_target.fill(1);
-    foreground.set_segmentation_mask_for_image(third.toStdString(), distinct_target);
+    foreground.set_segmentation_mask("SHARED", distinct_target);
     require(QFile::remove(external_mask), "cannot remove original annotation source");
     empty.set_segmentation_sample_empty("shared");
     for (auto* service : {&classification, &foreground, &empty})
@@ -684,7 +684,7 @@ void annotation_persistence_roundtrip() {
     restored_graph.remove_node(restored_graph.nodes().rbegin()->first);
     QImage changed = mask;
     changed.fill(1);
-    restored_empty.set_segmentation_mask_for_image(first.toStdString(), changed);
+    restored_empty.set_segmentation_mask("shared", changed);
     require(restored_fg.binding().samples.front().regions.front().vRun == expected_runs,
         "editing one TaskNode overwrote another annotation");
     reopened.save_project();
@@ -697,7 +697,7 @@ void annotation_persistence_roundtrip() {
         "Node-owned spatial assets collided on save");
     auto invalid_workflow = verified;
     studio::TaskWorkspaceService(invalid_workflow.active_workflow().document.graph, branch_node_id)
-        .set_segmentation_mask_for_image(first.toStdString(), changed);
+        .set_segmentation_mask("shared", changed);
     invalid_workflow.add_workflow("Missing layout");
     invalid_workflow.active_workflow().document.graph.add_node(studio::NodeKind::DatasetInput);
     const auto saved_workflow = studio::ProjectStorage::read(workflow_path);
@@ -783,7 +783,7 @@ int main(int argc, char** argv) try {
         root.filePath("results").toStdString();
     task.dataset_binding.classes = {{
         "foreground", 1, "foreground", "#1F8A9E",
-        true, false, true}};
+        true, false}};
     task.dataset_binding.samples.front().regions = {jocelin::geo::Region({{1, 1, 3, 1}})};
     task.dataset_binding.samples.front().split = "train";
     task.dataset_binding.samples.front().annotation_state =
