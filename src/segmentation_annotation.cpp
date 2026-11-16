@@ -60,6 +60,28 @@ namespace {
 
 constexpr QColor kStrokePreviewColor(244, 198, 106, 135);
 
+QVector<ResultPresentationItem> present_result(
+    const jocelin::result::sg::SgResult& result, const QHash<int, QString>& class_names) {
+    QVector<ResultPresentationItem> items;
+    for (const jocelin::result::sg::SgResult::Component& component : result.components) {
+        if (!component.interest) {
+            continue;
+        }
+        ResultPresentationItem item;
+        item.text = class_names.value(component.label, QObject::tr("Class %1").arg(component.label));
+        item.attributes.append({QObject::tr("Class"), item.text});
+        item.attributes.append({QObject::tr("Area"), QObject::tr("%1 px").arg(component.area)});
+        item.attributes.append({QObject::tr("Confidence"),
+                                QString::number(component.confidence * 100.0, 'f', 1) + "%"});
+        item.hit_test = [region = component.region](const QPointF& position) {
+            return region.contains(static_cast<int>(std::floor(position.y())),
+                                   static_cast<int>(std::floor(position.x())));
+        };
+        items.append(std::move(item));
+    }
+    return items;
+}
+
 void clear_class_pixels(QImage& mask, int mask_value) {
     for (int y = 0; y < mask.height(); ++y) {
         const uchar* row = mask.constScanLine(y);
@@ -288,6 +310,10 @@ bool MaskCanvas::load(const QString& image_path, const QString& mask_path, QStri
     mask_ = mask;
     saved_mask_ = mask_;
     prediction_overlay_ = {};
+    result_items_.clear();
+    if (result_popup_) {
+        result_popup_->close();
+    }
     heatmap_overlay_ = {};
     mask_overlay_ = {};
     viewport_.reset();
@@ -318,6 +344,10 @@ void MaskCanvas::clear() {
     saved_mask_ = {};
     overlay_ = {};
     prediction_overlay_ = {};
+    result_items_.clear();
+    if (result_popup_) {
+        result_popup_->close();
+    }
     heatmap_overlay_ = {};
     mask_overlay_ = {};
     viewport_.reset();
@@ -470,8 +500,13 @@ void MaskCanvas::apply_ellipse(const QRect& requested_roi) {
     finish_edit(before);
 }
 
-void MaskCanvas::set_prediction_overlay(const QImage& image) {
+void MaskCanvas::set_prediction_overlay(const QImage& image,
+                                        const QVector<ResultPresentationItem>& items) {
+    if (result_popup_) {
+        result_popup_->close();
+    }
     prediction_overlay_ = image;
+    result_items_ = items;
     update();
 }
 
@@ -665,6 +700,10 @@ void MaskCanvas::mousePressEvent(QMouseEvent* event) {
     const AnnotationTool tool = interaction_.tool();
 
     if (event->button() == Qt::LeftButton && tool == AnnotationTool::TransformSelection) {
+        if (!overlay_visible_) {
+            event->accept();
+            return;
+        }
         if (transform_region_) {
             const TransformHandle handle = transform_handle_at(event->pos());
             if (handle != TransformHandle::None) {
@@ -871,13 +910,29 @@ void MaskCanvas::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void MaskCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && !overlay_visible_ && prediction_visible_ &&
+        (interaction_.tool() == AnnotationTool::TransformSelection ||
+         interaction_.tool() == AnnotationTool::Pan)) {
+        if (result_popup_) {
+            result_popup_->close();
+        }
+        const QPoint point = image_point(event->pos());
+        if (point.x() >= 0) {
+            const int index = result_item_at(result_items_, image_position(event->pos()));
+            if (index >= 0) {
+                result_popup_ = show_result_properties(this, event->globalPos(), result_items_[index]);
+            }
+        }
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && interaction_.tool() == AnnotationTool::Polygon) {
         finish_polygon();
         event->accept();
         return;
     }
     if (event->button() == Qt::LeftButton &&
-        interaction_.tool() == AnnotationTool::TransformSelection &&
+        interaction_.tool() == AnnotationTool::TransformSelection && overlay_visible_ &&
         editing_enabled_) {
         const QPoint point = image_point(event->pos());
         if (point.x() >= 0 && begin_transform_edit(point)) {
@@ -1650,8 +1705,14 @@ void SegmentationAnnotationWidget::refresh_samples(
     update_context_label();
 }
 
-void SegmentationAnnotationWidget::set_inference_result(const InferenceResultSet* result) {
+void SegmentationAnnotationWidget::set_inference_result(
+    const InferenceResultSet* result, const QHash<int, QString>& model_classes,
+    const std::vector<jocelin::model::ModelClass>& model_schema,
+    const std::vector<AnnotationClass>& task_classes) {
     inference_results_ = result ? result->samples : std::vector<ResultReference>{};
+    prediction_class_names_ = model_classes;
+    prediction_model_schema_ = model_schema;
+    prediction_task_classes_ = task_classes;
     refresh_inference_layers();
 }
 
@@ -1690,7 +1751,9 @@ void SegmentationAnnotationWidget::refresh_inference_layers() {
                     .arg(value->metrics.available ? QString::number(value->metrics.recall, 'f', 4) : unavailable)
                     .arg(value->metrics.available ? QString::number(value->metrics.f1, 'f', 4) : unavailable));
         }
-        canvas_->set_prediction_overlay(prediction_overlay_from_result(*value));
+        canvas_->set_prediction_overlay(prediction_overlay_from_result(
+                                            *value, prediction_model_schema_, prediction_task_classes_),
+                                        present_result(*value, prediction_class_names_));
         if (!value->result_name.empty() && !value->save_dir.empty())
             canvas_->set_heatmap_overlay(QImage(QDir(QString::fromStdString(value->save_dir))
                 .filePath(QString::fromStdString(value->result_name) + "_heatmap.png")));

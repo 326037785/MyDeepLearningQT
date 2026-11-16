@@ -3,6 +3,7 @@
 #include "image_viewport_transform.h"
 #include "annotation_tool_interaction.h"
 #include "annotation_region_edit_service.h"
+#include "result_inspection.h"
 #include "workflow.h"
 #include <common/geometry/interval.h>
 
@@ -10,6 +11,7 @@
 #include <QImage>
 #include <QHash>
 #include <QPoint>
+#include <QPointer>
 #include <QPolygonF>
 #include <QSet>
 #include <QStringList>
@@ -51,12 +53,27 @@ public:
     void remove_class_pixels(int mask_value);
     void set_eraser(bool eraser) { set_tool(eraser ? AnnotationTool::Eraser : AnnotationTool::Brush); }
     void set_tool(AnnotationTool tool);
-    void set_overlay_visible(bool visible) { overlay_visible_ = visible; update(); }
+    void set_overlay_visible(bool visible) {
+        overlay_visible_ = visible;
+        if (!visible) {
+            clear_transform_edit();
+        } else if (result_popup_) {
+            result_popup_->close();
+        }
+        update();
+    }
     void set_mask_visible(bool visible) { mask_visible_ = visible; update(); }
-    void set_prediction_visible(bool visible) { prediction_visible_ = visible; update(); }
+    void set_prediction_visible(bool visible) {
+        prediction_visible_ = visible;
+        if (!visible && result_popup_) {
+            result_popup_->close();
+        }
+        update();
+    }
     void set_heatmap_visible(bool visible) { heatmap_visible_ = visible; update(); }
     void set_overlay_opacity(double opacity) { overlay_opacity_ = opacity; update(); }
-    void set_prediction_overlay(const QImage& image);
+    void set_prediction_overlay(const QImage& image,
+                                const QVector<ResultPresentationItem>& items = {});
     void set_heatmap_overlay(const QImage& image);
     void set_mask_overlay(const QImage& image);
     bool has_prediction_overlay() const { return !prediction_overlay_.isNull(); }
@@ -124,6 +141,8 @@ private:
     QImage saved_mask_;
     QImage overlay_;
     QImage prediction_overlay_;
+    QVector<ResultPresentationItem> result_items_;
+    QPointer<QMenu> result_popup_;
     QImage heatmap_overlay_;
     QImage mask_overlay_;
     QImage stroke_before_;
@@ -156,7 +175,10 @@ public:
     void refresh_samples(const std::vector<TaskSampleBinding>& samples,
                          const std::vector<std::string>& reload_sample_ids);
     MaskCanvas* canvas() const { return canvas_; }
-    void set_inference_result(const InferenceResultSet* result);
+    void set_inference_result(const InferenceResultSet* result,
+                              const QHash<int, QString>& model_classes = {},
+                              const std::vector<jocelin::model::ModelClass>& model_schema = {},
+                              const std::vector<AnnotationClass>& task_classes = {});
     void refresh_inference_layers();
     std::function<void(const QString&)> status;
     std::function<bool(const std::string&, const QImage&)> save_mask;
@@ -181,6 +203,9 @@ private:
     std::vector<TaskSampleBinding> sample_bindings_;
     QStringList display_names_;
     std::vector<ResultReference> inference_results_;
+    QHash<int, QString> prediction_class_names_;
+    std::vector<jocelin::model::ModelClass> prediction_model_schema_;
+    std::vector<AnnotationClass> prediction_task_classes_;
     int current_index_ = -1;
     int threshold_low_ = 64;
     int threshold_high_ = 192;

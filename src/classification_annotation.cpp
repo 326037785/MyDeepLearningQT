@@ -29,15 +29,32 @@ namespace studio {
 
 namespace {
 
+QVector<ResultPresentationItem> present_result(
+    const jocelin::result::cls::ClsResult& result, const QStringList& class_names) {
+    ResultPresentationItem item;
+    const int index = result.predicted_class - 1;
+    item.text = result.predicted_class == -1 ? QObject::tr("Unknown")
+        : index >= 0 && index < class_names.size() ? class_names[index]
+        : QObject::tr("Class %1").arg(result.predicted_class);
+    item.attributes.append({QObject::tr("Confidence"),
+                            QString::number(result.confidence * 100.0, 'f', 1) + "%"});
+    return {item};
+}
+
 QColor classification_color(int index) {
     static const QColor colors[]{QColor("#1F8A9E"), QColor("#D18432"), QColor("#458C63"),
                                  QColor("#C34655"), QColor("#5B66AD"), QColor("#B55E96")};
     return colors[index % static_cast<int>(std::size(colors))];
 }
 
-QIcon class_icon(int index) {
+QIcon class_icon(int index, const std::vector<AnnotationClass>& classes) {
     QPixmap chip(14, 14);
-    chip.fill(classification_color(index));
+    QColor color = index < static_cast<int>(classes.size())
+        ? QColor(QString::fromStdString(classes[static_cast<size_t>(index)].color)) : QColor{};
+    if (!color.isValid()) {
+        color = classification_color(index);
+    }
+    chip.fill(color);
     return QIcon(chip);
 }
 
@@ -179,6 +196,18 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     review_state_ = new QLabel(tr("Ground truth: unassigned"), review_bar);
     review_state_->setObjectName("classificationReviewState");
     review_state_->setProperty("meta", true);
+    review_state_->setTextFormat(Qt::RichText);
+    review_state_->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    connect(review_state_, &QLabel::linkActivated, this, [this](const QString& link) {
+        if (link != "prediction" || view_mode_ == 0 || result_items_.isEmpty()) {
+            return;
+        }
+        if (result_popup_) {
+            result_popup_->close();
+        }
+        result_popup_ = show_result_properties(
+            review_state_, review_state_->mapToGlobal(review_state_->rect().bottomLeft()), result_items_.front());
+    });
     review_layout->addWidget(review_caption);
     review_layout->addWidget(ground_truth_);
     review_layout->addWidget(prediction_);
@@ -290,6 +319,10 @@ void ClassificationAnnotationWidget::set_inference_result(
 }
 
 void ClassificationAnnotationWidget::refresh_inference_result() {
+    if (result_popup_) {
+        result_popup_->close();
+    }
+    result_items_.clear();
     predicted_class_ = -1;
     confidence_ = 0.0;
     has_prediction_ = false;
@@ -303,6 +336,7 @@ void ClassificationAnnotationWidget::refresh_inference_result() {
             predicted_class_ = value->predicted_class;
             confidence_ = value->confidence;
             has_prediction_ = true;
+            result_items_ = present_result(*value, prediction_class_names_);
             current_heatmap_ = QImage(QString::fromStdString(value->heatmap_path));
             break;
         }
@@ -319,13 +353,15 @@ void ClassificationAnnotationWidget::refresh_inference_result() {
 void ClassificationAnnotationWidget::set_dataset(
     const std::vector<TaskSampleBinding>& samples,
     const QStringList& class_names,
-    const QVector<int>& class_labels)
+    const QVector<int>& class_labels,
+    const std::vector<AnnotationClass>& class_metadata)
 {
     sample_bindings_.clear();
     image_paths_.clear();
     display_names_.clear();
     class_labels_.clear();
     class_names_ = class_names;
+    class_metadata_ = class_metadata;
     for (int sample_index = 0;
          sample_index < static_cast<int>(samples.size());
          ++sample_index) {
@@ -398,6 +434,9 @@ void ClassificationAnnotationWidget::update_preview() {
 void ClassificationAnnotationWidget::set_view_mode(int mode) {
     if (mode == 1 && !has_prediction_) mode = 0;
     if (mode == 2 && current_heatmap_.isNull()) mode = 0;
+    if (mode != view_mode_ && result_popup_) {
+        result_popup_->close();
+    }
     view_mode_ = mode;
     ground_truth_->setChecked(mode == 0);
     prediction_->setChecked(mode == 1);
@@ -413,10 +452,9 @@ void ClassificationAnnotationWidget::update_review_state() {
     const int label = class_labels_.value(current_row_, -1);
     const QString ground_truth = label >= 0 && label < class_names_.size()
         ? class_names_[label] : tr("Unassigned");
-    const int predicted_index = predicted_class_ - 1;
-    const QString prediction = predicted_index >= 0 && predicted_index < prediction_class_names_.size()
-        ? prediction_class_names_[predicted_index]
-        : predicted_class_ > 0 ? tr("Class %1").arg(predicted_class_) : tr("Unavailable");
+    const QString prediction = result_items_.isEmpty() ? tr("Unavailable") : result_items_.front().text;
+    const QString prediction_link = QStringLiteral("<a href=\"prediction\">%1</a>")
+        .arg(prediction.toHtmlEscaped());
 
     if (result_details_) {
         result_details_->setText(has_prediction_
@@ -427,15 +465,15 @@ void ClassificationAnnotationWidget::update_review_state() {
     }
 
     if (view_mode_ == 0) {
-        review_state_->setText(tr("Ground truth: %1").arg(ground_truth));
+        review_state_->setText(tr("Ground truth: %1").arg(ground_truth.toHtmlEscaped()));
     } else if (view_mode_ == 1) {
         review_state_->setText(tr("Prediction: %1 · Confidence: %2% · Ground truth: %3")
-            .arg(prediction)
+            .arg(prediction_link)
             .arg(confidence_ * 100.0, 0, 'f', 1)
-            .arg(ground_truth));
+            .arg(ground_truth.toHtmlEscaped()));
     } else {
         review_state_->setText(tr("Heatmap · Prediction: %1 · Confidence: %2%")
-            .arg(prediction)
+            .arg(prediction_link)
             .arg(confidence_ * 100.0, 0, 'f', 1));
     }
 }
@@ -474,7 +512,10 @@ void ClassificationAnnotationWidget::rebuild_classes() {
     const int selected = classes_->currentRow();
     classes_->clear();
     for (int index = 0; index < class_names_.size(); ++index) {
-        auto* item = new QListWidgetItem(class_icon(index), class_names_[index], classes_);
+        QListWidgetItem* item = new QListWidgetItem(class_icon(index, class_metadata_), class_names_[index], classes_);
+        if (index < static_cast<int>(class_metadata_.size())) {
+            item->setData(Qt::UserRole, QString::fromStdString(class_metadata_[static_cast<size_t>(index)].id));
+        }
         item->setSizeHint(QSize(0, 28));
     }
     classes_->setCurrentRow(std::clamp(selected, -1, class_names_.size() - 1));
@@ -489,7 +530,7 @@ void ClassificationAnnotationWidget::show_class_menu(const QPoint& global_positi
     auto* class_menu = menu.addMenu(tr("Assign class"));
     if (!class_names_.isEmpty()) {
         for (int index = 0; index < class_names_.size(); ++index) {
-            auto* action = class_menu->addAction(class_icon(index), class_names_[index]);
+            auto* action = class_menu->addAction(classes_->item(index)->icon(), class_names_[index]);
             action->setCheckable(true);
             action->setChecked(class_labels_.value(current_row_, -1) == index);
             connect(action, &QAction::triggered, this, [this, index] { assign_selected(index); });

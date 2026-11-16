@@ -10,6 +10,8 @@
 #include "ui_metrics.h"
 
 #include <QComboBox>
+#include <QColorDialog>
+#include <QCursor>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileInfo>
@@ -25,7 +27,9 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -217,6 +221,87 @@ QWidget* TaskWorkspace::build_annotation_page() {
     segmentation_ = new SegmentationAnnotationWidget(page, segmentation_inspector_);
     classification_ = new ClassificationAnnotationWidget(page, classification_inspector_);
     build_segmentation_classes();
+    QListWidget* classification_classes = classification_inspector_->findChild<QListWidget*>("classificationClassList");
+    for (QListWidget* list : {segmentation_classes_, classification_classes}) {
+        const std::shared_ptr<bool> current_before_press = std::make_shared<bool>(true);
+        const std::shared_ptr<bool> pressed_current_class = std::make_shared<bool>(false);
+        connect(list, &QListWidget::currentItemChanged, this,
+                [current_before_press](QListWidgetItem* current, QListWidgetItem*) {
+            // Mouse presses change the current item before Qt updates the selection.
+            *current_before_press = !current || current->isSelected();
+        });
+        connect(list, &QListWidget::itemPressed, this,
+                [current_before_press, pressed_current_class](QListWidgetItem*) {
+            *pressed_current_class = *current_before_press;
+            *current_before_press = true;
+        });
+        const auto class_clicked = [this, list, pressed_current_class](QListWidgetItem* item, bool double_click) {
+            if (!service_ || !item) {
+                return;
+            }
+            QStyleOptionViewItem option;
+            option.initFrom(list);
+            option.rect = list->visualItemRect(item);
+            option.decorationSize = list->iconSize();
+            option.features = QStyleOptionViewItem::HasDecoration | QStyleOptionViewItem::HasDisplay;
+            option.text = item->text();
+            if (item->flags().testFlag(Qt::ItemIsUserCheckable)) {
+                option.features |= QStyleOptionViewItem::HasCheckIndicator;
+                option.checkState = item->checkState();
+            }
+            const QRect color_rect = list->style()->subElementRect(
+                QStyle::SE_ItemViewItemDecoration, &option, list);
+            const QPoint clicked_position = list->viewport()->mapFromGlobal(QCursor::pos());
+            if (!color_rect.contains(clicked_position)) {
+                const QRect check_rect = list->style()->subElementRect(
+                    QStyle::SE_ItemViewItemCheckIndicator, &option, list);
+                const bool selectable_class = list != segmentation_classes_ || list->row(item) > 0;
+                if ((double_click || *pressed_current_class) && selectable_class &&
+                    item == list->currentItem() &&
+                    !check_rect.contains(clicked_position)) {
+                    list->setCurrentRow(list == segmentation_classes_ ? 0 : -1);
+                }
+                return;
+            }
+            if (double_click) {
+                return;
+            }
+            const std::string id = item->data(Qt::UserRole).toString().toStdString();
+            const AnnotationClass* schema = find_annotation_class(service_->binding(), id);
+            if (!schema) {
+                return;
+            }
+            const QColor previous(QString::fromStdString(schema->color));
+            const QColor selected = QColorDialog::getColor(previous, this, tr("Choose class color"),
+                                                            QColorDialog::DontUseNativeDialog);
+            if (!selected.isValid() || selected == previous || !service_) {
+                return;
+            }
+            std::vector<AnnotationClass>& classes = service_->binding().classes;
+            const auto found = std::find_if(classes.begin(), classes.end(),
+                [&id](const AnnotationClass& value) { return value.id == id; });
+            if (found == classes.end()) {
+                return;
+            }
+            found->color = selected.name().toStdString();
+            if (list == segmentation_classes_) {
+                QTimer::singleShot(0, this, [this, id] { refresh_segmentation_classes(id); });
+            } else {
+                QPixmap chip(14, 14);
+                chip.fill(selected);
+                item->setIcon(QIcon(chip));
+            }
+            refresh_inference_result();
+            if (inference_) {
+                inference_->synchronize_result_selection();
+            }
+            domain_changed();
+        };
+        connect(list, &QListWidget::itemClicked, this,
+                [class_clicked](QListWidgetItem* item) { class_clicked(item, false); });
+        connect(list, &QListWidget::itemDoubleClicked, this,
+                [class_clicked](QListWidgetItem* item) { class_clicked(item, true); });
+    }
     annotation_models_tab_ = new QWidget(page);
     QVBoxLayout* models_layout = new QVBoxLayout(annotation_models_tab_);
     models_layout->setContentsMargins(8, 8, 8, 8);
@@ -730,7 +815,8 @@ void TaskWorkspace::refresh_annotation() {
         classification_->set_dataset(
             service_->binding().samples,
             class_names,
-            labels);
+            labels,
+            classes);
     }
     annotation_binding_dirty_ = false;
     refresh_inference_result();
@@ -758,12 +844,20 @@ void TaskWorkspace::refresh_inference_result() {
     annotation_weight_branch_->setEnabled(annotation_weight_branch_->count() > 0);
     const InferenceResultSet* selected = service_ && service_->source_node_id() != 0 ? service_->selected_inference_result() : nullptr;
     QStringList classes;
+    QHash<int, QString> segmentation_class_names;
     if (model) {
-        for (const auto& value : model->classes) {
-            classes.push_back(QString::fromStdString(value.name));
+        for (const jocelin::model::ModelClass& value : model->classes) {
+            const QString name = QString::fromStdString(value.name);
+            classes.push_back(name);
+            segmentation_class_names.insert(value.mask_value, name);
         }
     }
-    segmentation_->set_inference_result(selected);
+    if (model && service_) {
+        segmentation_->set_inference_result(selected, segmentation_class_names,
+                                            model->classes, service_->binding().classes);
+    } else {
+        segmentation_->set_inference_result(selected, segmentation_class_names);
+    }
     classification_->set_inference_result(selected, classes);
 }
 

@@ -5,6 +5,7 @@
 #include "dataset_item_model.h"
 #include "image_viewport_transform.h"
 #include "model_presentation.h"
+#include "result_presentation.h"
 #include "sample_presentation.h"
 #include "segmentation_annotation.h"
 #include "segmentation_annotation_state.h"
@@ -163,11 +164,58 @@ int main(int argc, char** argv) {
     prediction.image_height = first.height();
     jocelin::result::sg::SgResult::Component predicted_region;
     predicted_region.label = 1;
+    predicted_region.area = 370;
+    predicted_region.confidence = 0.83;
     predicted_region.interest = true;
-    for (int row = 4; row < 20; ++row) predicted_region.region.vRun.emplace_back(row, 5, 30, 1);
+    for (int row = 4; row < 20; ++row) {
+        if (row >= 10 && row < 13) {
+            predicted_region.region.vRun.emplace_back(row, 5, 10, 1);
+            predicted_region.region.vRun.emplace_back(row, 20, 30, 1);
+        } else {
+            predicted_region.region.vRun.emplace_back(row, 5, 30, 1);
+        }
+    }
     prediction.components.push_back(predicted_region);
+    jocelin::result::sg::SgResult::Component rejected_region;
+    rejected_region.label = 2;
+    rejected_region.area = 25;
+    rejected_region.confidence = 0.41;
+    rejected_region.interest = false;
+    for (int row = 20; row < 25; ++row) {
+        rejected_region.region.vRun.emplace_back(row, 50, 55, 2);
+    }
+    prediction.components.push_back(rejected_region);
+    jocelin::result::sg::SgResult::Component other_region;
+    other_region.label = 2;
+    other_region.area = 25;
+    other_region.confidence = 0.41;
+    other_region.interest = true;
+    for (int row = 35; row < 40; ++row) {
+        other_region.region.vRun.emplace_back(row, 45, 50, 2);
+    }
+    prediction.components.push_back(other_region);
+    const std::vector<jocelin::model::ModelClass> color_model_classes{{"road-id", "road", 1}};
+    std::vector<studio::AnnotationClass> color_task_classes{{"road-id", 1, "renamed", "#123456", true, false}};
+    const QImage custom_prediction = studio::prediction_overlay_from_result(
+        prediction, color_model_classes, color_task_classes);
+    if (custom_prediction.pixelColor(6, 5) != QColor("#123456") ||
+        custom_prediction.pixelColor(15, 11).alpha() != 0 ||
+        custom_prediction.pixelColor(51, 21).alpha() != 0) {
+        return 113;
+    }
+    color_task_classes.front().color = "#000000";
+    const QImage black_prediction = studio::prediction_overlay_from_result(
+        prediction, color_model_classes, color_task_classes);
+    if (black_prediction.pixelColor(6, 5) != QColor(Qt::black)) {
+        return 114;
+    }
+    color_task_classes.front().id = "different-class";
+    if (studio::prediction_overlay_from_result(prediction, color_model_classes, color_task_classes) !=
+        studio::prediction_overlay_from_result(prediction)) {
+        return 115;
+    }
     segmentation_results.samples.push_back({annotation_sample.sample_id, prediction});
-    annotation.set_inference_result(&segmentation_results);
+    annotation.set_inference_result(&segmentation_results, {{1, "road"}, {2, "tree"}});
     annotation.show();
     QApplication::processEvents();
     auto* canvas = annotation.findChild<studio::MaskCanvas*>("segmentationMaskCanvas");
@@ -201,6 +249,109 @@ int main(int argc, char** argv) {
     if (rendered.isNull() || rendered.pixelColor(rendered.width() / 2, rendered.height() / 2) == QColor("#18292D")) return 12;
     if (rendered.pixelColor(rendered.width() / 2, rendered.height() / 2) !=
         background_without_prediction) return 69;
+
+    // A future task can provide arbitrary properties and its own hit rule.
+    studio::ResultPresentationItem arbitrary_item;
+    arbitrary_item.text = "instance";
+    arbitrary_item.attributes = {{"Instance ID", "42"}, {"Width", "18"}, {"Custom", "value"}};
+    arbitrary_item.hit_test = [](const QPointF& point) { return QRectF(2, 3, 18, 9).contains(point); };
+    QVector<studio::ResultPresentationItem> arbitrary_items{arbitrary_item};
+    if (studio::result_item_at(arbitrary_items, QPointF(3, 4)) != 0 ||
+        studio::result_item_at(arbitrary_items, QPointF(30, 4)) != -1) {
+        return 104;
+    }
+    QMenu* arbitrary_popup = studio::show_result_properties(canvas, canvas->mapToGlobal(QPoint(10, 10)), arbitrary_item);
+    if (!arbitrary_popup || arbitrary_popup->actions().size() != 3 ||
+        arbitrary_popup->actions()[0]->text() != "Instance ID: 42" ||
+        arbitrary_popup->actions()[2]->text() != "Custom: value") {
+        return 105;
+    }
+    arbitrary_popup->close();
+
+    QCheckBox* annotation_layer = annotation.findChild<QCheckBox*>("annotationLayerCheck");
+    QToolButton* select_tool = annotation.findChild<QToolButton*>("segmentationTransformRegionButton");
+    if (!annotation_layer || !select_tool) {
+        return 106;
+    }
+    annotation_layer->setChecked(false);
+    select_tool->click();
+    const QRectF result_target = studio::ImageViewportTransform{}.target_rect(
+        first.size(), QSize(std::max(1, canvas->width() - 48), std::max(1, canvas->height() - 48)))
+                                     .translated(24, 24);
+    const auto result_point = [&result_target, &first](const QPointF& image_point) {
+        return QPointF(result_target.left() + image_point.x() * result_target.width() / first.width(),
+                       result_target.top() + image_point.y() * result_target.height() / first.height());
+    };
+    const QImage annotation_before_result = canvas->mask_image();
+    QMouseEvent hit_result(QEvent::MouseButtonDblClick, result_point({6.5, 5.5}),
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &hit_result);
+    QMenu* result_popup = nullptr;
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        if (menu->isVisible()) {
+            result_popup = menu;
+        }
+    }
+    if (!result_popup || result_popup->actions().size() != 3 ||
+        result_popup->actions()[0]->text() != "Class: road" ||
+        result_popup->actions()[1]->text() != "Area: 370 px" ||
+        result_popup->actions()[2]->text() != "Confidence: 83.0%" ||
+        canvas->mask_image() != annotation_before_result || canvas->is_dirty()) {
+        return 107;
+    }
+    // The hole is inside the bounding rectangle but outside the component.
+    QMouseEvent miss_result(QEvent::MouseButtonDblClick, result_point({15.5, 11.5}),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &miss_result);
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        if (menu->isVisible()) {
+            return 108;
+        }
+    }
+    QMouseEvent hit_other(QEvent::MouseButtonDblClick, result_point({46.5, 36.5}),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &hit_other);
+    result_popup = nullptr;
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        if (menu->isVisible()) {
+            result_popup = menu;
+        }
+    }
+    if (!result_popup || result_popup->actions().size() != 3 ||
+        result_popup->actions()[0]->text() != "Class: tree" ||
+        result_popup->actions()[1]->text() != "Area: 25 px" ||
+        result_popup->actions()[2]->text() != "Confidence: 41.0%") {
+        return 116;
+    }
+    QMouseEvent hit_rejected(QEvent::MouseButtonDblClick, result_point({51.5, 21.5}),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &hit_rejected);
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        if (menu->isVisible()) {
+            return 109;
+        }
+    }
+    QToolButton* pan_tool = annotation.findChild<QToolButton*>("segmentationPanButton");
+    if (!pan_tool) {
+        return 117;
+    }
+    pan_tool->click();
+    QApplication::sendEvent(canvas, &hit_result);
+    bool pan_hit = false;
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        pan_hit = pan_hit || menu->isVisible();
+    }
+    if (!pan_hit) {
+        return 118;
+    }
+    prediction_layer->setChecked(false);
+    for (QMenu* menu : canvas->findChildren<QMenu*>("resultPropertiesPopup", Qt::FindDirectChildrenOnly)) {
+        if (menu->isVisible()) {
+            return 110;
+        }
+    }
+    prediction_layer->setChecked(true);
+    annotation_layer->setChecked(true);
 
     QImage edge_mask(first.size(), QImage::Format_Grayscale8);
     edge_mask.fill(0);
@@ -414,6 +565,17 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
     if (!prediction_button->isChecked() || !review_state->text().contains("cat") ||
         !review_state->text().contains("91.0%")) return 67;
+    if (!review_state->text().contains("href=\"prediction\"") ||
+        !QMetaObject::invokeMethod(review_state, "linkActivated", Qt::DirectConnection,
+                                   Q_ARG(QString, QStringLiteral("prediction")))) {
+        return 111;
+    }
+    QMenu* classification_popup = review_state->findChild<QMenu*>("resultPropertiesPopup");
+    if (!classification_popup || !classification_popup->isVisible() ||
+        classification_popup->actions().size() != 1 ||
+        classification_popup->actions().front()->text() != "Confidence: 91.0%") {
+        return 112;
+    }
     heatmap_button->click();
     QApplication::processEvents();
     if (!heatmap_button->isChecked() || !review_state->text().contains("Heatmap") ||
@@ -840,6 +1002,29 @@ int main(int argc, char** argv) {
     if (!move_canvas.save(move_mask, &stroke_error)) return 66;
     QImage restored_mask(move_mask);
     if (qGray(restored_mask.pixel(3, 3)) != 3 || qGray(restored_mask.pixel(7, 3)) != 0) return 67;
+
+    // Hiding annotation clears an existing selection and prevents selecting
+    // hidden pixels, even when an inference overlay is present.
+    QApplication::sendEvent(&move_canvas, &select_move_region);
+    move_canvas.set_prediction_overlay(prediction_color);
+    move_canvas.set_overlay_visible(false);
+    QApplication::sendEvent(&move_canvas, &select_move_region);
+    QApplication::sendEvent(&move_canvas, &move_label_press);
+    QApplication::sendEvent(&move_canvas, &move_label_drag);
+    QApplication::sendEvent(&move_canvas, &move_label_release);
+    if (move_canvas.mask_image() != move_seed || move_canvas.is_dirty()) {
+        return 102;
+    }
+    move_canvas.set_overlay_visible(true);
+    QApplication::sendEvent(&move_canvas, &select_move_region);
+    QApplication::sendEvent(&move_canvas, &move_label_press);
+    QApplication::sendEvent(&move_canvas, &move_label_drag);
+    move_canvas.set_overlay_visible(false);
+    QApplication::sendEvent(&move_canvas, &move_label_release);
+    if (move_canvas.mask_image() != move_seed || move_canvas.is_dirty()) {
+        return 103;
+    }
+    move_canvas.set_overlay_visible(true);
 
     const QString transform_mask = directory.filePath("masks/transform.png");
     if (!move_seed.save(transform_mask)) return 75;

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "workflow.h"
+#include "result_inspection.h"
 
 #include <QImage>
 #include <QLabel>
+#include <QPointer>
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
@@ -42,7 +44,8 @@ public:
 
     void set_dataset(const std::vector<TaskSampleBinding>& samples,
                      const QStringList& class_names,
-                     const QVector<int>& class_labels);
+                     const QVector<int>& class_labels,
+                     const std::vector<AnnotationClass>& class_metadata = {});
     void set_inference_result(const InferenceResultSet* result, const QStringList& model_classes = {});
     void refresh_inference_result();
 
@@ -71,8 +74,11 @@ private:
     QStringList image_paths_;
     QStringList display_names_;
     QStringList class_names_;
+    std::vector<AnnotationClass> class_metadata_;
     QVector<int> class_labels_;
     std::vector<ResultReference> inference_results_;
+    QVector<ResultPresentationItem> result_items_;
+    QPointer<QMenu> result_popup_;
     QStringList prediction_class_names_;
     int current_row_ = -1;
     int view_mode_ = 0;

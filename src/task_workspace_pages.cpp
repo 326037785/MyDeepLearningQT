@@ -2400,8 +2400,11 @@ void InferenceWorkspace::refresh_canvas() {
         classification_canvas_->set_heatmap(
             QImage(QString::fromStdString(std::get<jocelin::result::cls::ClsResult>(match->result).heatmap_path)));
     } else {
+        const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
+        const std::vector<jocelin::model::ModelClass> model_classes = model
+            ? model->classes : std::vector<jocelin::model::ModelClass>{};
         segmentation_canvas_->set_prediction_overlay(prediction_overlay_from_result(
-            std::get<jocelin::result::sg::SgResult>(match->result)));
+            std::get<jocelin::result::sg::SgResult>(match->result), model_classes, service_->binding().classes));
     }
 }
 
@@ -3006,7 +3009,11 @@ void ResultsWorkspace::refresh_sample_detail() {
         segmentation_canvas_->clear();
         return;
     }
-    segmentation_canvas_->set_prediction_overlay(prediction_overlay_from_result(*sg));
+    const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
+    const std::vector<jocelin::model::ModelClass> model_classes = model
+        ? model->classes : std::vector<jocelin::model::ModelClass>{};
+    segmentation_canvas_->set_prediction_overlay(
+        prediction_overlay_from_result(*sg, model_classes, service_->binding().classes));
 }
 
 void ResultsWorkspace::export_results() {

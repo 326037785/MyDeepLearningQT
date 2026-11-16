@@ -57,6 +57,12 @@
       <source>The target directory already exists and is not empty.</source>
       <translation>目标文件夹已存在且不为空。</translation>
     </message>
+    <message><source>Class</source><translation>类别</translation></message>
+    <message><source>Class %1</source><translation>类别 %1</translation></message>
+    <message><source>Area</source><translation>面积</translation></message>
+    <message><source>Confidence</source><translation>置信度</translation></message>
+    <message><source>Unknown</source><translation>未知</translation></message>
+    <message><source>%1 px</source><translation>%1 像素</translation></message>
   </context>
   <context>
     <name>studio::MainWindow</name>

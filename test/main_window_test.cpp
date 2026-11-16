@@ -16,7 +16,9 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
+#include <QCursor>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -36,7 +38,10 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -264,6 +269,7 @@ int main(int argc, char** argv) try {
         return 72;
     }
 
+    window.move(0, 0);
     window.show();
     application.processEvents();
 
@@ -333,6 +339,104 @@ int main(int argc, char** argv) try {
         !binding.samples.front().regions.empty() || classes->currentRow() != 0) {
         return 93;
     }
+    const auto click_class_color = [](QListWidget* list, int row, const QColor& color, bool accept) {
+        QApplication::processEvents();
+        QListWidgetItem* item = list->item(row);
+        if (!item) {
+            return false;
+        }
+        QStyleOptionViewItem option;
+        option.initFrom(list);
+        option.rect = list->visualItemRect(item);
+        option.decorationSize = list->iconSize();
+        option.features = QStyleOptionViewItem::HasDecoration | QStyleOptionViewItem::HasDisplay;
+        option.text = item->text();
+        if (item->flags().testFlag(Qt::ItemIsUserCheckable)) {
+            option.features |= QStyleOptionViewItem::HasCheckIndicator;
+            option.checkState = item->checkState();
+        }
+        const QPoint point = list->style()->subElementRect(
+            QStyle::SE_ItemViewItemDecoration, &option, list).center();
+        QWidget* window = list->window();
+        window->move(window->pos() + QCursor::pos() - list->viewport()->mapToGlobal(point));
+        QApplication::processEvents();
+        bool opened = false;
+        QTimer timer;
+        QObject::connect(&timer, &QTimer::timeout, [&] {
+            QColorDialog* dialog = qobject_cast<QColorDialog*>(QApplication::activeModalWidget());
+            if (!dialog) {
+                return;
+            }
+            opened = true;
+            if (accept) {
+                dialog->setCurrentColor(color);
+                dialog->accept();
+            } else {
+                dialog->reject();
+            }
+        });
+        timer.start(0);
+        QMouseEvent press(QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &release);
+        timer.stop();
+        return opened;
+    };
+    const auto click_class_part = [](QListWidget* list, int row, QStyle::SubElement part,
+                                     bool double_click = false) {
+        QListWidgetItem* item = list->item(row);
+        if (!item) {
+            return false;
+        }
+        QStyleOptionViewItem option;
+        option.initFrom(list);
+        option.rect = list->visualItemRect(item);
+        option.decorationSize = list->iconSize();
+        option.features = QStyleOptionViewItem::HasDecoration | QStyleOptionViewItem::HasDisplay;
+        option.text = item->text();
+        if (item->flags().testFlag(Qt::ItemIsUserCheckable)) {
+            option.features |= QStyleOptionViewItem::HasCheckIndicator;
+            option.checkState = item->checkState();
+        }
+        const QPoint point = list->style()->subElementRect(part, &option, list).center();
+        QWidget* window = list->window();
+        window->move(window->pos() + QCursor::pos() - list->viewport()->mapToGlobal(point));
+        QApplication::processEvents();
+        bool unexpected_dialog = false;
+        QTimer timer;
+        QObject::connect(&timer, &QTimer::timeout, [&] {
+            if (QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+                unexpected_dialog = true;
+                dialog->reject();
+            }
+        });
+        timer.start(0);
+        QMouseEvent press(double_click ? QEvent::MouseButtonDblClick : QEvent::MouseButtonPress,
+                          point, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(list->viewport(), &release);
+        timer.stop();
+        QApplication::processEvents();
+        return !unexpected_dialog;
+    };
+    QTabWidget* sg_inspector = window.findChild<QTabWidget*>("segmentationAnnotationInspector");
+    if (!sg_inspector) {
+        throw std::runtime_error("SG class inspector missing");
+    }
+    sg_inspector->setCurrentIndex(0);
+    application.processEvents();
+    const bool sg_color_opened = click_class_color(classes, 1, QColor("#6A52C8"), true);
+    const std::string sg_color_selected = binding.classes.front().color;
+    const bool sg_cancel_opened = click_class_color(classes, 1, QColor("#112233"), false);
+    if (!sg_color_opened || sg_color_selected != "#6a52c8" || !sg_cancel_opened ||
+        binding.classes.front().color != "#6a52c8" || classes->currentRow() != 1) {
+        std::cerr << "color dialogs: " << sg_color_opened << ", " << sg_cancel_opened
+                  << "; colors: " << sg_color_selected << ", " << binding.classes.front().color << '\n';
+        throw std::runtime_error("SG class color selection or cancellation failed");
+    }
+    classes->setCurrentRow(0);
     const QImage painted = canvas->mask_image();
     canvas->undo();
     if (painted == empty_canvas || canvas->mask_image() != empty_canvas || !canvas->can_redo()) {
@@ -359,7 +463,26 @@ int main(int argc, char** argv) try {
     if (binding.classes.size() != 2 || classes->currentRow() != 0) {
         return 97;
     }
-    classes->setCurrentRow(2);
+    if (!click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 1 ||
+        !click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 0) {
+        throw std::runtime_error("clicking the selected class did not clear the selection");
+    }
+    if (!click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 1 ||
+        !click_class_part(classes, 1, QStyle::SE_ItemViewItemText, true) || classes->currentRow() != 0) {
+        throw std::runtime_error("rapid clicks did not clear the class selection");
+    }
+    classes->setCurrentRow(1);
+    if (!click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 0 ||
+        !click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 1 ||
+        !click_class_part(classes, 2, QStyle::SE_ItemViewItemText) || classes->currentRow() != 2) {
+        throw std::runtime_error("programmatic selection or switching classes failed");
+    }
+    if (!click_class_part(classes, 2, QStyle::SE_ItemViewItemCheckIndicator) ||
+        classes->currentRow() != 2 || binding.classes.back().visible ||
+        !click_class_part(classes, 2, QStyle::SE_ItemViewItemCheckIndicator) ||
+        classes->currentRow() != 2 || !binding.classes.back().visible) {
+        throw std::runtime_error("class visibility click changed the selection");
+    }
     const std::string road_id = binding.classes.back().id;
     const int road_mask = binding.classes.back().mask_value;
     move_up->click();
@@ -381,7 +504,9 @@ int main(int argc, char** argv) try {
     if (!draw(center + QPoint(stroke_spacing, 0)) || !canvas->is_dirty()) {
         return 100;
     }
-    classes->setCurrentRow(0);
+    if (!click_class_part(classes, 1, QStyle::SE_ItemViewItemText) || classes->currentRow() != 0) {
+        throw std::runtime_error("selected class could not be cleared before drawing");
+    }
     bool assigned_existing = false;
     if (!draw(center - QPoint(stroke_spacing, 0), [&road_id, &assigned_existing](QDialog& board) {
             QComboBox* existing = board.findChild<QComboBox*>("annotationExistingClass");
@@ -608,6 +733,48 @@ int main(int argc, char** argv) try {
     independent_model.name = "Independent Node model";
     std::get<studio::TaskNodeConfig>(model_graph.node(second_model_node).config).model_list.restore({independent_model}, 2);
     studio::TaskWorkspace owned_workspace;
+    model_graph.connect(1, 0, classification_node, 0);
+    studio::TaskNodeConfig& color_classification =
+        std::get<studio::TaskNodeConfig>(model_graph.node(classification_node).config);
+    color_classification.dataset_binding.classes = {{"color-class", 0, "cat", "#193c66", true, false}};
+    color_classification.dataset_binding.samples = binding.samples;
+    color_classification.dataset_binding.samples.front().class_id = "color-class";
+    color_classification.dataset_binding.samples.front().annotation_state = "annotated";
+    owned_workspace.resize(1200, 800);
+    owned_workspace.move(0, 0);
+    owned_workspace.bind(&model_graph, classification_node);
+    owned_workspace.show();
+    owned_workspace.activate_step(studio::TaskWorkspace::Step::Annotation);
+    application.processEvents();
+    QListWidget* classification_classes = owned_workspace.findChild<QListWidget*>("classificationClassList");
+    QTabWidget* classification_inspector = owned_workspace.findChild<QTabWidget*>("classificationAnnotationInspector");
+    if (classification_inspector) {
+        classification_inspector->setCurrentIndex(0);
+        application.processEvents();
+    }
+    if (!classification_classes || classification_classes->count() != 1 ||
+        !click_class_color(classification_classes, 0, QColor("#CC7812"), true) ||
+        color_classification.dataset_binding.classes.front().color != "#cc7812" ||
+        classification_classes->currentRow() != 0) {
+        throw std::runtime_error("CL class color selection failed");
+    }
+    if (!click_class_part(classification_classes, 0, QStyle::SE_ItemViewItemText) ||
+        classification_classes->currentRow() != -1 ||
+        color_classification.dataset_binding.samples.front().class_id != "color-class" ||
+        !click_class_part(classification_classes, 0, QStyle::SE_ItemViewItemText) ||
+        classification_classes->currentRow() != 0 ||
+        !click_class_part(classification_classes, 0, QStyle::SE_ItemViewItemText, true) ||
+        classification_classes->currentRow() != -1 ||
+        color_classification.dataset_binding.samples.front().class_id != "color-class") {
+        throw std::runtime_error("CL class selection did not toggle independently of the annotation");
+    }
+    owned_workspace.bind(&model_graph, classification_node);
+    owned_workspace.activate_step(studio::TaskWorkspace::Step::Annotation);
+    application.processEvents();
+    if (classification_classes->item(0)->icon().pixmap(14, 14).toImage().pixelColor(7, 7) != QColor("#CC7812")) {
+        throw std::runtime_error("CL class color was not restored from the TaskNode");
+    }
+    owned_workspace.hide();
     for (const int owner : {2, second_model_node}) {
         owned_workspace.bind(&model_graph, owner);
         const auto lists = owned_workspace.findChildren<QTreeWidget*>("projectModelBrowserList");
