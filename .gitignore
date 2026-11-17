@@ -1,6 +1,7 @@
 # Build output and local verification data
 /build/
 /Testing/
+/CMakeUserPresets.json
 
 # Local AI bridge notes
 /.ai-bridge/

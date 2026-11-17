@@ -82,8 +82,8 @@ that Core build directly. An explicitly selected Core installation is supported
 through its `lib/cmake/DeepLearning` directory.
 
 Keep local Qt, Torch, OpenCV and CUDA paths in an untracked
-`CMakeUserPresets.json`. Ignore the local preset and entire build directory through
-`.git/info/exclude`. With the GPU machine's local presets configured:
+`CMakeUserPresets.json`. If the local preset uses a build directory other than
+`build`, add that directory to `.git/info/exclude`. With the GPU machine's local presets configured:
 
 ```powershell
 cmake --preset gpu-vs2022
