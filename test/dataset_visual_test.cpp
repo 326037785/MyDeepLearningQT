@@ -23,10 +23,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QComboBox>
 #include <QPushButton>
+#include <QStyle>
 #include <QListView>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -520,6 +522,24 @@ int main(int argc, char** argv) {
         if (std::any_of(empty_canvas.constScanLine(row),
             empty_canvas.constScanLine(row) + empty_canvas.width(), [](uchar value) { return value != 0; })) return 96;
 
+    studio::TaskSampleBinding second_empty_sample = empty_service.binding().samples.front();
+    second_empty_sample.sample_id = "second-sample";
+    no_class_annotation.set_task_dataset({empty_service.binding().samples.front(), second_empty_sample});
+    if (saved_samples->count() != 2) {
+        return 117;
+    }
+    saved_samples->setCurrentRow(0);
+    saved_samples->item(1)->setSelected(true);
+    std::vector<std::string> empty_sample_ids;
+    no_class_annotation.samples_empty_requested = [&](const std::vector<std::string>& ids) {
+        empty_sample_ids = ids;
+        std::sort(empty_sample_ids.begin(), empty_sample_ids.end());
+    };
+    invoke_empty(QMessageBox::Yes);
+    if (empty_sample_ids != std::vector<std::string>{"late-sample", "second-sample"}) {
+        return 118;
+    }
+
     studio::ClassificationAnnotationWidget classification;
     classification.resize(1000, 620);
     classification.set_dataset(
@@ -530,9 +550,13 @@ int main(int argc, char** argv) {
          studio::TaskSampleBinding{
              "classification-sample-2",
              {directory.filePath("results/segment_heatmap.png").toStdString()},
-             true, {}, {}, "dog", "unassigned", "annotated", {}}},
+             true, {}, {}, "dog", "unassigned", "annotated", {}},
+         studio::TaskSampleBinding{
+             "classification-sample-3",
+             {directory.filePath("images/segment.png").toStdString()},
+             true, {}, {}, {}, "unassigned", "unannotated", {}}},
         {"cat", "dog"},
-        {-1, 1});
+        {-1, 1, -1});
     studio::InferenceResultSet classification_results;
     jocelin::result::cls::ClsResult class_prediction;
     class_prediction.image_path = directory.filePath("images/segment.png").toStdString();
@@ -540,11 +564,17 @@ int main(int argc, char** argv) {
     class_prediction.confidence = 0.91;
     class_prediction.heatmap_path = directory.filePath("results/segment_heatmap.png").toStdString();
     classification_results.samples.push_back({"classification-sample-1", class_prediction});
+    class_prediction.image_path = class_prediction.heatmap_path;
+    class_prediction.predicted_class = -1;
+    class_prediction.confidence = 0.4;
+    class_prediction.heatmap_path.clear();
+    classification_results.samples.push_back({"classification-sample-2", class_prediction});
     classification.set_inference_result(&classification_results, {"dog", "cat"});
-    QString assigned_image;
+    std::vector<std::string> assigned_samples;
     int assigned_class = -1;
-    classification.class_assigned = [&](const QString& image, int class_index) {
-        assigned_image = image;
+    classification.class_assigned = [&](const std::vector<std::string>& sample_ids, int class_index) {
+        assigned_samples = sample_ids;
+        std::sort(assigned_samples.begin(), assigned_samples.end());
         assigned_class = class_index;
     };
     classification.show();
@@ -552,35 +582,78 @@ int main(int argc, char** argv) {
     auto* classification_images = classification.findChild<QListWidget*>("classificationImageList");
     auto* classification_classes = classification.findChild<QListWidget*>("classificationClassList");
     auto* classification_preview = classification.findChild<QLabel*>("classificationPreview");
-    auto* ground_truth_button = classification.findChild<QPushButton*>("classificationGroundTruthButton");
-    auto* prediction_button = classification.findChild<QPushButton*>("classificationPredictionButton");
-    auto* heatmap_button = classification.findChild<QPushButton*>("classificationHeatmapButton");
-    auto* review_state = classification.findChild<QLabel*>("classificationReviewState");
-    if (!classification_images || classification_images->count() != 2 || !classification_classes ||
-        classification_classes->count() != 2 || !classification_preview || !classification_preview->pixmap() ||
-        classification_preview->pixmap()->isNull() || !ground_truth_button ||
-        !prediction_button || !heatmap_button || !review_state || !ground_truth_button->isChecked() ||
-        !prediction_button->isEnabled() || !heatmap_button->isEnabled()) return 33;
-    prediction_button->click();
+    QCheckBox* classification_heatmap = classification.findChild<QCheckBox*>("classificationHeatmapLayerCheck");
+    QLabel* review_state = classification.findChild<QLabel*>("classificationReviewState");
+    QLabel* image_labels = classification.findChild<QLabel*>("classificationImageLabels");
+    if (!classification_images || classification_images->count() != 3 || !classification_classes ||
+        classification_classes->count() != 2 || !classification_preview ||
+        classification_preview->pixmap(Qt::ReturnByValue).isNull() ||
+        !classification_heatmap || !classification_heatmap->isEnabled() ||
+        classification_heatmap->isChecked() || !review_state || !image_labels || !image_labels->isVisible()) {
+        return 33;
+    }
+    if (review_state->text() != "Confidence: 91.0%" || !image_labels->text().contains("cat") ||
+        !image_labels->text().contains("Ground truth: Unassigned")) {
+        return 67;
+    }
+    const auto inside_image = [classification_preview, image_labels] {
+        const QRect image_rect = QStyle::alignedRect(classification_preview->layoutDirection(),
+            classification_preview->alignment(), classification_preview->pixmap(Qt::ReturnByValue).size(),
+            classification_preview->contentsRect());
+        return image_labels->parentWidget() == classification_preview &&
+            image_rect.contains(image_labels->geometry()) &&
+            image_labels->geometry().topRight() == image_rect.topRight() + QPoint(-8, 8);
+    };
+    if (!inside_image()) {
+        return 123;
+    }
+    classification.resize(1050, 665);
     QApplication::processEvents();
-    if (!prediction_button->isChecked() || !review_state->text().contains("cat") ||
-        !review_state->text().contains("91.0%")) return 67;
-    if (!review_state->text().contains("href=\"prediction\"") ||
-        !QMetaObject::invokeMethod(review_state, "linkActivated", Qt::DirectConnection,
+    if (!inside_image()) {
+        return 124;
+    }
+    if (!image_labels->text().contains("href=\"prediction\"") ||
+        !QMetaObject::invokeMethod(image_labels, "linkActivated", Qt::DirectConnection,
                                    Q_ARG(QString, QStringLiteral("prediction")))) {
         return 111;
     }
-    QMenu* classification_popup = review_state->findChild<QMenu*>("resultPropertiesPopup");
+    QMenu* classification_popup = image_labels->findChild<QMenu*>("resultPropertiesPopup");
     if (!classification_popup || !classification_popup->isVisible() ||
         classification_popup->actions().size() != 1 ||
         classification_popup->actions().front()->text() != "Confidence: 91.0%") {
         return 112;
     }
-    heatmap_button->click();
+    classification_popup->close();
+    const QImage original_preview = classification_preview->pixmap(Qt::ReturnByValue).toImage();
+    classification_heatmap->click();
     QApplication::processEvents();
-    if (!heatmap_button->isChecked() || !review_state->text().contains("Heatmap") ||
-        !classification_preview->pixmap() || classification_preview->pixmap()->isNull()) return 68;
-    ground_truth_button->click();
+    const QImage overlay_preview = classification_preview->pixmap(Qt::ReturnByValue).toImage();
+    if (overlay_preview.size() != original_preview.size() ||
+        !image_labels->text().contains("cat") || review_state->text() != "Confidence: 91.0%") {
+        return 68;
+    }
+    const QPoint center = overlay_preview.rect().center();
+    const QColor overlay_pixel = overlay_preview.pixelColor(center);
+    if (original_preview.pixelColor(center) != first.pixelColor(0, 0) ||
+        std::abs(overlay_pixel.red() - 133) > 1 ||
+        std::abs(overlay_pixel.green() - 104) > 1 ||
+        std::abs(overlay_pixel.blue() - 79) > 1) {
+        return 119;
+    }
+    classification_heatmap->click();
+    if (classification_preview->pixmap(Qt::ReturnByValue).toImage() != original_preview) {
+        return 120;
+    }
+    classification_images->setCurrentRow(1);
+    if (!image_labels->text().contains("Unknown") || review_state->text() != "Confidence: 40.0%" ||
+        classification_heatmap->isEnabled()) {
+        return 121;
+    }
+    classification_images->setCurrentRow(2);
+    if (image_labels->text().contains("href=\"prediction\"") || review_state->text() != "Confidence: —") {
+        return 122;
+    }
+    classification_images->setCurrentRow(0);
     const auto* classification_item = classification_images->item(0);
     if (!classification_item->text().startsWith("img_00001.png") ||
         QFileInfo(classification_item->data(Qt::UserRole).toString()).absoluteFilePath() !=
@@ -605,8 +678,9 @@ int main(int argc, char** argv) {
     });
     QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
                               Q_ARG(QPoint, QPoint(10, 10)));
-    if (assigned_class != 1 || QFileInfo(assigned_image).absoluteFilePath() !=
-        QFileInfo(directory.filePath("images/segment.png")).absoluteFilePath()) return 34;
+    if (assigned_class != 1 || assigned_samples != std::vector<std::string>{"classification-sample-1"}) {
+        return 34;
+    }
     QTimer::singleShot(0, [] {
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
         if (!menu || menu->actions().isEmpty() || !menu->actions().front()->menu() ||
@@ -614,9 +688,69 @@ int main(int argc, char** argv) {
         menu->actions().front()->menu()->actions().front()->trigger();
         menu->close();
     });
-    QMetaObject::invokeMethod(classification_preview, "customContextMenuRequested", Qt::DirectConnection,
+    QMetaObject::invokeMethod(image_labels, "customContextMenuRequested", Qt::DirectConnection,
                               Q_ARG(QPoint, QPoint(20, 20)));
     if (assigned_class != 0 || !classification_images->item(0)->text().contains("cat")) return 35;
+
+    const auto click_thumbnail = [classification_images](int row, Qt::MouseButton button,
+                                                          Qt::KeyboardModifiers modifiers) {
+        const QPoint point = classification_images->visualItemRect(classification_images->item(row)).center();
+        QMouseEvent press(QEvent::MouseButtonPress, point, button, button, modifiers);
+        QApplication::sendEvent(classification_images->viewport(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, point, button, Qt::NoButton, modifiers);
+        QApplication::sendEvent(classification_images->viewport(), &release);
+    };
+    click_thumbnail(0, Qt::LeftButton, Qt::NoModifier);
+    click_thumbnail(2, Qt::LeftButton, Qt::ControlModifier);
+    click_thumbnail(0, Qt::RightButton, Qt::NoModifier);
+    QTimer::singleShot(0, [] {
+        QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (menu) {
+            menu->actions().front()->menu()->actions().front()->trigger();
+            menu->close();
+        }
+    });
+    QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
+        Q_ARG(QPoint, classification_images->visualItemRect(classification_images->item(0)).center()));
+    if (assigned_class != 0 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-3"} ||
+        classification_images->selectedItems().size() != 2 ||
+        classification_images->item(1)->data(Qt::UserRole + 1).toInt() != 1) {
+        return 113;
+    }
+
+    click_thumbnail(0, Qt::LeftButton, Qt::NoModifier);
+    click_thumbnail(1, Qt::LeftButton, Qt::ShiftModifier);
+    classification_classes->setCurrentRow(1);
+    QPushButton* assign_class = classification.findChild<QPushButton*>("classificationAssignClassButton");
+    if (!assign_class) {
+        return 114;
+    }
+    assign_class->click();
+    if (assigned_class != 1 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-2"} ||
+        classification_images->selectedItems().size() != 2 ||
+        classification_images->item(2)->data(Qt::UserRole + 1).toInt() != 0) {
+        return 115;
+    }
+
+    classification.class_add_requested = [](const QString& name) {
+        return std::vector<studio::AnnotationClass>{
+            {"cat", 0, "cat", "#123456"}, {"dog", 0, "dog", "#456789"},
+            {"new-class", 0, name.toStdString(), "#789123"}};
+    };
+    classification_classes->setCurrentRow(-1);
+    QTimer::singleShot(0, [] {
+        QInputDialog* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        if (dialog) {
+            dialog->setTextValue(QStringLiteral("bird"));
+            dialog->accept();
+        }
+    });
+    assign_class->click();
+    if (assigned_class != 2 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-2"} ||
+        classification_images->selectedItems().size() != 2 ||
+        classification_images->item(1)->data(Qt::UserRole + 1).toInt() != 2) {
+        return 116;
+    }
 
     studio::MaskCanvas stroke_canvas;
     stroke_canvas.set_class_value(1);

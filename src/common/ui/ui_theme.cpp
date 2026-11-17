@@ -181,6 +181,7 @@ QFrame#trainingAdvancedPanel QLabel { font-size: 10px; color: #667A83; }
 QSplitter::handle { background: #D9E3E1; }
 QSplitter::handle:hover { background: #70BFAE; }
 QLabel[imagePreview=true] { background: #18292D; color: #C6D5D3; border: 1px solid #31575C; border-radius: 7px; padding: 12px; }
+QLabel#classificationImageLabels { background: rgba(24, 41, 45, 220); color: #F2F7F6; border-radius: 5px; padding: 6px 8px; }
 QGraphicsView { background: #EFF3F1; border: 0; }
 QStatusBar { background: #FFFFFF; border-top: 1px solid #DCE4E7; padding: 3px 8px; color: #425765; }
 )QSS"));

@@ -68,6 +68,8 @@ Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显
 
 **Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Core 恢复训练状态，从下一个 epoch 继续。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
 
+**训练历史**：模型资产目录下的 `training_history.csv` 每个已完成 epoch 保存一行，包含训练和验证 loss、主指标名称及两组指标值。CL 使用 Accuracy，SG 使用 Mean IoU。没有验证集时，验证字段为空。Resume 延续同一模型的 CSV，新的 checkpoint 和执行日志保存在模型目录下本次执行的子目录。Training 页选中模型行时读取 CSV 并显示趋势。缺少 CSV 的模型显示空曲线。
+
 TaskNode 的任务类型决定清单范围。各行可以有不同的 model_index、model_scale、输入尺寸和类别 schema。具体操作检查所选模型的兼容性。
 
 浏览器中的 Capacity 表示 model_scale。Dataset 的 bucket_capacity 表示单个 sample 的输入图片数。

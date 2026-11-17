@@ -20,6 +20,8 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -43,6 +45,8 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <stdexcept>
 
 namespace studio {
@@ -56,18 +60,56 @@ public:
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
-    void reset() {
-        loss_values_.clear();
-        metric_values_.clear();
-        metric_title_.clear();
+    void reset(const jocelin::model::ModelEntry* model = nullptr) {
+        points_.clear();
+        if (model && !model->asset_directory.empty()) {
+            QFile file(QDir(QString::fromStdString(model->asset_directory)).filePath(
+                QString::fromLatin1(jocelin::training::training_history_filename)));
+            if (file.open(QIODevice::ReadOnly) && file.readLine().trimmed() == jocelin::training::training_history_header) {
+                while (!file.atEnd()) {
+                    const QByteArray line = file.readLine();
+                    if (!line.endsWith('\n')) {
+                        break;
+                    }
+                    const QList<QByteArray> fields = line.trimmed().split(',');
+                    if (fields.size() != 6) {
+                        continue;
+                    }
+                    bool valid_epoch = false;
+                    bool valid_loss = false;
+                    bool valid_metric = false;
+                    jocelin::train::TrainingProgress point;
+                    point.completed_epochs = fields[0].toInt(&valid_epoch);
+                    point.loss = fields[1].toDouble(&valid_loss);
+                    point.validation_metric_name = fields[3].toStdString();
+                    point.training_metric = fields[4].toDouble(&valid_metric);
+                    if (!valid_epoch || point.completed_epochs < 1 ||
+                        (!points_.empty() && point.completed_epochs <= points_.back().completed_epochs) ||
+                        !valid_loss || !std::isfinite(point.loss) ||
+                        !valid_metric || !std::isfinite(point.training_metric)) {
+                        continue;
+                    }
+                    if (!fields[2].isEmpty() || !fields[5].isEmpty()) {
+                        const double validation_loss = fields[2].toDouble(&valid_loss);
+                        point.validation_metric = fields[5].toDouble(&valid_metric);
+                        if (!valid_loss || !std::isfinite(validation_loss) ||
+                            !valid_metric || !std::isfinite(point.validation_metric)) {
+                            continue;
+                        }
+                        point.validation_loss = validation_loss;
+                    }
+                    points_.push_back(std::move(point));
+                }
+            }
+        }
         update();
     }
 
-    void add_point(double loss, double metric, const QString& metric_title) {
-        loss_values_.push_back(loss);
-        metric_values_.push_back(metric);
-        metric_title_ = metric_title;
-        update();
+    void add_point(const jocelin::train::TrainingProgress& point) {
+        if (points_.empty() || point.completed_epochs > points_.back().completed_epochs) {
+            points_.push_back(point);
+            update();
+        }
     }
 
 protected:
@@ -75,7 +117,7 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.fillRect(rect(), QColor("#F8FAFA"));
-        const QRectF plot = rect().adjusted(52, 34, -52, -28);
+        const QRectF plot = rect().adjusted(52, 34, -52, -47);
         painter.setPen(QColor("#173F46"));
         QFont title_font = painter.font();
         title_font.setBold(true);
@@ -89,45 +131,67 @@ protected:
             const qreal y = plot.top() + plot.height() * line / 4.0;
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
         }
-        if (loss_values_.empty()) return;
+        if (points_.empty()) {
+            painter.setPen(QColor("#718386"));
+            painter.drawText(plot, Qt::AlignCenter, tr("No training history"));
+            return;
+        }
 
-        const auto value_range = [](const std::vector<double>& values) {
-            const auto range = std::minmax_element(values.begin(), values.end());
-            double minimum = *range.first;
-            double maximum = *range.second;
-            if (std::abs(maximum - minimum) < 1e-12) {
-                const double pad = std::max(1e-6, std::abs(maximum) * 0.1);
-                minimum -= pad;
-                maximum += pad;
-            }
-            return jocelin::geo::Interval{minimum, maximum};
-        };
-        const auto loss_range = value_range(loss_values_);
-        const auto metric_range = value_range(metric_values_);
-        const auto draw_series = [&](const std::vector<double>& values,
+        double minimum_loss = points_.front().loss;
+        double maximum_loss = minimum_loss;
+        for (const jocelin::train::TrainingProgress& point : points_) {
+            const double validation_loss = point.validation_loss.value_or(point.loss);
+            minimum_loss = std::min({minimum_loss, point.loss, validation_loss});
+            maximum_loss = std::max({maximum_loss, point.loss, validation_loss});
+        }
+        if (maximum_loss - minimum_loss < 1e-12) {
+            const double pad = std::max(1e-6, std::abs(maximum_loss) * 0.1);
+            minimum_loss -= pad;
+            maximum_loss += pad;
+        }
+        const jocelin::geo::Interval loss_range{minimum_loss, maximum_loss};
+        const jocelin::geo::Interval metric_range{0.0, 1.0};
+        const int first_epoch = points_.front().completed_epochs;
+        const int last_epoch = points_.back().completed_epochs;
+        const QColor loss_color("#27879B");
+        const QColor metric_color("#A74720");
+        const auto draw_series = [&](const auto& value_at,
                                      const jocelin::geo::Interval& range,
                                      const QPen& pen) {
             const double span = std::max(1e-12, range.high - range.low);
             QPainterPath path;
-            for (size_t index = 0; index < values.size(); ++index) {
-                const qreal x = values.size() == 1
-                    ? plot.left()
-                    : plot.left() + plot.width() * static_cast<qreal>(index) /
-                        static_cast<qreal>(values.size() - 1);
+            QPolygonF samples;
+            int previous_epoch = 0;
+            for (const jocelin::train::TrainingProgress& point : points_) {
+                const std::optional<double> value = value_at(point);
+                if (!value) {
+                    continue;
+                }
+                const qreal x = first_epoch == last_epoch
+                    ? plot.center().x()
+                    : plot.left() + plot.width() * (point.completed_epochs - first_epoch) / (last_epoch - first_epoch);
                 const qreal normalized = std::clamp(
-                    (values[index] - range.low) / span, 0.0, 1.0);
-                const qreal y = plot.bottom() - plot.height() * normalized;
-                if (index == 0) path.moveTo(x, y);
-                else path.lineTo(x, y);
+                    (*value - range.low) / span, 0.0, 1.0);
+                const QPointF sample(x, plot.bottom() - plot.height() * normalized);
+                if (previous_epoch != 0 && point.completed_epochs - previous_epoch == 1) {
+                    path.lineTo(sample);
+                } else {
+                    path.moveTo(sample);
+                }
+                samples.append(sample);
+                previous_epoch = point.completed_epochs;
             }
             painter.setPen(pen);
             painter.drawPath(path);
+            painter.drawPoints(samples);
         };
 
-        draw_series(loss_values_, loss_range, QPen(QColor("#27879B"), 2));
-        QPen metric_pen(QColor("#A74720"), 2);
-        metric_pen.setStyle(Qt::DashLine);
-        draw_series(metric_values_, metric_range, metric_pen);
+        draw_series([](const auto& point) { return point.loss; }, loss_range, QPen(loss_color, 2));
+        draw_series([](const auto& point) { return point.validation_loss; }, loss_range, QPen(loss_color, 2, Qt::DashLine));
+        draw_series([](const auto& point) { return point.training_metric; }, metric_range, QPen(metric_color, 2));
+        draw_series([](const auto& point) -> std::optional<double> {
+            return point.validation_loss ? std::optional<double>(point.validation_metric) : std::nullopt;
+        }, metric_range, QPen(metric_color, 2, Qt::DashLine));
 
         painter.setPen(QColor("#718386"));
         painter.drawText(QRectF(4, plot.top() - 7, 44, 16), Qt::AlignRight,
@@ -138,17 +202,23 @@ protected:
                          QString::number(metric_range.high, 'g', 4));
         painter.drawText(QRectF(plot.right() + 5, plot.bottom() - 8, 44, 16), Qt::AlignLeft,
                          QString::number(metric_range.low, 'g', 4));
-        painter.setPen(QColor("#27879B"));
-        painter.drawText(QRectF(plot.left(), 5, 80, 18), Qt::AlignRight, tr("Loss"));
-        painter.setPen(QColor("#A74720"));
-        painter.drawText(QRectF(plot.left() + 88, 5, plot.width() - 88, 18), Qt::AlignLeft,
-                         metric_title_.isEmpty() ? tr("Metric") : metric_title_);
+        const QRectF epoch_labels(plot.left(), plot.bottom() + 3, plot.width(), 16);
+        painter.drawText(epoch_labels, first_epoch == last_epoch ? Qt::AlignHCenter : Qt::AlignLeft,
+                         QString::number(first_epoch));
+        if (first_epoch != last_epoch) {
+            painter.drawText(epoch_labels, Qt::AlignRight, QString::number(last_epoch));
+        }
+        painter.drawText(QRectF(plot.left(), plot.bottom() + 21, plot.width(), 18), Qt::AlignCenter,
+                         tr("Epoch · Train (solid) · Validation (dashed)"));
+        painter.setPen(loss_color);
+        painter.drawText(QRectF(plot.left(), 21, plot.width(), 16), Qt::AlignLeft, tr("Loss"));
+        painter.setPen(metric_color);
+        painter.drawText(QRectF(plot.left(), 21, plot.width(), 16), Qt::AlignRight,
+                         QString::fromStdString(points_.back().validation_metric_name));
     }
 
 private:
-    std::vector<double> loss_values_;
-    std::vector<double> metric_values_;
-    QString metric_title_;
+    std::vector<jocelin::train::TrainingProgress> points_;
 };
 
 namespace {
@@ -504,7 +574,13 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
         if (clear_models_requested) clear_models_requested();
     };
     model_browser_->selection_changed = [this](const QString& id) {
-        if (!rebuilding_ && service_) service_->select_inference_model(id);
+        if (!rebuilding_ && service_) {
+            service_->select_inference_model(id);
+            const jocelin::model::ModelEntry* active = controlled_model();
+            if (!active || active->training_status != jocelin::model::ModelTrainingStatus::Running) {
+                chart_->reset(model_browser_->current_model());
+            }
+        }
     };
     model_browser_->checked_model_changed = [this](const QString& id) {
         if (!rebuilding_ && service_) service_->select_inference_model(id);
@@ -664,7 +740,11 @@ void TrainingWorkspace::update_training_content_height() {
 
 void TrainingWorkspace::set_service(TaskWorkspaceService* service) {
     service_ = service;
-    refresh();
+    if (service_) {
+        refresh();
+    } else {
+        chart_->reset();
+    }
 }
 
 void TrainingWorkspace::set_models(
@@ -702,16 +782,15 @@ void TrainingWorkspace::populate_models() {
                 task_models.push_back(model);
     }
     model_browser_->set_models(task_models);
+    const jocelin::model::ModelEntry* active = controlled_model();
+    if (!active || active->training_status != jocelin::model::ModelTrainingStatus::Running) {
+        chart_->reset(model_browser_->current_model());
+    }
     update_model_compatibility();
 }
 
 const jocelin::model::ModelEntry* TrainingWorkspace::controlled_model() const {
-    if (!service_) return nullptr;
-    const std::string& id = service_->task().runtime.training_model_id;
-    const auto found = std::find_if(
-        models_.begin(), models_.end(),
-        [&id](const jocelin::model::ModelEntry& model) { return model.id == id; });
-    return found == models_.end() ? nullptr : &*found;
+    return service_ ? service_->find_model(QString::fromStdString(service_->task().runtime.training_model_id)) : nullptr;
 }
 
 QString TrainingWorkspace::training_source_mode() const {
@@ -972,9 +1051,15 @@ void TrainingWorkspace::set_busy(bool busy) {
 }
 
 void TrainingWorkspace::begin() {
-    chart_->reset();
-    progress_->setValue(0);
-    epoch_->setText(tr("Epoch 0 / %1").arg(epochs_->value()));
+    const jocelin::model::ModelEntry* model = controlled_model();
+    if (model) {
+        set_models(service_->models());
+        model_browser_->set_current_model_id(QString::fromStdString(model->id));
+    }
+    chart_->reset(model);
+    const int completed_epochs = model ? model->completed_epochs : 0;
+    progress_->setValue(qBound(0, completed_epochs * 100 / epochs_->value(), 100));
+    epoch_->setText(tr("Epoch %1 / %2").arg(completed_epochs).arg(epochs_->value()));
     loss_->setText(tr("Loss —"));
     metric_->setText(tr("Metric —"));
     set_runtime_state(state_, QStringLiteral("running"));
@@ -989,10 +1074,7 @@ void TrainingWorkspace::update_progress(const jocelin::train::TrainingProgress& 
         .arg(value.validation_metric, 0, 'g', 5));
     progress_->setValue(value.total_epochs > 0
         ? qBound(0, value.completed_epochs * 100 / value.total_epochs, 100) : 0);
-    chart_->add_point(
-        value.loss,
-        value.validation_metric,
-        QString::fromStdString(value.validation_metric_name));
+    chart_->add_point(value);
 }
 
 void TrainingWorkspace::finish(

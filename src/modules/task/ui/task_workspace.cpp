@@ -18,7 +18,6 @@
 #include <QCursor>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -386,34 +385,29 @@ QWidget* TaskWorkspace::build_annotation_page() {
     };
     segmentation_->sample_split_requested = assign_sample_split;
     classification_->sample_split_requested = assign_sample_split;
-    classification_->class_assigned = [this](const QString& image, int class_index) {
+    classification_->class_assigned = [this](const std::vector<std::string>& sample_ids, int class_index) {
         if (!service_ || class_index < 0 ||
             class_index >= static_cast<int>(service_->binding().classes.size())) {
             return;
         }
-        const QString absolute = QFileInfo(image).absoluteFilePath();
-        for (const auto& sample : service_->binding().samples) {
-            const bool matches = std::any_of(
-                sample.image_paths.begin(), sample.image_paths.end(),
-                [&absolute](const std::string& path) {
-                    return QFileInfo(QString::fromStdString(path)).absoluteFilePath() == absolute;
-                });
-            if (!matches) continue;
-            service_->set_class_for_sample(sample.sample_id,
-                service_->binding().classes[static_cast<size_t>(class_index)].id);
-            domain_changed();
-            break;
+        const std::string class_id = service_->binding().classes[static_cast<size_t>(class_index)].id;
+        for (const std::string& sample_id : sample_ids) {
+            service_->set_class_for_sample(sample_id, class_id);
         }
+        domain_changed();
     };
-    classification_->class_add_requested = [this](const QString& name) {
-        if (!service_) return;
+    classification_->class_add_requested = [this](const QString& name) -> std::vector<AnnotationClass> {
+        if (!service_) {
+            return {};
+        }
         try {
             service_->add_class(name.toStdString());
-            refresh_annotation();
             domain_changed();
+            return service_->binding().classes;
         } catch (const std::exception& error) {
             QMessageBox::warning(this, tr("Cannot add class"),
                                  QString::fromUtf8(error.what()));
+            return {};
         }
     };
     return page;

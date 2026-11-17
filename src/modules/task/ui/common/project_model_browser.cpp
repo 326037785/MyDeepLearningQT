@@ -13,6 +13,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QToolButton>
@@ -39,7 +40,7 @@ ProjectModelBrowser::ProjectModelBrowser(QWidget* parent) : QWidget(parent) {
     details_->setObjectName("projectModelDetailsButton");
     details_->setCheckable(true);
     details_->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    IconProvider::configure(details_, "eye", tr("Show model details"), 18);
+    IconProvider::configure(details_, "eye", tr("Model details"), 18);
     header->addWidget(details_);
     root->addLayout(header);
 
@@ -97,9 +98,9 @@ ProjectModelBrowser::ProjectModelBrowser(QWidget* parent) : QWidget(parent) {
     detail_layout->setSpacing(6);
     model_name_ = new QLabel(tr("No model selected"), detail_);
     model_name_->setProperty("workspaceTitle", true);
-    model_name_->setWordWrap(true);
     model_name_->setMinimumWidth(0);
-    model_name_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    model_name_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    model_name_->setWordWrap(true);
     detail_layout->addWidget(model_name_);
 
     auto* fields = new QGridLayout;
@@ -115,7 +116,13 @@ ProjectModelBrowser::ProjectModelBrowser(QWidget* parent) : QWidget(parent) {
     add_field(fields, 7, tr("Weights"), weights_);
     fields->setColumnStretch(1, 1);
     detail_layout->addLayout(fields);
-    root->addWidget(detail_);
+    QScrollArea* detail_scroll = new QScrollArea(this);
+    detail_scroll->setObjectName("projectModelDetailScroll");
+    detail_scroll->setFrameShape(QFrame::NoFrame);
+    detail_scroll->setWidgetResizable(true);
+    detail_scroll->setWidget(detail_);
+    detail_scroll->hide();
+    root->addWidget(detail_scroll, 1);
 
     connect(select_all_, &QCheckBox::clicked, this, [this](bool checked) {
         if (branch_check_selection_) {
@@ -172,10 +179,7 @@ ProjectModelBrowser::ProjectModelBrowser(QWidget* parent) : QWidget(parent) {
             selection_changed(current_model_id());
         }
     });
-    connect(table_, &QTreeWidget::itemDoubleClicked, this,
-            [this](QTreeWidgetItem*, int) {
-        set_detail_visible(true);
-    });
+    connect(table_, &QTreeWidget::itemDoubleClicked, details_, &QToolButton::toggle);
     connect(table_, &QWidget::customContextMenuRequested, this,
             [this](const QPoint& position) {
         if (!management_actions_enabled_) {
@@ -205,7 +209,7 @@ ProjectModelBrowser::ProjectModelBrowser(QWidget* parent) : QWidget(parent) {
         delete_row_->setEnabled(deletable);
         management_menu_->exec(table_->viewport()->mapToGlobal(position));
     });
-    connect(details_, &QToolButton::toggled, detail_, &QWidget::setVisible);
+    connect(details_, &QToolButton::toggled, detail_scroll, &QWidget::setVisible);
     connect(import_, &QAction::triggered, this, [this] {
         if (import_requested) import_requested();
     });
@@ -486,9 +490,7 @@ void ProjectModelBrowser::set_management_actions_enabled(bool enabled) {
 }
 
 void ProjectModelBrowser::set_detail_visible(bool visible) {
-    const QSignalBlocker blocker(details_);
     details_->setChecked(visible);
-    detail_->setVisible(visible);
 }
 
 void ProjectModelBrowser::set_weight_selection_mode(bool enabled) {
@@ -705,13 +707,15 @@ void ProjectModelBrowser::set_weight_cell(
 }
 
 void ProjectModelBrowser::add_field(QGridLayout* layout, int row, const QString& name, QLabel*& value) {
-    auto* label = new QLabel(name, detail_);
+    QLabel* label = new QLabel(name, detail_);
     label->setProperty("meta", true);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     value = new QLabel(QStringLiteral("—"), detail_);
     value->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    value->setWordWrap(true);
     value->setMinimumWidth(0);
-    value->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    value->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    value->setWordWrap(true);
+    value->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     layout->addWidget(label, row, 0);
     layout->addWidget(value, row, 1);
 }

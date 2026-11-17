@@ -44,13 +44,12 @@ public:
 
         connect(this, &QListWidget::customContextMenuRequested, this,
                 [this](const QPoint& position) {
-            auto* clicked = itemAt(position);
-            if (!clicked) return;
-            if (!clicked->isSelected()) {
-                clearSelection();
-                clicked->setSelected(true);
+            QListWidgetItem* clicked = itemAt(position);
+            if (!clicked) {
+                return;
             }
-            setCurrentItem(clicked);
+            setCurrentItem(clicked, clicked->isSelected()
+                ? QItemSelectionModel::NoUpdate : QItemSelectionModel::ClearAndSelect);
 
             const auto ids = selected_sample_ids();
             if (ids.empty()) return;

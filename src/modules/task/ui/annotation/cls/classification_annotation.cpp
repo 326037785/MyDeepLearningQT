@@ -4,6 +4,7 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QCheckBox>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -13,10 +14,12 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSplitter>
+#include <QStyle>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -60,11 +63,16 @@ QIcon class_icon(int index, const std::vector<AnnotationClass>& classes) {
 
 } // namespace
 
-ClassificationCanvas::ClassificationCanvas(QWidget* parent) : QLabel(parent) {
+ClassificationCanvas::ClassificationCanvas(QWidget* parent, QLabel* overlay)
+    : QLabel(parent), overlay_(overlay) {
     setAlignment(Qt::AlignCenter);
     setProperty("imagePreview", true);
     setMinimumSize(480, 320);
     setText(tr("Select an image"));
+    if (overlay_) {
+        overlay_->setParent(this);
+        overlay_->hide();
+    }
 }
 
 void ClassificationCanvas::set_image(const QImage& image) {
@@ -87,6 +95,9 @@ void ClassificationCanvas::clear_canvas() {
     heatmap_ = {};
     clear();
     setText(tr("Select an image"));
+    if (overlay_) {
+        overlay_->hide();
+    }
 }
 
 void ClassificationCanvas::resizeEvent(QResizeEvent* event) {
@@ -95,16 +106,36 @@ void ClassificationCanvas::resizeEvent(QResizeEvent* event) {
 }
 
 void ClassificationCanvas::update_view() {
-    const QImage& shown = heatmap_visible_ && !heatmap_.isNull() ? heatmap_ : image_;
-    if (shown.isNull()) {
+    if (image_.isNull()) {
         setPixmap({});
-        if (text().isEmpty()) setText(tr("Select an image"));
+        if (overlay_) {
+            overlay_->hide();
+        }
+        if (text().isEmpty()) {
+            setText(tr("Select an image"));
+        }
         return;
     }
-    setText({});
     const QSize available = size() - QSize(24, 24);
-    setPixmap(QPixmap::fromImage(shown).scaled(
-        available, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    QPixmap frame = QPixmap::fromImage(image_).scaled(
+        available, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (!frame.isNull() && heatmap_visible_ && !heatmap_.isNull()) {
+        QPainter painter(&frame);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        painter.setOpacity(0.42);
+        painter.drawImage(frame.rect(), heatmap_);
+    }
+    setPixmap(frame);
+    if (overlay_) {
+        const QRect image_rect = QStyle::alignedRect(layoutDirection(), alignment(), frame.size(), contentsRect());
+        const QRect bounds = image_rect.adjusted(8, 8, -8, -8);
+        overlay_->setVisible(bounds.isValid() && !overlay_->text().isEmpty());
+        if (bounds.isValid()) {
+            const int width = std::min(bounds.width(), overlay_->sizeHint().width());
+            const int height = std::min(bounds.height(), overlay_->heightForWidth(width));
+            overlay_->setGeometry(bounds.right() - width + 1, bounds.top(), width, height);
+        }
+    }
 }
 
 ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, QTabWidget* inspector) : QWidget(parent) {
@@ -141,6 +172,10 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     context_layout->addWidget(toggle_images);
     context_layout->addWidget(toggle_classes);
     context_layout->addWidget(context_, 1);
+    heatmap_layer_ = new QCheckBox(tr("Heatmap"), context_bar);
+    heatmap_layer_->setObjectName("classificationHeatmapLayerCheck");
+    heatmap_layer_->setEnabled(false);
+    context_layout->addWidget(heatmap_layer_);
     root->addWidget(context_bar);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
@@ -178,47 +213,30 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     auto* review_layout = new QHBoxLayout(review_bar);
     review_layout->setContentsMargins(10, 5, 10, 5);
     review_layout->setSpacing(8);
-    auto* review_caption = new QLabel(tr("SHOW"), review_bar);
-    review_caption->setProperty("eyebrow", true);
-    ground_truth_ = new QPushButton(tr("Ground truth"), review_bar);
-    ground_truth_->setObjectName("classificationGroundTruthButton");
-    prediction_ = new QPushButton(tr("Prediction"), review_bar);
-    prediction_->setObjectName("classificationPredictionButton");
-    heatmap_ = new QPushButton(tr("Heatmap"), review_bar);
-    heatmap_->setObjectName("classificationHeatmapButton");
-    for (auto* button : {ground_truth_, prediction_, heatmap_}) {
-        button->setCheckable(true);
-        button->setProperty("compact", true);
-    }
-    ground_truth_->setChecked(true);
-    prediction_->setEnabled(false);
-    heatmap_->setEnabled(false);
-    review_state_ = new QLabel(tr("Ground truth: unassigned"), review_bar);
+    review_state_ = new QLabel(tr("Confidence: —"), review_bar);
     review_state_->setObjectName("classificationReviewState");
     review_state_->setProperty("meta", true);
-    review_state_->setTextFormat(Qt::RichText);
-    review_state_->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
-    connect(review_state_, &QLabel::linkActivated, this, [this](const QString& link) {
-        if (link != "prediction" || view_mode_ == 0 || result_items_.isEmpty()) {
+    review_layout->addStretch();
+    review_layout->addWidget(review_state_);
+    preview_layout->addWidget(review_bar);
+
+    image_labels_ = new QLabel(preview_panel);
+    image_labels_->setObjectName("classificationImageLabels");
+    image_labels_->setTextFormat(Qt::RichText);
+    image_labels_->setWordWrap(true);
+    image_labels_->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    connect(image_labels_, &QLabel::linkActivated, this, [this](const QString& link) {
+        if (link != "prediction" || result_items_.isEmpty()) {
             return;
         }
         if (result_popup_) {
             result_popup_->close();
         }
         result_popup_ = show_result_properties(
-            review_state_, review_state_->mapToGlobal(review_state_->rect().bottomLeft()), result_items_.front());
+            image_labels_, image_labels_->mapToGlobal(image_labels_->rect().bottomLeft()), result_items_.front());
     });
-    review_layout->addWidget(review_caption);
-    review_layout->addWidget(ground_truth_);
-    review_layout->addWidget(prediction_);
-    review_layout->addWidget(heatmap_);
-    review_layout->addStretch();
-    review_layout->addWidget(review_state_);
-    preview_layout->addWidget(review_bar);
-
-    preview_ = new ClassificationCanvas(preview_panel);
+    preview_ = new ClassificationCanvas(preview_panel, image_labels_);
     preview_->setObjectName("classificationPreview");
-    preview_->setContextMenuPolicy(Qt::CustomContextMenu);
     preview_->setToolTip(tr("Right-click to assign a class to the current image."));
     preview_layout->addWidget(preview_, 1);
 
@@ -229,7 +247,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     classes_layout->setContentsMargins(10, 10, 10, 10);
     auto* classes_title = new QLabel(tr("CLASSES"), classes_panel);
     classes_title->setProperty("eyebrow", true);
-    auto* classes_hint = new QLabel(tr("Choose a class, then assign it to the selected image."), classes_panel);
+    auto* classes_hint = new QLabel(tr("Choose a class, then assign it to the selected images."), classes_panel);
     classes_hint->setProperty("meta", true);
     classes_hint->setWordWrap(true);
     empty_hint_ = new QLabel(tr("No classes yet. Add the first class or right-click an image."), classes_panel);
@@ -240,7 +258,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     classes_->setIconSize(QSize(14, 14));
     auto* add_class = new QPushButton(tr("Add class..."), classes_panel);
     add_class->setObjectName("classificationAddClassButton");
-    assign_ = new QPushButton(tr("Assign to selected image"), classes_panel);
+    assign_ = new QPushButton(tr("Assign to selected images"), classes_panel);
     assign_->setObjectName("classificationAssignClassButton");
     assign_->setProperty("primary", true);
     classes_layout->addWidget(classes_title);
@@ -287,26 +305,31 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
 
     connect(images_, &QListWidget::currentRowChanged, this, [this](int row) { load_row(row); });
     connect(images_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& position) {
-        if (auto* item = images_->itemAt(position)) {
-            if (!item->isSelected()) {
-                images_->clearSelection();
-                item->setSelected(true);
-            }
-            images_->setCurrentItem(item);
+        if (QListWidgetItem* item = images_->itemAt(position)) {
+            images_->setCurrentItem(item, item->isSelected()
+                ? QItemSelectionModel::NoUpdate : QItemSelectionModel::ClearAndSelect);
         }
         show_class_menu(images_->viewport()->mapToGlobal(position));
     });
-    connect(preview_, &QLabel::customContextMenuRequested, this, [this](const QPoint& position) {
-        show_class_menu(preview_->mapToGlobal(position));
-    });
-    connect(ground_truth_, &QPushButton::clicked, this, [this] { set_view_mode(0); });
-    connect(prediction_, &QPushButton::clicked, this, [this] { set_view_mode(1); });
-    connect(heatmap_, &QPushButton::clicked, this, [this] { set_view_mode(2); });
+    for (QLabel* surface : {static_cast<QLabel*>(preview_), image_labels_}) {
+        surface->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(surface, &QLabel::customContextMenuRequested, this, [this, surface](const QPoint& position) {
+            show_class_menu(surface->mapToGlobal(position));
+        });
+    }
+    connect(heatmap_layer_, &QCheckBox::toggled, preview_, &ClassificationCanvas::set_heatmap_visible);
     connect(add_class, &QPushButton::clicked, this, [this] { prompt_for_class(); });
     connect(assign_, &QPushButton::clicked, this, [this] {
+        if (images_->selectedItems().isEmpty()) {
+            return;
+        }
         int selected = classes_->currentRow();
-        if (selected < 0) selected = prompt_for_class() - 1;
-        if (selected >= 0) assign_current(selected);
+        if (selected < 0) {
+            selected = prompt_for_class() - 1;
+        }
+        if (selected >= 0) {
+            assign_selected(selected);
+        }
     });
 }
 
@@ -323,9 +346,7 @@ void ClassificationAnnotationWidget::refresh_inference_result() {
         result_popup_->close();
     }
     result_items_.clear();
-    predicted_class_ = -1;
     confidence_ = 0.0;
-    has_prediction_ = false;
     current_heatmap_ = {};
 
     if (current_row_ >= 0 && current_row_ < image_paths_.size()) {
@@ -333,21 +354,16 @@ void ClassificationAnnotationWidget::refresh_inference_result() {
             const auto* value = std::get_if<jocelin::result::cls::ClsResult>(&reference.result);
             if (!value || reference.source_sample_id != sample_bindings_[static_cast<size_t>(current_row_)].sample_id ||
                 QFileInfo(QString::fromStdString(value->image_path)).absoluteFilePath() != image_paths_[current_row_]) continue;
-            predicted_class_ = value->predicted_class;
             confidence_ = value->confidence;
-            has_prediction_ = true;
             result_items_ = present_result(*value, prediction_class_names_);
             current_heatmap_ = QImage(QString::fromStdString(value->heatmap_path));
             break;
         }
     }
 
-    prediction_->setEnabled(has_prediction_);
-    heatmap_->setEnabled(!current_heatmap_.isNull());
-    if ((view_mode_ == 1 && !has_prediction_) ||
-        (view_mode_ == 2 && current_heatmap_.isNull()))
-        view_mode_ = 0;
-    set_view_mode(view_mode_);
+    heatmap_layer_->setEnabled(!current_heatmap_.isNull());
+    update_review_state();
+    update_preview();
 }
 
 void ClassificationAnnotationWidget::set_dataset(
@@ -376,14 +392,15 @@ void ClassificationAnnotationWidget::set_dataset(
     current_row_ = -1;
     current_image_ = {};
     rebuild_classes();
-    rebuild_images();
+    images_->clear();
+    refresh_images();
     if (!image_paths_.isEmpty()) images_->setCurrentRow(0);
     else {
         current_row_ = -1;
         current_image_ = {};
         context_->setText(tr("No valid imported images are connected"));
         context_->setToolTip({});
-        preview_->clear_canvas();
+        refresh_inference_result();
         preview_->setText(tr("Import images in the connected Dataset node"));
     }
 }
@@ -401,13 +418,12 @@ void ClassificationAnnotationWidget::load_row(int row) {
     const int label = class_labels_.value(row, -1);
     const QString class_state = label >= 0 && label < class_names_.size()
         ? tr("Class: %1").arg(class_names_[label]) : tr("Unassigned");
-    context_->setText(tr("%1 / %2  |  %3  |  %4 × %5  |  %6")
+    context_->setText(tr("%1 / %2  |  %3  |  %4 × %5")
         .arg(row + 1)
         .arg(image_paths_.size())
         .arg(display_names_.value(row))
         .arg(dimensions.width())
-        .arg(dimensions.height())
-        .arg(class_state));
+        .arg(dimensions.height()));
     if (row < static_cast<int>(sample_bindings_.size()))
         context_->setToolTip(sample_image_tooltip(
             display_names_.value(row),
@@ -428,21 +444,6 @@ void ClassificationAnnotationWidget::update_preview() {
     }
     preview_->set_image(current_image_);
     preview_->set_heatmap(current_heatmap_);
-    preview_->set_heatmap_visible(view_mode_ == 2);
-}
-
-void ClassificationAnnotationWidget::set_view_mode(int mode) {
-    if (mode == 1 && !has_prediction_) mode = 0;
-    if (mode == 2 && current_heatmap_.isNull()) mode = 0;
-    if (mode != view_mode_ && result_popup_) {
-        result_popup_->close();
-    }
-    view_mode_ = mode;
-    ground_truth_->setChecked(mode == 0);
-    prediction_->setChecked(mode == 1);
-    heatmap_->setChecked(mode == 2);
-    update_review_state();
-    update_preview();
 }
 
 void ClassificationAnnotationWidget::update_review_state() {
@@ -450,36 +451,26 @@ void ClassificationAnnotationWidget::update_review_state() {
         return;
     }
     const int label = class_labels_.value(current_row_, -1);
-    const QString ground_truth = label >= 0 && label < class_names_.size()
+    const QString ground_truth_name = label >= 0 && label < class_names_.size()
         ? class_names_[label] : tr("Unassigned");
-    const QString prediction = result_items_.isEmpty() ? tr("Unavailable") : result_items_.front().text;
-    const QString prediction_link = QStringLiteral("<a href=\"prediction\">%1</a>")
+    const QString ground_truth = tr("Ground truth: %1").arg(ground_truth_name.toHtmlEscaped());
+    if (result_items_.isEmpty()) {
+        image_labels_->setText(ground_truth);
+        review_state_->setText(tr("Confidence: —"));
+        result_details_->setText(tr("No inference result for this image."));
+        return;
+    }
+
+    const QString prediction = result_items_.front().text;
+    const QString confidence = QString::number(confidence_ * 100.0, 'f', 1);
+    const QString prediction_link = QStringLiteral("<a href=\"prediction\" style=\"color:#ACE2DD\">%1</a>")
         .arg(prediction.toHtmlEscaped());
-
-    if (result_details_) {
-        result_details_->setText(has_prediction_
-            ? tr("Prediction: %1\nConfidence: %2%")
-                  .arg(predicted_class_ == -1 ? tr("Unknown") : prediction)
-                  .arg(confidence_ * 100.0, 0, 'f', 1)
-            : tr("No inference result for this image."));
-    }
-
-    if (view_mode_ == 0) {
-        review_state_->setText(tr("Ground truth: %1").arg(ground_truth.toHtmlEscaped()));
-    } else if (view_mode_ == 1) {
-        review_state_->setText(tr("Prediction: %1 · Confidence: %2% · Ground truth: %3")
-            .arg(prediction_link)
-            .arg(confidence_ * 100.0, 0, 'f', 1)
-            .arg(ground_truth.toHtmlEscaped()));
-    } else {
-        review_state_->setText(tr("Heatmap · Prediction: %1 · Confidence: %2%")
-            .arg(prediction_link)
-            .arg(confidence_ * 100.0, 0, 'f', 1));
-    }
+    result_details_->setText(tr("Prediction: %1\nConfidence: %2%").arg(prediction, confidence));
+    image_labels_->setText(tr("Prediction: %1").arg(prediction_link) + QStringLiteral("<br/>") + ground_truth);
+    review_state_->setText(tr("Confidence: %1%").arg(confidence));
 }
 
-void ClassificationAnnotationWidget::rebuild_images() {
-    images_->clear();
+void ClassificationAnnotationWidget::refresh_images() {
     int assigned = 0;
     for (int row = 0; row < image_paths_.size(); ++row) {
         const int label = class_labels_.value(row, -1);
@@ -488,22 +479,27 @@ void ClassificationAnnotationWidget::rebuild_images() {
         const QString state = valid_label
             ? tr("Class: %1").arg(class_names_[label])
             : tr("Unassigned - right-click to set class");
-        auto* item = new QListWidgetItem(
-            display_names_.value(row) + "\n" + state,
-            images_);
-        item->setData(Qt::UserRole, image_paths_[row]);
+        QListWidgetItem* item = images_->item(row);
+        if (!item) {
+            item = new QListWidgetItem(images_);
+            item->setData(Qt::UserRole, image_paths_[row]);
+            item->setSizeHint(QSize(0, 58));
+            QImageReader reader(image_paths_[row]);
+            reader.setAutoTransform(true);
+            reader.setScaledSize(QSize(96, 72));
+            const QImage thumbnail = reader.read();
+            if (!thumbnail.isNull()) {
+                item->setIcon(QPixmap::fromImage(thumbnail));
+            }
+        }
+        item->setText(display_names_.value(row) + "\n" + state);
         item->setData(Qt::UserRole + 1, label);
-        item->setSizeHint(QSize(0, 58));
-        QImageReader reader(image_paths_[row]);
-        reader.setAutoTransform(true);
-        reader.setScaledSize(QSize(96, 72));
-        const QImage thumbnail = reader.read();
-        if (!thumbnail.isNull()) item->setIcon(QPixmap::fromImage(thumbnail));
-        if (row < static_cast<int>(sample_bindings_.size()))
+        if (row < static_cast<int>(sample_bindings_.size())) {
             item->setToolTip(sample_image_tooltip(
                 display_names_.value(row),
                 sample_bindings_[static_cast<size_t>(row)],
                 state));
+        }
     }
     images_title_->setText(tr("IMAGES  (%1 assigned / %2)").arg(assigned).arg(image_paths_.size()));
 }
@@ -589,44 +585,42 @@ int ClassificationAnnotationWidget::add_or_select_class(const QString& requested
     };
     int index = find_name();
     if (index < 0) {
-        if (!class_add_requested) return 0;
-        class_add_requested(name);
-        index = find_name();
-        if (index < 0) return 0;
+        if (!class_add_requested) {
+            return 0;
+        }
+        std::vector<AnnotationClass> classes = class_add_requested(name);
+        if (classes.empty()) {
+            return 0;
+        }
+        index = class_names_.size();
+        class_names_.push_back(QString::fromStdString(classes.back().name));
+        class_metadata_ = std::move(classes);
+        rebuild_classes();
     }
     classes_->setCurrentRow(index);
     return index + 1;
 }
 
-void ClassificationAnnotationWidget::assign_current(int class_index) {
-    if (current_row_ < 0 || current_row_ >= image_paths_.size() ||
-        class_index < 0 || class_index >= class_names_.size()) return;
-    class_labels_[current_row_] = class_index;
-    if (class_assigned) class_assigned(image_paths_[current_row_], class_index);
-    rebuild_images();
-    images_->setCurrentRow(current_row_);
-    classes_->setCurrentRow(class_index);
-    load_row(current_row_);
-}
-
 void ClassificationAnnotationWidget::assign_selected(int class_index) {
-    if (class_index < 0 || class_index >= class_names_.size()) return;
-    const auto selected = images_->selectedItems();
-    if (selected.size() <= 1) {
-        assign_current(class_index);
+    if (class_index < 0 || class_index >= class_names_.size()) {
         return;
     }
-    const int current = current_row_;
-    for (auto* item : selected) {
-        const int row = images_->row(item);
-        if (row < 0 || row >= image_paths_.size()) continue;
-        class_labels_[row] = class_index;
-        if (class_assigned) class_assigned(image_paths_[row], class_index);
+    const QList<QListWidgetItem*> selected = images_->selectedItems();
+    if (selected.isEmpty()) {
+        return;
     }
-    rebuild_images();
-    if (current >= 0 && current < images_->count()) images_->setCurrentRow(current);
-    classes_->setCurrentRow(class_index);
-    load_row(current);
+    std::vector<std::string> sample_ids;
+    sample_ids.reserve(static_cast<size_t>(selected.size()));
+    for (QListWidgetItem* item : selected) {
+        const int row = images_->row(item);
+        class_labels_[row] = class_index;
+        sample_ids.push_back(sample_bindings_[static_cast<size_t>(row)].sample_id);
+    }
+    refresh_images();
+    load_row(current_row_);
+    if (class_assigned) {
+        class_assigned(sample_ids, class_index);
+    }
 }
 
 } // namespace studio

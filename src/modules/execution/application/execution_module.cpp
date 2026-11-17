@@ -163,12 +163,12 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
     QString error = job_error;
     auto* model = TaskWorkspaceService(graph(), active_training_node_id_).find_model(active_training_model_id_);
     if (model) {
-        model->completed_epochs = result.completed_epochs;
-        model->best_epoch = result.best_epoch;
-        model->metric_name = result.metric_name;
-        model->metric = result.best_metric;
-        if (!result.model_directory.empty())
-            model->asset_directory = result.model_directory;
+        if (job_error.isEmpty()) {
+            model->completed_epochs = result.completed_epochs;
+            model->best_epoch = result.best_epoch;
+            model->metric_name = result.metric_name;
+            model->metric = result.best_metric;
+        }
 
         const bool paused = error.isEmpty() &&
             result.end_state == jocelin::training::TrainingEndState::Paused;
@@ -623,9 +623,9 @@ void ExecutionModule::start_training(
                 .arg(QString::fromStdString(task.model_scale))
                 .arg(task.model_index)
                 .arg(run_id);
-        const QString run_directory =
-            QDir(QString::fromStdString(task.training.output_directory))
-                .filePath(run_directory_name);
+        const QString run_parent = QString::fromStdString(resume_model
+            ? resume_model->asset_directory : task.training.output_directory);
+        const QString run_directory = QDir(run_parent).filePath(run_directory_name);
         if (!QDir().mkpath(run_directory))
             throw std::runtime_error(
                 "cannot create the training run directory");
@@ -652,6 +652,10 @@ void ExecutionModule::start_training(
             throw std::runtime_error(
                 "paused checkpoint class schema does not match the current task");
         request.config.model_save_dir = run_directory.toStdString();
+        if (resume_model) {
+            request.history_path = QDir(run_parent)
+                .filePath(QString::fromLatin1(jocelin::training::training_history_filename)).toStdString();
+        }
         const QString parent_model_id = parent
             ? QString::fromStdString(parent->id)
             : QString{};

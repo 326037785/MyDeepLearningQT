@@ -12,6 +12,7 @@
 
 #include <functional>
 
+class QCheckBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -22,7 +23,7 @@ namespace studio {
 
 class ClassificationCanvas final : public QLabel {
 public:
-    explicit ClassificationCanvas(QWidget* parent = nullptr);
+    explicit ClassificationCanvas(QWidget* parent = nullptr, QLabel* overlay = nullptr);
     void set_image(const QImage& image);
     void set_heatmap(const QImage& image);
     void set_heatmap_visible(bool visible);
@@ -33,6 +34,7 @@ protected:
 
 private:
     void update_view();
+    QLabel* overlay_ = nullptr;
     QImage image_;
     QImage heatmap_;
     bool heatmap_visible_ = false;
@@ -49,8 +51,8 @@ public:
     void set_inference_result(const InferenceResultSet* result, const QStringList& model_classes = {});
     void refresh_inference_result();
 
-    std::function<void(const QString&)> class_add_requested;
-    std::function<void(const QString&, int)> class_assigned;
+    std::function<std::vector<AnnotationClass>(const QString&)> class_add_requested;
+    std::function<void(const std::vector<std::string>&, int)> class_assigned;
     std::function<void(const std::vector<std::string>&, const std::string&)>
         sample_split_requested;
 
@@ -60,14 +62,12 @@ protected:
 private:
     void load_row(int row);
     void update_preview();
-    void rebuild_images();
+    void refresh_images();
     void rebuild_classes();
-    void set_view_mode(int mode);
     void update_review_state();
     void show_class_menu(const QPoint& global_position);
     int prompt_for_class();
     int add_or_select_class(const QString& name);
-    void assign_current(int class_index);
     void assign_selected(int class_index);
 
     std::vector<TaskSampleBinding> sample_bindings_;
@@ -81,24 +81,20 @@ private:
     QPointer<QMenu> result_popup_;
     QStringList prediction_class_names_;
     int current_row_ = -1;
-    int view_mode_ = 0;
-    int predicted_class_ = -1;
     double confidence_ = 0.0;
-    bool has_prediction_ = false;
     QImage current_image_;
     QImage current_heatmap_;
     QListWidget* images_ = nullptr;
     QListWidget* classes_ = nullptr;
     QLabel* context_ = nullptr;
     ClassificationCanvas* preview_ = nullptr;
+    QLabel* image_labels_ = nullptr;
     QLabel* review_state_ = nullptr;
     QLabel* result_details_ = nullptr;
     QLabel* images_title_ = nullptr;
     QLabel* empty_hint_ = nullptr;
     QPushButton* assign_ = nullptr;
-    QPushButton* ground_truth_ = nullptr;
-    QPushButton* prediction_ = nullptr;
-    QPushButton* heatmap_ = nullptr;
+    QCheckBox* heatmap_layer_ = nullptr;
 };
 
 } // namespace studio

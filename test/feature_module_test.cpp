@@ -32,17 +32,21 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QWidget>
 #include <iostream>
 #include <stdexcept>
 #include <ATen/Parallel.h>
+#include <training/training_service.h>
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -291,6 +295,26 @@ int main(int argc, char** argv) try {
         training.set_models({source});
         require(!list->topLevelItem(0)->flags().testFlag(Qt::ItemIsUserCheckable),
                 "stopped model without weights became a training source");
+
+        QFile history(QDir(model_directory).filePath(jocelin::training::training_history_filename));
+        require(history.open(QIODevice::WriteOnly), "cannot write training history fixture");
+        const QByteArray csv = QByteArray(jocelin::training::training_history_header) +
+            "\n1,1.2,1.4,Mean IoU,0.4,0.3\n3,0.7,0.8,Mean IoU,0.8,0.7\n";
+        require(history.write(csv) == csv.size(), "cannot write training history rows");
+        history.close();
+        studio::ProjectModel without_history = source;
+        without_history.id = "without_training_history";
+        without_history.asset_directory = temporary.filePath("without-training-history").toStdString();
+        training.set_models({source, without_history});
+        QWidget* chart = training.findChild<QWidget*>("embeddedLossChart");
+        require(chart && list->topLevelItemCount() == 2, "training history chart or model rows are missing");
+        list->setCurrentItem(list->topLevelItem(1));
+        const QImage empty_chart = chart->grab().toImage();
+        list->setCurrentItem(list->topLevelItem(0));
+        require(!empty_chart.isNull() && chart->grab().toImage() != empty_chart,
+                "selecting a saved model did not render training history");
+        list->setCurrentItem(list->topLevelItem(1));
+        require(chart->grab().toImage() == empty_chart, "model selection retained a different model's history");
     }
     // Explicit Select all includes hidden branches and empty model rows;
     // checking every displayed branch individually must keep branch-only scope.
@@ -308,6 +332,36 @@ int main(int argc, char** argv) try {
         browser.show();
         QApplication::processEvents();
         QTreeWidget* list = browser.findChild<QTreeWidget*>("projectModelBrowserList");
+        QToolButton* detail_button = browser.findChild<QToolButton*>("projectModelDetailsButton");
+        QScrollArea* detail_scroll = browser.findChild<QScrollArea*>("projectModelDetailScroll");
+        require(list && detail_button && detail_scroll && detail_scroll->isHidden(),
+                "model details did not start collapsed");
+        browser.resize(420, 210);
+        detail_button->click();
+        QApplication::processEvents();
+        QScrollBar* detail_bar = detail_scroll->verticalScrollBar();
+        require(detail_button->isChecked() && detail_scroll->isVisible() && detail_bar->maximum() > 0,
+                "model details did not open with vertical scrolling in a short pane");
+        const QList<QLabel*> detail_fields = detail_scroll->widget()->findChildren<QLabel*>();
+        require(!detail_fields.isEmpty(), "model details did not contain fields");
+        for (QLabel* field : detail_fields) {
+            const int required_height = field->hasHeightForWidth()
+                ? field->heightForWidth(field->width()) : field->minimumSizeHint().height();
+            require(field->height() >= required_height, "model details clipped a field");
+        }
+        detail_bar->setValue(detail_bar->maximum());
+        QLabel* last_field = detail_fields.back();
+        const QPoint last_field_bottom = last_field->mapTo(detail_scroll->viewport(), last_field->rect().bottomLeft());
+        require(detail_scroll->viewport()->rect().contains(last_field_bottom),
+                "the last model detail could not be reached by scrolling");
+        detail_button->click();
+        require(!detail_button->isChecked() && detail_scroll->isHidden(), "eye button did not close model details");
+        list->itemDoubleClicked(list->topLevelItem(0), 0);
+        require(detail_button->isChecked() && detail_scroll->isVisible(), "double-click did not open model details");
+        list->itemDoubleClicked(list->topLevelItem(0), 0);
+        require(!detail_button->isChecked() && detail_scroll->isHidden(), "double-click did not close model details");
+        browser.resize(800, 400);
+        QApplication::processEvents();
         QAction* remove_row = browser.findChild<QAction*>("projectModelDeleteRowAction");
         QAction* menu_action = remove_row;
         QStringList removed_rows;
