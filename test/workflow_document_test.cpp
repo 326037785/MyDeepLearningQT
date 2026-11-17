@@ -1,5 +1,5 @@
-#include "workflow_document.h"
-#include "project_storage.h"
+#include "modules/workflow/storage/workflow_document.h"
+#include "modules/project/storage/project_storage.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QTemporaryDir>

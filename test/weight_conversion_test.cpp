@@ -1,12 +1,12 @@
-#include "execution_module.h"
-#include "model_actions.h"
-#include "model_weight_assets.h"
-#include "node_workspace.h"
-#include "project_manager.h"
-#include "project_storage.h"
-#include "task_workspace_service.h"
-#include "ui_theme.h"
-#include "weight_conversion_popup.h"
+#include "modules/execution/application/execution_module.h"
+#include "modules/model_management/application/model_actions.h"
+#include "modules/task/integration/storage/model_weight_assets.h"
+#include "modules/workflow/ui/node_workspace.h"
+#include "modules/project/application/project_manager.h"
+#include "modules/project/storage/project_storage.h"
+#include "modules/task/application/task_workspace_service.h"
+#include "common/ui/ui_theme.h"
+#include "modules/model_management/ui/weight_conversion_popup.h"
 
 #include <checkpoint/checkpoint_catalog.h>
 #include <classification/cls_model_factory.h>

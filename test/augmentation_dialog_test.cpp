@@ -1,4 +1,4 @@
-#include "augmentation_dialog.h"
+#include "modules/task/ui/pages/augmentation_dialog.h"
 
 #include <QApplication>
 #include <QDialogButtonBox>

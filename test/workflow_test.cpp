@@ -1,5 +1,5 @@
-#include "task_dataset_binding.h"
-#include "workflow.h"
+#include "modules/task/application/task_dataset_binding.h"
+#include "modules/workflow/model/workflow.h"
 
 #include <filesystem>
 #include <fstream>

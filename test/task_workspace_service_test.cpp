@@ -1,9 +1,9 @@
-#include "task_workspace_service.h"
+#include "modules/task/application/task_workspace_service.h"
 
-#include "task_dataset_binding.h"
-#include "workflow_document.h"
-#include "segmentation_annotation_state.h"
-#include "project_storage.h"
+#include "modules/task/application/task_dataset_binding.h"
+#include "modules/workflow/storage/workflow_document.h"
+#include "modules/task/application/annotation/segmentation_annotation_state.h"
+#include "modules/project/storage/project_storage.h"
 
 #include <QCoreApplication>
 #include <QDir>

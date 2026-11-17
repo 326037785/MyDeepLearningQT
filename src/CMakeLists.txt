@@ -1,7 +1,7 @@
-file(GLOB STUDIO_INTERNAL_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE STUDIO_INTERNAL_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
-list(REMOVE_ITEM STUDIO_INTERNAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp")
+list(REMOVE_ITEM STUDIO_INTERNAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/app/main.cpp")
 
 add_library(DeepLearningStudioLib STATIC ${STUDIO_INTERNAL_SOURCES})
 target_include_directories(DeepLearningStudioLib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -14,7 +14,7 @@ target_compile_definitions(DeepLearningStudioLib PUBLIC QT_NO_KEYWORDS NOMINMAX)
 
 add_executable(DeepLearningStudio WIN32
     "${CMAKE_SOURCE_DIR}/resources/studio.qrc"
-    main.cpp)
+    app/main.cpp)
 if(WIN32)
     target_sources(DeepLearningStudio PRIVATE "${CMAKE_SOURCE_DIR}/resources/studio.rc")
 endif()

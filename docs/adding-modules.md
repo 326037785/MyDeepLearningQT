@@ -8,26 +8,26 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 
 | Module | Responsibility |
 | --- | --- |
-| src/workflow.h | Workflow domain data, TaskNode configuration, Core ModelList and typed result associations |
-| src/task_module_catalog.h | Task ids and module availability |
-| src/model_spec_catalog.h | Model specifications offered by Qt |
-| src/workflow.cpp | Graph topology, connection validation and Node lifecycle in memory |
-| src/task_dataset_binding.cpp | Raw sample grouping, rebind comparison and binding synchronization |
-| src/task_workspace_service.cpp | Task operations, Core request construction, quality checks and result association |
-| src/workflow_document.cpp | Exact Workflow schema, binding fields, typed results and Node asset references |
-| src/model_list_storage.cpp | Node ModelList serialization |
-| src/project_manager.cpp | Project save/open, resource paths and persistence coordination |
-| src/annotation_codec.* and src/annotation_exchange.* | External annotation decoding, mapping and export |
-| Annotation widgets and src/task_workspace_pages.cpp | Editing, display and operation requests |
-| src/resource_monitor.cpp | Read-only system resource display shared by Training and Inference |
-| src/task_workspace.cpp | Task page composition and shared result selection |
-| src/main_window.cpp | Application shell: feature composition, page/Dock mounting, window layout and status presentation |
-| src/project_module.cpp | Project commands, home page and metadata panel, using ProjectManager |
-| src/workflow_module.cpp | Workflow canvas/tabs, node library, properties and Dataset-change confirmation |
-| src/model_actions.cpp | Named model import/export/delete/clear interactions for the owning TaskNode |
-| src/execution_module.cpp | Existing training/inference Jobs, launch requests and progress/completion handling |
-| src/settings_module.cpp | Preferences and language commands |
-| src/activity_log.cpp | UTF-8 session log files, menu action and a separate log viewer |
+| src/modules/workflow/model/workflow.h | Workflow domain data, TaskNode configuration, Core ModelList and typed result associations |
+| src/modules/task/application/catalog/task_module_catalog.h | Task ids and module availability |
+| src/modules/task/application/catalog/model_spec_catalog.h | Model specifications offered by Qt |
+| src/modules/workflow/model/workflow.cpp | Graph topology, connection validation and Node lifecycle in memory |
+| src/modules/task/application/task_dataset_binding.cpp | Raw sample grouping, rebind comparison and binding synchronization |
+| src/modules/task/application/task_workspace_service.cpp | Task operations, Core request construction, quality checks and result association |
+| src/modules/workflow/storage/workflow_document.cpp | Exact Workflow schema, binding fields, typed results and Node asset references |
+| src/modules/task/integration/storage/model_list_storage.cpp | Node ModelList serialization |
+| src/modules/project/application/project_manager.cpp | Project save/open, resource paths and persistence coordination |
+| src/modules/task/integration/exchange/annotation_codec.* and src/modules/task/integration/exchange/annotation_exchange.* | External annotation decoding, mapping and export |
+| [Task pages](../src/modules/task/ui/pages) and annotation widgets | Editing, display and operation requests |
+| src/modules/task/ui/common/resource_monitor.cpp | Read-only system resource display shared by Training and Inference |
+| src/modules/task/ui/task_workspace.cpp | Task page composition and shared result selection |
+| src/app/main_window.cpp | Application shell: feature composition, page/Dock mounting, window layout and status presentation |
+| src/modules/project/ui/project_module.cpp | Project commands, home page and metadata panel, using ProjectManager |
+| src/modules/workflow/ui/workflow_module.cpp | Workflow canvas/tabs, node library, properties and Dataset-change confirmation |
+| src/modules/model_management/application/model_actions.cpp | Named model import/export/delete/clear interactions for the owning TaskNode |
+| src/modules/execution/application/execution_module.cpp | Existing training/inference Jobs, launch requests and progress/completion handling |
+| src/modules/settings/ui/settings_module.cpp | Preferences and language commands |
+| src/modules/diagnostics/activity_log.cpp | UTF-8 session log files, menu action and a separate log viewer |
 
 Widgets keep viewport, drawing and selection state. Authoritative samples, classes, splits and results remain with the TaskNode. Core request construction belongs to TaskWorkspaceService.
 

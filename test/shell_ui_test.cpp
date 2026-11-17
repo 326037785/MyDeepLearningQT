@@ -1,12 +1,12 @@
-#include "main_window.h"
-#include "project_manager.h"
-#include "project_module.h"
-#include "new_project_dialog.h"
-#include "project_home.h"
-#include "recent_project_store.h"
-#include "ui_language.h"
-#include "workflow_module.h"
-#include "workflow_scene.h"
+#include "app/main_window.h"
+#include "modules/project/application/project_manager.h"
+#include "modules/project/ui/project_module.h"
+#include "modules/project/ui/dialogs/new_project_dialog.h"
+#include "modules/project/ui/project_home.h"
+#include "modules/project/storage/recent_project_store.h"
+#include "modules/settings/application/ui_language.h"
+#include "modules/workflow/ui/workflow_module.h"
+#include "modules/workflow/ui/workflow_scene.h"
 
 #include <QAction>
 #include <QApplication>

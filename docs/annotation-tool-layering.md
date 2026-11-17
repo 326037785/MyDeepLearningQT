@@ -6,14 +6,14 @@
 
 | 位置 | 当前职责 | 判断 |
 | --- | --- | --- |
-| [`annotation_tool_interaction.h/.cpp`](../src/annotation_tool_interaction.h) | 独立定义工具种类，维护笔触、图形、多边形、平移和选区变换的交互状态与矩阵计算；输出轨迹或几何结果。 | 不包含 mask、类别、TaskNode、撤销栈或持久化。`TransformSelection` 是通用手势；选择哪个带标签 Region 由 SG 决定。 |
-| [`segmentation_annotation.h/.cpp`](../src/segmentation_annotation.h) 的 `MaskCanvas` | 接收工具手势，编辑 SG 暂态 mask，维护每张图的撤销历史、类别可视化和 Region 选择，并提供 SG 编辑视图。 | 是 SG target 编辑边界，不是通用工具定义。直接 PNG `load/save` 供局部画布使用；产品提交仍由 TaskWorkspaceService 处理。 |
-| [`segmentation_annotation.cpp`](../src/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 组装 SG 工具、画布和样本切换，发起 Task 标注保存。 | Classes 面板与类别确认由 TaskWorkspace 组装，类别数据由 TaskNode 持有。 |
-| [`image_viewport_transform.*`](../src/image_viewport_transform.h) | 独立维护缩放、平移和坐标转换。 | 已处于合适层级，迁移时直接复用。 |
-| [`annotation_region_edit_service.*`](../src/annotation_region_edit_service.h) | 选择带标签的连通 Region，并对该 Region 做变换。 | 已抽离画布，但标签值和 Core Region 仍属于 mask/SG 适配语义；不要将其整体误认作所有任务通用工具。 |
-| [`segmentation_annotation_state.*`](../src/segmentation_annotation_state.h)、[`classification_annotation_state.*`](../src/classification_annotation_state.h) | 分别确定有效 target、两态和 Core 数据转换。 | 留在各自 Task；工具不得决定 `annotation_state`。 |
-| [`classification_annotation.*`](../src/classification_annotation.h) | CL 预览、选择类别并请求赋值；目前没有像素绘制工具。 | CL 不需要为了共用框架而获得笔刷或 mask。 |
-| [`image_result_canvas.h/.cpp`](../src/image_result_canvas.h) | 推理和结果页显示输入图像及 prediction overlay，支持原有滚轮缩放与中键平移。 | 只读页面不再构造 `MaskCanvas` 或持有 mask 编辑历史。 |
+| [`annotation_tool_interaction.h/.cpp`](../src/modules/task/ui/common/annotation_tool_interaction.h) | 独立定义工具种类，维护笔触、图形、多边形、平移和选区变换的交互状态与矩阵计算；输出轨迹或几何结果。 | 不包含 mask、类别、TaskNode、撤销栈或持久化。`TransformSelection` 是通用手势；选择哪个带标签 Region 由 SG 决定。 |
+| [`segmentation_annotation.h/.cpp`](../src/modules/task/ui/annotation/sg/segmentation_annotation.h) 的 `MaskCanvas` | 接收工具手势，编辑 SG 暂态 mask，维护每张图的撤销历史、类别可视化和 Region 选择，并提供 SG 编辑视图。 | 是 SG target 编辑边界，不是通用工具定义。直接 PNG `load/save` 供局部画布使用；产品提交仍由 TaskWorkspaceService 处理。 |
+| [`segmentation_annotation.cpp`](../src/modules/task/ui/annotation/sg/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 组装 SG 工具、画布和样本切换，发起 Task 标注保存。 | Classes 面板与类别确认由 TaskWorkspace 组装，类别数据由 TaskNode 持有。 |
+| [`image_viewport_transform.*`](../src/modules/task/ui/common/image_viewport_transform.h) | 独立维护缩放、平移和坐标转换。 | 已处于合适层级，迁移时直接复用。 |
+| [`annotation_region_edit_service.*`](../src/modules/task/ui/annotation/sg/annotation_region_edit_service.h) | 选择带标签的连通 Region，并对该 Region 做变换。 | 已抽离画布，但标签值和 Core Region 仍属于 mask/SG 适配语义；不要将其整体误认作所有任务通用工具。 |
+| [`segmentation_annotation_state.*`](../src/modules/task/application/annotation/segmentation_annotation_state.h)、[`classification_annotation_state.*`](../src/modules/task/application/annotation/classification_annotation_state.h) | 分别确定有效 target、两态和 Core 数据转换。 | 留在各自 Task；工具不得决定 `annotation_state`。 |
+| [`classification_annotation.*`](../src/modules/task/ui/annotation/cls/classification_annotation.h) | CL 预览、选择类别并请求赋值；目前没有像素绘制工具。 | CL 不需要为了共用框架而获得笔刷或 mask。 |
+| [`image_result_canvas.h/.cpp`](../src/modules/task/ui/common/image_result_canvas.h) | 推理和结果页显示输入图像及 prediction overlay，支持原有滚轮缩放与中键平移。 | 只读页面不再构造 `MaskCanvas` 或持有 mask 编辑历史。 |
 
 ## 2. 固定的三层依赖方向
 

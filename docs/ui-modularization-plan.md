@@ -27,12 +27,12 @@
 
 | 位置 | 观察 | 拆分意义 |
 | --- | --- | --- |
-| [MainWindow::buildUi](../src/main_window.cpp) | 约 1050 行，混合窗口装配、视图构建和业务操作。 | 必须迁移职责及成员所有权，不能只增加 buildXxx 辅助函数。 |
+| [MainWindow::buildUi](../src/app/main_window.cpp) | 约 1050 行，混合窗口装配、视图构建和业务操作。 | 必须迁移职责及成员所有权，不能只增加 buildXxx 辅助函数。 |
 | 模型操作回调 | 导入约 302 行；导出、删除、清空分别约 71、56、48 行。 | 优先移出交互、格式解析、Core 调用、资产写入和提交过程。 |
 | MainWindow 构造函数 | 还包含场景事件和训练/推理 Job 回调。 | 与 buildUi 一起审查，避免复杂度转移到另一个大入口。 |
 | 首选项命令 | SettingsModule 创建 Preferences... 菜单。 | Language 子菜单与 Auto-save annotations 勾选项并列，沿用既有设置存储。 |
-| [NodeWorkspace](../src/node_workspace.h) | 已通过明确的请求回调连接操作。 | 可以保留现有边界，逐步更换接收方；不要求一次性改写所有回调。 |
-| [任务目录](../src/task_module_catalog.h)、[工作流类型](../src/workflow.h)、[序列化](../src/workflow_document.cpp) | 存在固定任务目录、节点枚举和 SG/CL 分支。 | UI 注册接口不能自动解决任意新任务或节点的接入。 |
+| [NodeWorkspace](../src/modules/workflow/ui/node_workspace.h) | 已通过明确的请求回调连接操作。 | 可以保留现有边界，逐步更换接收方；不要求一次性改写所有回调。 |
+| [任务目录](../src/modules/task/application/catalog/task_module_catalog.h)、[工作流类型](../src/modules/workflow/model/workflow.h)、[序列化](../src/modules/workflow/storage/workflow_document.cpp) | 存在固定任务目录、节点枚举和 SG/CL 分支。 | UI 注册接口不能自动解决任意新任务或节点的接入。 |
 
 上一轮界面改造已有 11 项 CTest 全部通过的验证记录。该记录仅作历史基线，不代表后续重构已通过验证。
 
@@ -56,16 +56,16 @@
 
 | 当前内容 | 目标归属 |
 | --- | --- |
-| 新建/打开/保存/另存为、项目删除、首页及项目元数据 | [ProjectModule](../src/project_module.h)，引用已有 ProjectManager，创建项目命令和视图。 |
-| 工作流标签、画布、节点库、属性、概览及 Dataset 变更确认 | [WorkflowModule](../src/workflow_module.h)，复用 WorkflowScene、PropertiesEditor 和 NodeWorkspace；对应视图及交互留在工作流模块。 |
-| 模型导入/导出/删除/清空 | [ModelActions](../src/model_actions.h) 内的命名操作，通过现有 NodeWorkspace 请求回调接入；复用既有 domain 和 Core 接口。 |
-| 训练/推理启动、进度及完成处理 | [ExecutionModule](../src/execution_module.h)，迁入既有 Job 和执行身份字段，复用 TaskWorkspaceService。 |
-| 首选项交互与语言设置 | [SettingsModule](../src/settings_module.h) 创建 Preferences... 菜单、Language 子菜单和标注自动保存勾选项，工具栏复用同一菜单。 |
-| 活动与诊断日志、训练日志查看 | [ActivityLog](../src/activity_log.h)，写入会话文件，自行创建菜单 action 和独立弹窗；训练日志保留原 runs 路径。 |
+| 新建/打开/保存/另存为、项目删除、首页及项目元数据 | [ProjectModule](../src/modules/project/ui/project_module.h)，引用已有 ProjectManager，创建项目命令和视图。 |
+| 工作流标签、画布、节点库、属性、概览及 Dataset 变更确认 | [WorkflowModule](../src/modules/workflow/ui/workflow_module.h)，复用 WorkflowScene、PropertiesEditor 和 NodeWorkspace；对应视图及交互留在工作流模块。 |
+| 模型导入/导出/删除/清空 | [ModelActions](../src/modules/model_management/application/model_actions.h) 内的命名操作，通过现有 NodeWorkspace 请求回调接入；复用既有 domain 和 Core 接口。 |
+| 训练/推理启动、进度及完成处理 | [ExecutionModule](../src/modules/execution/application/execution_module.h)，迁入既有 Job 和执行身份字段，复用 TaskWorkspaceService。 |
+| 首选项交互与语言设置 | [SettingsModule](../src/modules/settings/ui/settings_module.h) 创建 Preferences... 菜单、Language 子菜单和标注自动保存勾选项，工具栏复用同一菜单。 |
+| 活动与诊断日志、训练日志查看 | [ActivityLog](../src/modules/diagnostics/activity_log.h)，写入会话文件，自行创建菜单 action 和独立弹窗；训练日志保留原 runs 路径。 |
 
 MainWindow::buildUi 现为约 80 行的 shell 控件创建和模块装配；主窗口实现由约 2600 行收缩至约 240 行。业务操作 lambda 迁入上述模块的命名函数，装配处只保留短连接。
 
-模块直接接收其需要的 domain 引用和输出回调。沿用的 JSON 写入小函数由模型导出和训练运行记录共同使用，放入 [json_file_writer](../src/json_file_writer.h)；没有引入新业务 service/coordinator。
+模块直接接收其需要的 domain 引用和输出回调。沿用的 JSON 写入小函数由模型导出和训练运行记录共同使用，放入 [json_file_writer](../src/common/io/json_file_writer.h)；没有引入新业务 service/coordinator。
 
 本轮收尾沿用这些边界：WorkflowModule 分别构造画布、节点库和属性面板，标签切换、关闭与重命名共用命名的激活操作。ProjectModule 在项目操作入口核对运行限制，并同步首页、最近项目和共享 action 的可用性。两个模块通过 busy 回调查询 ExecutionModule；后者使用已有 Job 与运行身份覆盖启动、完成回调两个空档，完成处理清理运行身份后再恢复编辑。
 

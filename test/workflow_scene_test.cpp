@@ -1,4 +1,4 @@
-#include "workflow_scene.h"
+#include "modules/workflow/ui/workflow_scene.h"
 
 #include <QApplication>
 #include <QGraphicsView>

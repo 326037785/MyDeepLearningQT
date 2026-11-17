@@ -112,7 +112,7 @@ Filter 的 Task 类型由当前 Node 确定。配置保存在该 TaskNode 的 Co
 
 Workflow 分别以 `sg_filter` 和 `cls_filter` 保存对应 Task 的字段；未保存过滤设置时使用 Core 默认值。SG 的 `max_region_area` 使用 int64 字符串保存，`aspect_ratio_range` 保存为最小值和最大值的数组。
 
-`InferenceWorkspace` 根据当前 Task 从 [Task Filter 组合表](../src/task_inference_filter.cpp)取得对应的 `InferenceFilterContent`，并绑定当前 Node 的配置。各 Task content 只负责自己的控件和字段映射；[InferenceFilterPanel](../src/inference_filter_panel.h)负责折叠、Apply、Reset、错误显示和内容挂载。content 创建时由 `std::unique_ptr` 持有，加入 Qt 控件树后由 Qt 父对象管理。新增 Task Filter 时提供自己的 content 并加入组合表。
+`InferenceWorkspace` 根据当前 Task 从 [Task Filter 组合表](../src/modules/task/ui/filters/task_inference_filter.cpp)取得对应的 `InferenceFilterContent`，并绑定当前 Node 的配置。各 Task content 只负责自己的控件和字段映射；[InferenceFilterPanel](../src/modules/task/ui/filters/inference_filter_panel.h)负责折叠、Apply、Reset、错误显示和内容挂载。content 创建时由 `std::unique_ptr` 持有，加入 Qt 控件树后由 Qt 父对象管理。新增 Task Filter 时提供自己的 content 并加入组合表。
 
 ## 4. 单个 branch 的替换
 

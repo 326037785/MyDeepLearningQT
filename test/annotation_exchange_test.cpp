@@ -1,5 +1,5 @@
-#include "annotation_exchange.h"
-#include "segmentation_annotation_state.h"
+#include "modules/task/integration/exchange/annotation_exchange.h"
+#include "modules/task/application/annotation/segmentation_annotation_state.h"
 
 #include <QCoreApplication>
 #include <QDir>
