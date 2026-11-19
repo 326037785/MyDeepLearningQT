@@ -249,17 +249,8 @@ QColor class_color(int value) {
     return colors[value % static_cast<int>(std::size(colors))];
 }
 
-constexpr int kAnnotationViewportMargin = 24;
+constexpr int kAnnotationWorkingMargin = 24;
 
-QSize annotation_viewport_size(const QSize& size) {
-    return {
-        std::max(1, size.width() - 2 * kAnnotationViewportMargin),
-        std::max(1, size.height() - 2 * kAnnotationViewportMargin)};
-}
-
-QPointF annotation_viewport_point(const QPointF& point) {
-    return point - QPointF(kAnnotationViewportMargin, kAnnotationViewportMargin);
-}
 QImage neutral_mask_overlay(const QImage& source) {
     if (source.isNull()) return {};
     const QImage labels = source.convertToFormat(QImage::Format_Grayscale8);
@@ -521,9 +512,8 @@ void MaskCanvas::set_mask_overlay(const QImage& image) {
 }
 
 QRectF MaskCanvas::image_target() const {
-    const QRectF target = viewport_.target_rect(
-        image_.size(), annotation_viewport_size(size()));
-    return target.translated(kAnnotationViewportMargin, kAnnotationViewportMargin);
+    const QRect viewport = ImageViewportTransform::fit_viewport(size());
+    return viewport_.target_rect(image_.size(), viewport.size()).translated(viewport.topLeft());
 }
 
 QPoint MaskCanvas::image_point(const QPoint& widget_point) const {
@@ -538,10 +528,11 @@ QPoint MaskCanvas::image_point(const QPoint& widget_point) const {
 QPoint MaskCanvas::annotation_point(const QPoint& widget_point) const {
     const QRectF target = image_target();
     if (target.isEmpty() ||
-        !target.adjusted(-kAnnotationViewportMargin, -kAnnotationViewportMargin,
-                         kAnnotationViewportMargin, kAnnotationViewportMargin)
-             .contains(widget_point))
+        !target.adjusted(-kAnnotationWorkingMargin, -kAnnotationWorkingMargin,
+                         kAnnotationWorkingMargin, kAnnotationWorkingMargin)
+             .contains(widget_point)) {
         return {-1, -1};
+    }
     const QPointF position = image_position(widget_point);
     return {static_cast<int>(std::floor(position.x())),
             static_cast<int>(std::floor(position.y()))};
@@ -594,7 +585,7 @@ int MaskCanvas::zoom_percent() const {
 
 void MaskCanvas::zoom_by(double factor) {
     if (image_.isNull()) return;
-    const QSize viewport_size = annotation_viewport_size(size());
+    const QSize viewport_size = ImageViewportTransform::fit_viewport(size()).size();
     const QPointF center(viewport_size.width() / 2.0, viewport_size.height() / 2.0);
     if (viewport_.zoom_at(center, factor, image_.size(), viewport_size)) {
         update();
@@ -611,10 +602,10 @@ void MaskCanvas::reset_view() {
 void MaskCanvas::wheelEvent(QWheelEvent* event) {
     if (image_.isNull()) return;
 
+    const QRect viewport = ImageViewportTransform::fit_viewport(size());
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
-    if (viewport_.zoom_at(
-            annotation_viewport_point(event->position()), factor, image_.size(),
-            annotation_viewport_size(size()))) {
+    if (viewport_.zoom_at(event->position() - viewport.topLeft(), factor,
+                          image_.size(), viewport.size())) {
         update();
         if (zoom_changed) zoom_changed(zoom_percent());
     }

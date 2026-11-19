@@ -2,6 +2,7 @@
 
 #include <QPoint>
 #include <QPointF>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
 
@@ -11,6 +12,8 @@ namespace studio {
 // know anything about masks, painting tools, or mouse-button state.
 class ImageViewportTransform final {
 public:
+    static QRect fit_viewport(const QSize& canvas_size, int regular_margin = 24);
+
     void reset();
 
     QRectF target_rect(const QSize& image_size, const QSize& viewport_size) const;

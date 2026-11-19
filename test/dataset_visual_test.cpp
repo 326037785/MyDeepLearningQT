@@ -277,9 +277,9 @@ int main(int argc, char** argv) {
     }
     annotation_layer->setChecked(false);
     select_tool->click();
+    const QRect result_viewport = studio::ImageViewportTransform::fit_viewport(canvas->size());
     const QRectF result_target = studio::ImageViewportTransform{}.target_rect(
-        first.size(), QSize(std::max(1, canvas->width() - 48), std::max(1, canvas->height() - 48)))
-                                     .translated(24, 24);
+        first.size(), result_viewport.size()).translated(result_viewport.topLeft());
     const auto result_point = [&result_target, &first](const QPointF& image_point) {
         return QPointF(result_target.left() + image_point.x() * result_target.width() / first.width(),
                        result_target.top() + image_point.y() * result_target.height() / first.height());
@@ -1106,10 +1106,10 @@ int main(int argc, char** argv) {
     if (!move_canvas.load(move_image, move_mask, &stroke_error)) return 63;
     move_canvas.show();
     QApplication::processEvents();
-    const auto canvas_point = [&move_source](const QPointF& image_point) {
+    const QRect move_viewport = studio::ImageViewportTransform::fit_viewport(move_canvas.size());
+    const auto canvas_point = [&move_source, &move_viewport](const QPointF& image_point) {
         const QRectF target = studio::ImageViewportTransform{}.target_rect(
-            move_source.size(), QSize(320 - 48, 160 - 48))
-                                  .translated(24, 24);
+            move_source.size(), move_viewport.size()).translated(move_viewport.topLeft());
         return QPointF(
             target.left() + image_point.x() * target.width() / move_source.width(),
             target.top() + image_point.y() * target.height() / move_source.height());

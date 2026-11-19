@@ -1,6 +1,8 @@
 #include "modules/task/ui/annotation/cls/classification_annotation.h"
 
+#include "common/ui/ui_metrics.h"
 #include "modules/task/presentation/sample_presentation.h"
+#include "modules/task/ui/common/image_viewport_transform.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -67,6 +69,7 @@ ClassificationCanvas::ClassificationCanvas(QWidget* parent, QLabel* overlay)
     : QLabel(parent), overlay_(overlay) {
     setAlignment(Qt::AlignCenter);
     setProperty("imagePreview", true);
+    setStyleSheet(QStringLiteral("padding: 0;"));
     setMinimumSize(480, 320);
     setText(tr("Select an image"));
     if (overlay_) {
@@ -116,7 +119,7 @@ void ClassificationCanvas::update_view() {
         }
         return;
     }
-    const QSize available = size() - QSize(24, 24);
+    const QSize available = ImageViewportTransform::fit_viewport(contentsRect().size(), ThemeTokens::Space3).size();
     QPixmap frame = QPixmap::fromImage(image_).scaled(
         available, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     if (!frame.isNull() && heatmap_visible_ && !heatmap_.isNull()) {

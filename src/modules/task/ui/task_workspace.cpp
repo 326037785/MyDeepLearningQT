@@ -212,6 +212,12 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     activate_step(Step::Data);
 }
 
+void TaskWorkspace::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    const bool compact = window()->height() < ThemeTokens::CompactWindowHeight;
+    layout()->setSpacing(compact ? 2 : ThemeTokens::Space1);
+}
+
 QWidget* TaskWorkspace::build_annotation_page() {
     auto* page = new QWidget(pages_);
     page->setObjectName("taskAnnotationPage");

@@ -4,19 +4,7 @@
 #include <QPainter>
 #include <QWheelEvent>
 
-#include <algorithm>
-
 namespace studio {
-namespace {
-
-constexpr int kViewportMargin = 24;
-
-QSize viewport_size(const QSize& size) {
-    return {std::max(1, size.width() - 2 * kViewportMargin),
-            std::max(1, size.height() - 2 * kViewportMargin)};
-}
-
-} // namespace
 
 ImageResultCanvas::ImageResultCanvas(QWidget* parent) : QWidget(parent) {
     setMinimumSize(280, 160);
@@ -60,8 +48,8 @@ void ImageResultCanvas::paintEvent(QPaintEvent*) {
         painter.drawText(rect(), Qt::AlignCenter, tr("Select an image"));
         return;
     }
-    const QRectF target = viewport_.target_rect(image_.size(), viewport_size(size()))
-        .translated(kViewportMargin, kViewportMargin);
+    const QRect viewport = ImageViewportTransform::fit_viewport(size());
+    const QRectF target = viewport_.target_rect(image_.size(), viewport.size()).translated(viewport.topLeft());
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.drawImage(target, image_);
     if (prediction_visible_ && !prediction_overlay_.isNull()) {
@@ -104,9 +92,10 @@ void ImageResultCanvas::wheelEvent(QWheelEvent* event) {
     if (image_.isNull()) {
         return;
     }
+    const QRect viewport = ImageViewportTransform::fit_viewport(size());
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
-    if (viewport_.zoom_at(event->position() - QPointF(kViewportMargin, kViewportMargin),
-                          factor, image_.size(), viewport_size(size()))) {
+    if (viewport_.zoom_at(event->position() - viewport.topLeft(), factor,
+                          image_.size(), viewport.size())) {
         update();
     }
     event->accept();

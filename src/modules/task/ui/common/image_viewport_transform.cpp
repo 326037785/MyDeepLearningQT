@@ -5,6 +5,21 @@
 #include <algorithm>
 
 namespace studio {
+namespace {
+
+constexpr int kCompactCanvasHeight = 320;
+constexpr int kRegularCanvasHeight = 400;
+
+} // namespace
+
+QRect ImageViewportTransform::fit_viewport(const QSize& canvas_size, int regular_margin) {
+    const int height = std::clamp(canvas_size.height(), kCompactCanvasHeight, kRegularCanvasHeight);
+    const int compact_margin = regular_margin / 2;
+    const int margin = compact_margin + (height - kCompactCanvasHeight) *
+        (regular_margin - compact_margin) / (kRegularCanvasHeight - kCompactCanvasHeight);
+    return {margin, margin, std::max(1, canvas_size.width() - 2 * margin),
+            std::max(1, canvas_size.height() - 2 * margin)};
+}
 
 void ImageViewportTransform::reset() {
     zoom_ = 1.0;

@@ -7,6 +7,7 @@
 #include "modules/settings/ui/settings_module.h"
 #include "modules/workflow/ui/workflow_module.h"
 #include "modules/settings/application/ui_language.h"
+#include "common/ui/ui_metrics.h"
 #include "common/ui/ui_theme.h"
 
 #include <QApplication>
@@ -27,6 +28,9 @@
 
 namespace studio {
 namespace {
+
+constexpr int kWorkflowToolbarMinimumHeight = 44;
+
 QFont studio_ui_font() {
     const QStringList installed = QFontDatabase().families();
     const bool chinese = ui_language() == "zh_CN";
@@ -73,7 +77,7 @@ void MainWindow::buildUi() {
     workflow_toolbar_->setMovable(false);
     workflow_toolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
     workflow_toolbar_->setIconSize(QSize(20, 20));
-    workflow_toolbar_->setMinimumHeight(44);
+    workflow_toolbar_->setMinimumHeight(kWorkflowToolbarMinimumHeight);
     home_toolbar_ = addToolBar(tr("Project commands"));
     home_toolbar_->setObjectName("homeToolbar");
     home_toolbar_->setMovable(false);
@@ -225,7 +229,18 @@ void MainWindow::normalizeDockState() {
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
-    if (workflow_) workflow_->adapt_to_resize(event);
+    const bool compact = event->size().height() < ThemeTokens::CompactWindowHeight;
+    for (QToolBar* toolbar : {workflow_toolbar_, home_toolbar_}) {
+        if (toolbar) {
+            UiMetrics::apply_toolbar_spacing(*toolbar, compact);
+        }
+    }
+    if (workflow_toolbar_) {
+        workflow_toolbar_->setMinimumHeight(compact ? 0 : kWorkflowToolbarMinimumHeight);
+    }
+    if (workflow_) {
+        workflow_->adapt_to_resize(event);
+    }
 }
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (!project_module_->can_close()) { event->ignore(); return; }
