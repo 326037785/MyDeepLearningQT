@@ -26,6 +26,7 @@
 #include <QSettings>
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace studio {
@@ -137,8 +138,10 @@ void ExecutionModule::training_progress(const jocelin::train::TrainingProgress& 
     if (auto* model = TaskWorkspaceService(graph(), active_training_node_id_).find_model(active_training_model_id_)) {
         model->completed_epochs = progress.completed_epochs;
         model->training_loss = progress.loss;
-        model->metric_name = progress.validation_metric_name;
-        model->metric = progress.validation_metric;
+        if (progress.validation_metric && std::isfinite(*progress.validation_metric)) {
+            model->metric_name = progress.validation_metric_name;
+            model->metric = *progress.validation_metric;
+        }
         project_.mark_active_dirty();
     }
     if (active_training_node_id_ != 0 &&
@@ -166,7 +169,7 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
         if (job_error.isEmpty()) {
             model->completed_epochs = result.completed_epochs;
             model->best_epoch = result.best_epoch;
-            model->metric_name = result.metric_name;
+            model->metric_name = result.best_epoch > 0 ? result.metric_name : std::string{};
             model->metric = result.best_metric;
         }
 

@@ -66,6 +66,18 @@ public:
             QFile file(QDir(QString::fromStdString(model->asset_directory)).filePath(
                 QString::fromLatin1(jocelin::training::training_history_filename)));
             if (file.open(QIODevice::ReadOnly) && file.readLine().trimmed() == jocelin::training::training_history_header) {
+                const auto read_optional = [](const QByteArray& field, std::optional<double>& value) {
+                    if (field.isEmpty()) {
+                        return true;
+                    }
+                    bool valid = false;
+                    const double parsed = field.toDouble(&valid);
+                    if (!valid || !std::isfinite(parsed)) {
+                        return false;
+                    }
+                    value = parsed;
+                    return true;
+                };
                 while (!file.atEnd()) {
                     const QByteArray line = file.readLine();
                     if (!line.endsWith('\n')) {
@@ -77,26 +89,17 @@ public:
                     }
                     bool valid_epoch = false;
                     bool valid_loss = false;
-                    bool valid_metric = false;
                     jocelin::train::TrainingProgress point;
                     point.completed_epochs = fields[0].toInt(&valid_epoch);
                     point.loss = fields[1].toDouble(&valid_loss);
                     point.validation_metric_name = fields[3].toStdString();
-                    point.training_metric = fields[4].toDouble(&valid_metric);
                     if (!valid_epoch || point.completed_epochs < 1 ||
                         (!points_.empty() && point.completed_epochs <= points_.back().completed_epochs) ||
                         !valid_loss || !std::isfinite(point.loss) ||
-                        !valid_metric || !std::isfinite(point.training_metric)) {
+                        !read_optional(fields[2], point.validation_loss) ||
+                        !read_optional(fields[4], point.training_metric) ||
+                        !read_optional(fields[5], point.validation_metric)) {
                         continue;
-                    }
-                    if (!fields[2].isEmpty() || !fields[5].isEmpty()) {
-                        const double validation_loss = fields[2].toDouble(&valid_loss);
-                        point.validation_metric = fields[5].toDouble(&valid_metric);
-                        if (!valid_loss || !std::isfinite(validation_loss) ||
-                            !valid_metric || !std::isfinite(point.validation_metric)) {
-                            continue;
-                        }
-                        point.validation_loss = validation_loss;
                     }
                     points_.push_back(std::move(point));
                 }
@@ -164,7 +167,7 @@ protected:
             int previous_epoch = 0;
             for (const jocelin::train::TrainingProgress& point : points_) {
                 const std::optional<double> value = value_at(point);
-                if (!value) {
+                if (!value || !std::isfinite(*value)) {
                     continue;
                 }
                 const qreal x = first_epoch == last_epoch
@@ -189,9 +192,8 @@ protected:
         draw_series([](const auto& point) { return point.loss; }, loss_range, QPen(loss_color, 2));
         draw_series([](const auto& point) { return point.validation_loss; }, loss_range, QPen(loss_color, 2, Qt::DashLine));
         draw_series([](const auto& point) { return point.training_metric; }, metric_range, QPen(metric_color, 2));
-        draw_series([](const auto& point) -> std::optional<double> {
-            return point.validation_loss ? std::optional<double>(point.validation_metric) : std::nullopt;
-        }, metric_range, QPen(metric_color, 2, Qt::DashLine));
+        draw_series([](const auto& point) { return point.validation_metric; },
+                    metric_range, QPen(metric_color, 2, Qt::DashLine));
 
         painter.setPen(QColor("#718386"));
         painter.drawText(QRectF(4, plot.top() - 7, 44, 16), Qt::AlignRight,
@@ -1069,9 +1071,10 @@ void TrainingWorkspace::update_progress(const jocelin::train::TrainingProgress& 
     set_runtime_state(state_, QStringLiteral("running"));
     epoch_->setText(tr("Epoch %1 / %2").arg(value.completed_epochs).arg(value.total_epochs));
     loss_->setText(tr("Loss %1").arg(value.loss, 0, 'g', 5));
+    const QString metric_value = value.validation_metric && std::isfinite(*value.validation_metric)
+        ? QString::number(*value.validation_metric, 'g', 5) : QStringLiteral("—");
     metric_->setText(tr("%1 %2")
-        .arg(QString::fromStdString(value.validation_metric_name))
-        .arg(value.validation_metric, 0, 'g', 5));
+        .arg(QString::fromStdString(value.validation_metric_name), metric_value));
     progress_->setValue(value.total_epochs > 0
         ? qBound(0, value.completed_epochs * 100 / value.total_epochs, 100) : 0);
     chart_->add_point(value);

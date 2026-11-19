@@ -1081,8 +1081,10 @@ void TaskWorkspaceService::record_inference_result(
     const std::string& error)
 {
     auto& runtime = task().runtime;
-    runtime.inference_status = error.empty() ? "completed" : "error";
-    if (!error.empty()) return;
+    if (!error.empty()) {
+        runtime.inference_status = "error";
+        return;
+    }
 
     const auto* model = task().model_list.find(model_id);
     const auto* weight = model ? jocelin::model::find_weight(*model, weight_id) : nullptr;
@@ -1113,14 +1115,15 @@ void TaskWorkspaceService::record_inference_result(
             stored.result = record;
             set.samples.push_back(std::move(stored));
         }
-    } else {
-        const auto& sg = std::get<jocelin::result::sg::SgInferenceResult>(report);
-        for (const auto& record : sg.samples) {
+    } else if (const auto* sg = std::get_if<jocelin::result::sg::SgInferenceResult>(&report)) {
+        for (const auto& record : sg->samples) {
             ResultReference stored;
             stored.source_sample_id = sample_id_for(record.image_path);
             stored.result = record;
             set.samples.push_back(std::move(stored));
         }
+    } else {
+        throw std::runtime_error("Object detection results require an OD workspace.");
     }
 
     runtime.results.erase(
@@ -1132,6 +1135,7 @@ void TaskWorkspaceService::record_inference_result(
             }),
         runtime.results.end());
     runtime.results.push_back(std::move(set));
+    runtime.inference_status = "completed";
 }
 
 } // namespace studio

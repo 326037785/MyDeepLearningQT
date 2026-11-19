@@ -272,6 +272,18 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
     try { project.discard_inference_directory(second, "model_1", "libtorch_fp32", pending.first); }
     catch (const std::runtime_error&) { wrong_scope = true; }
     require(wrong_scope && QDir(pending.first).exists(), "cleanup accepted another Node's pending branch");
+
+    const jocelin::inference::InferenceReport detection = jocelin::result::od::OdInferenceResult{};
+    bool unsupported_result = false;
+    try {
+        project.commit_inference_result(first, "model_1", "libtorch_fp32", detection, pending.first);
+    } catch (const std::runtime_error&) {
+        unsupported_result = true;
+    }
+    require(unsupported_result && QDir(pending.first).exists() &&
+            studio::ProjectStorage::read(QDir(first_dir).filePath("result.json")) == old_json,
+            "unsupported inference result changed a committed branch");
+
     // A failed worker discards only pending output, without publishing records or files.
     project.discard_inference_directory(first, "model_1", "libtorch_fp32", pending.first);
     require(!QDir(pending.first).exists() && studio::ProjectStorage::read(QDir(first_dir).filePath("result.json")) == old_json &&

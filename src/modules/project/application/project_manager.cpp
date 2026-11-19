@@ -657,7 +657,7 @@ void ProjectManager::commit_inference_result(int node_id, const QString& model_i
             throw std::runtime_error("new inference artifact is outside its temporary branch");
         path = QDir(final).absoluteFilePath(relative).toStdString();
     };
-    std::visit([&](auto& batch) {
+    const auto relocate_artifacts = [&](auto& batch) {
         for (auto& result : batch.samples) {
             if (!result.metadata_path.empty()) {
                 const auto file = QString::fromStdString(result.metadata_path);
@@ -684,9 +684,18 @@ void ProjectManager::commit_inference_result(int node_id, const QString& model_i
             using Result = std::decay_t<decltype(result)>;
             if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                 relocate(result.mask_path); relocate(result.visualization_path);
-            } else relocate(result.heatmap_path);
+            } else {
+                relocate(result.heatmap_path);
+            }
         }
-    }, relocated);
+    };
+    if (auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&relocated)) {
+        relocate_artifacts(*cls);
+    } else if (auto* sg = std::get_if<jocelin::result::sg::SgInferenceResult>(&relocated)) {
+        relocate_artifacts(*sg);
+    } else {
+        throw std::runtime_error("Object detection results require an OD workspace.");
+    }
     service.record_inference_result(relocated, model_id.toStdString(), weight_id.toStdString(), weight->format,
         final.toStdString(), {});
     service.task().inference_output_directory = final.toStdString();

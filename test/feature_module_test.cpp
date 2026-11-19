@@ -43,6 +43,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QWidget>
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <ATen/Parallel.h>
@@ -299,7 +300,7 @@ int main(int argc, char** argv) try {
         QFile history(QDir(model_directory).filePath(jocelin::training::training_history_filename));
         require(history.open(QIODevice::WriteOnly), "cannot write training history fixture");
         const QByteArray csv = QByteArray(jocelin::training::training_history_header) +
-            "\n1,1.2,1.4,Mean IoU,0.4,0.3\n3,0.7,0.8,Mean IoU,0.8,0.7\n";
+            "\n1,1.2,,Mean IoU,,0.3\n3,0.7,0.8,Mean IoU,0,\n";
         require(history.write(csv) == csv.size(), "cannot write training history rows");
         history.close();
         studio::ProjectModel without_history = source;
@@ -315,6 +316,24 @@ int main(int argc, char** argv) try {
                 "selecting a saved model did not render training history");
         list->setCurrentItem(list->topLevelItem(1));
         require(chart->grab().toImage() == empty_chart, "model selection retained a different model's history");
+
+        const QList<QLabel*> labels = training.findChildren<QLabel*>();
+        const auto metric_label_is = [&labels](const QString& text) {
+            return std::any_of(labels.cbegin(), labels.cend(), [&text](const QLabel* label) {
+                return label->text() == text;
+            });
+        };
+        jocelin::train::TrainingProgress progress;
+        progress.completed_epochs = 1;
+        progress.total_epochs = 2;
+        progress.loss = 1.2;
+        progress.validation_metric_name = "Mean IoU";
+        training.update_progress(progress);
+        require(metric_label_is(QStringLiteral("Mean IoU —")), "missing validation metric was displayed as a number");
+        progress.completed_epochs = 2;
+        progress.validation_metric = 0.0;
+        training.update_progress(progress);
+        require(metric_label_is(QStringLiteral("Mean IoU 0")), "a measured zero was displayed as missing");
     }
     // Explicit Select all includes hidden branches and empty model rows;
     // checking every displayed branch individually must keep branch-only scope.

@@ -27,18 +27,22 @@ void InferenceJob::start(const jocelin::inference::InferenceRequest& request) {
             outcome.report = std::move(response.report);
             outcome.fallback = std::move(response.fallback);
             std::visit([&outcome](const auto& report) {
-                outcome.summary = QObject::tr("Inference completed for %1 image(s).").arg(report.samples.size());
-                for (const auto& record : report.samples) {
-                    outcome.summary += "\n" + QString::fromStdString(record.image_path) +
-                        " -> " + QString::fromStdString(record.result_name);
-                    using Report = std::decay_t<decltype(report)>;
-                    if constexpr (std::is_same_v<Report, jocelin::result::cls::ClsInferenceResult>) {
-                        outcome.summary += QObject::tr(" class=%1 confidence=%2")
-                            .arg(record.predicted_class == -1 ? QObject::tr("Unknown") : QString::number(record.predicted_class))
-                            .arg(record.confidence);
-                    } else {
-                        outcome.summary += QObject::tr(" confidence=%1 area=%2")
-                            .arg(record.mean_confidence).arg(record.predicted_area);
+                using Report = std::decay_t<decltype(report)>;
+                if constexpr (std::is_same_v<Report, jocelin::result::od::OdInferenceResult>) {
+                    outcome.error = QObject::tr("Object detection results require an OD workspace.");
+                } else {
+                    outcome.summary = QObject::tr("Inference completed for %1 image(s).").arg(report.samples.size());
+                    for (const auto& record : report.samples) {
+                        outcome.summary += "\n" + QString::fromStdString(record.image_path) +
+                            " -> " + QString::fromStdString(record.result_name);
+                        if constexpr (std::is_same_v<Report, jocelin::result::cls::ClsInferenceResult>) {
+                            outcome.summary += QObject::tr(" class=%1 confidence=%2")
+                                .arg(record.predicted_class == -1 ? QObject::tr("Unknown") : QString::number(record.predicted_class))
+                                .arg(record.confidence);
+                        } else {
+                            outcome.summary += QObject::tr(" confidence=%1 area=%2")
+                                .arg(record.mean_confidence).arg(record.predicted_area);
+                        }
                     }
                 }
             }, outcome.report);
