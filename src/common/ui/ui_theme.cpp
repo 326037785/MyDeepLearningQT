@@ -13,17 +13,17 @@ QLabel, QCheckBox, QRadioButton { background: transparent; }
 QMenuBar { font-size: 12px; background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 1px 6px; }
 QMenuBar::item { padding: 3px 7px; }
 QMenuBar::item:selected { background: #EEF8F5; border-radius: 4px; }
-QToolBar { background: #173F46; border: 0; padding: 1px 8px; spacing: 2px; }
+QToolBar { background: #173F46; border: 0; padding: 3px; spacing: 4px; }
 QToolBar QToolButton { font-size: 12px; font-weight: 500; color: white; background: transparent; border-radius: 4px; padding: 1px 9px; min-height: 2px; }
 QToolBar QToolButton:hover { background: #315D63; }
 QToolBar QToolButton:disabled { color: #7D9699; }
 QToolBar QToolButton[runAction=true] { background: #0EA67A; color: white; font-weight: 700; padding-left: 14px; padding-right: 14px; }
 QToolBar QToolButton[runAction=true]:hover { background: #0A8E69; }
 QToolBar QToolButton[destructive=true] { color: #FFD6D1; }
-QToolBar#workflowToolbar { background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 4px 10px; spacing: 4px; }
-QToolBar#workflowToolbar QToolButton { color: #17243C; padding: 6px 9px; }
+QToolBar#homeToolbar, QToolBar#workflowToolbar { background: #F1F5FB; border-bottom: 1px solid #DCE4EF; }
+QToolBar#homeToolbar QToolButton, QToolBar#workflowToolbar QToolButton { color: #17243C; padding: 3px 9px; }
 QToolBar#workflowToolbar QToolButton:hover { background: #DFEAF9; }
-QToolBar#workflowToolbar QToolButton[runAction=true] { background: #0EA67A; color: white; padding: 6px 14px; }
+QToolBar#workflowToolbar QToolButton[runAction=true] { background: #0EA67A; color: white; padding: 3px 14px; }
 QToolBar#workflowToolbar QToolButton[runAction=true]:hover { background: #0A8E69; }
 QToolBar#workflowToolbar QToolButton[runAction=true]:disabled { background: #A4C5BB; color: #EFF6F4; }
 QDockWidget { font-size: 12px; font-weight: 600; }
@@ -38,11 +38,9 @@ QLabel[eyebrow=true] { font-size: 11px; font-weight: 700; letter-spacing: 1px; c
 QLabel[muted=true] { color: #667A83; }
 QLabel[meta=true] { font-size: 11px; color: #667A83; }
 
-QToolBar#homeToolbar { background: #F1F5FB; border-bottom: 1px solid #DCE4EF; padding: 5px 10px; spacing: 4px; }
-QToolBar#homeToolbar QToolButton { color: #17243C; padding: 5px 9px; }
 QToolBar#homeToolbar QToolButton:hover { background: #DFEAF9; }
 QToolBar#homeToolbar QToolButton:disabled { color: #8A96A6; }
-QWidget#homeToolbarSpacer { background: transparent; }
+QWidget#homeToolbarSpacer, QWidget#workflowToolbarSpacer { background: transparent; }
 QWidget#projectHome, QWidget#homeContent { background: #F8FAFD; }
 QScrollArea#homeScroll { background: #F8FAFD; border: 0; }
 QFrame#homeHero { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #F8FAFD,stop:1 #E6F0FF); border: 0; }

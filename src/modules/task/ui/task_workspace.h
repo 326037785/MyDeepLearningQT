@@ -14,7 +14,6 @@ class QComboBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
-class QResizeEvent;
 class QStackedWidget;
 class QTabWidget;
 
@@ -69,9 +68,6 @@ public:
     std::function<void(int node_id, const InferenceLaunchRequest&)> infer_requested;
     std::function<void(int node_id, const QString&, const QString&, jocelin::config::WeightType)> convert_weight_requested;
     std::function<void(const QString&)> status;
-
-protected:
-    void resizeEvent(QResizeEvent* event) override;
 
 private:
     QWidget* build_annotation_page();

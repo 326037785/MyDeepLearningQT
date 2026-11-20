@@ -59,7 +59,7 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     setObjectName("taskWorkspace");
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
-    root->setSpacing(ThemeTokens::Space1);
+    root->setSpacing(0);
 
     auto* header = new QFrame(this);
     header->setObjectName("taskWorkspaceHeader");
@@ -212,17 +212,11 @@ TaskWorkspace::TaskWorkspace(QWidget* parent) : QWidget(parent) {
     activate_step(Step::Data);
 }
 
-void TaskWorkspace::resizeEvent(QResizeEvent* event) {
-    QWidget::resizeEvent(event);
-    const bool compact = window()->height() < ThemeTokens::CompactWindowHeight;
-    layout()->setSpacing(compact ? 2 : ThemeTokens::Space1);
-}
-
 QWidget* TaskWorkspace::build_annotation_page() {
     auto* page = new QWidget(pages_);
     page->setObjectName("taskAnnotationPage");
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
+    layout->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space1,
                                ThemeTokens::Space2, ThemeTokens::Space2);
     layout->setSpacing(0);
     segmentation_inspector_ = new QTabWidget(page);

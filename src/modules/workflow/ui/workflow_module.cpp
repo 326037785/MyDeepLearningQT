@@ -462,7 +462,8 @@ void WorkflowModule::mount(QToolBar& toolbar, QMenu& edit_menu, QMenu& view_menu
     edit_menu.addAction(clear);
     toolbar.addAction(remove);
     toolbar.addSeparator();
-    auto* spacer = new QWidget(&toolbar);
+    QWidget* spacer = new QWidget(&toolbar);
+    spacer->setObjectName("workflowToolbarSpacer");
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar.addWidget(spacer);
     run_action_ = action(tr("Open Task"), "openTaskAction", [this] { runWorkflow(); });

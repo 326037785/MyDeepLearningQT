@@ -3,9 +3,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QFontMetrics>
-#include <QLayout>
 #include <QStyle>
-#include <QToolBar>
 #include <QWidget>
 
 #include <algorithm>
@@ -38,14 +36,6 @@ void UiMetrics::apply_semantic_metrics(QWidget* root) {
             button->setMaximumHeight(metrics.compact_control_height + 4);
         }
     }
-}
-
-void UiMetrics::apply_toolbar_spacing(QToolBar& toolbar, bool compact) {
-    QLayout* layout = toolbar.layout();
-    const QMargins margins = layout->contentsMargins();
-    // Qt's toolbar layout initializes all four margins from the same style metric.
-    const int vertical_margin = compact ? 2 : margins.left();
-    layout->setContentsMargins(margins.left(), vertical_margin, margins.right(), vertical_margin);
 }
 
 } // namespace studio

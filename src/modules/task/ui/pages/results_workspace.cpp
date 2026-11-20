@@ -57,7 +57,7 @@ QString unique_destination(const QDir& directory, const QString& file_name) {
 
 ResultsWorkspace::ResultsWorkspace(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
+    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space1,
                              ThemeTokens::Space2, ThemeTokens::Space2);
     root->setSpacing(ThemeTokens::Space1);
 

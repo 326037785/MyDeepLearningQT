@@ -287,7 +287,7 @@ QWidget* path_editor(QWidget* parent,
 
 TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
+    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space1,
                              ThemeTokens::Space2, ThemeTokens::Space2);
     root->setSpacing(ThemeTokens::Space1);
     auto* split = new CollapsibleSplitter(Qt::Horizontal, this);

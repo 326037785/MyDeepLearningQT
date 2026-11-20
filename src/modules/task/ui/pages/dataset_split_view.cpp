@@ -33,7 +33,7 @@ using task_page::split_label;
 
 DatasetSplitView::DatasetSplitView(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space2,
+    root->setContentsMargins(ThemeTokens::Space2, ThemeTokens::Space1,
                              ThemeTokens::Space2, ThemeTokens::Space2);
     root->setSpacing(ThemeTokens::Space1);
 
