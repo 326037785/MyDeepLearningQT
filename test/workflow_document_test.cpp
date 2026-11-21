@@ -20,6 +20,36 @@ int main() {
         !empty_decoded.graph.connections().empty())
         return 1;
 
+    studio::WorkflowGraph detection_graph;
+    const int od_source = detection_graph.add_node(studio::NodeKind::DatasetInput);
+    const int od_node = detection_graph.add_task_node({"od"});
+    studio::DatasetConfig& od_dataset = std::get<studio::DatasetConfig>(detection_graph.node(od_source).config);
+    od_dataset.items = {{"dataset/input.png", {}, true, "od-input"}};
+    detection_graph.connect(od_source, 0, od_node, 0);
+    studio::TaskNodeConfig& detection = std::get<studio::TaskNodeConfig>(detection_graph.node(od_node).config);
+    detection.dataset_binding.classes = {{"defect", 0, "Defect", "#123456", true, false}};
+    studio::TaskSampleBinding& od_sample = detection.dataset_binding.samples.front();
+    od_sample.bbox_comps = {{"defect", {0, 15.5, 12.25, 13, 7}, std::nullopt}};
+    od_sample.annotation_state = "annotated";
+    const studio::SerializedWorkflow od_document = studio::serialize_workflow(
+        detection_graph, {{od_source, {0, 0}}, {od_node, {300, 0}}});
+    const studio::WorkflowDocument od_restored = studio::parse_workflow(od_document.json);
+    const studio::TaskNodeConfig& od_config = std::get<studio::TaskNodeConfig>(od_restored.graph.node(od_node).config);
+    if (od_config.task != "od" || od_config.model_index != 0 || od_config.model_scale != "n" ||
+        od_config.training.image_width != 640 || od_config.training.image_height != 640 ||
+        od_config.dataset_binding.source_node_id != od_source || od_config.dataset_binding.samples.size() != 1) {
+        throw std::runtime_error("OD TaskNode did not round-trip with its Dataset binding");
+    }
+    const studio::TaskSampleBinding& od_restored_sample = od_config.dataset_binding.samples.front();
+    if (od_restored_sample.bbox_comps.size() != 1 || od_restored_sample.annotation_state != "annotated") {
+        throw std::runtime_error("OD annotation did not round-trip");
+    }
+    const jocelin::meta::BboxComp& od_box = od_restored_sample.bbox_comps.front();
+    if (od_box.class_id != "defect" || od_box.box.theta != 0 || od_box.box.cx() != 15.5 ||
+        od_box.box.cy() != 12.25 || od_box.box.w() != 13 || od_box.box.h() != 7 || od_box.score) {
+        throw std::runtime_error("OD annotation lost its class or source-image coordinates");
+    }
+
     studio::WorkflowGraph graph;
     const int source_node_id = graph.add_node(studio::NodeKind::DatasetInput);
     const int node_id = graph.add_task_node({"cls"});

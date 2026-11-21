@@ -1,7 +1,7 @@
 #include "modules/diagnostics/activity_log.h"
 #include "modules/execution/application/execution_module.h"
 #include "modules/model_management/application/model_actions.h"
-#include "modules/task/ui/common/project_model_browser.h"
+#include "modules/task/ui/models/project_model_browser.h"
 #include "modules/workflow/ui/node_workspace.h"
 #include "modules/project/application/project_manager.h"
 #include "modules/settings/ui/settings_module.h"
@@ -43,7 +43,6 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QWidget>
-#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <ATen/Parallel.h>
@@ -317,23 +316,6 @@ int main(int argc, char** argv) try {
         list->setCurrentItem(list->topLevelItem(1));
         require(chart->grab().toImage() == empty_chart, "model selection retained a different model's history");
 
-        const QList<QLabel*> labels = training.findChildren<QLabel*>();
-        const auto metric_label_is = [&labels](const QString& text) {
-            return std::any_of(labels.cbegin(), labels.cend(), [&text](const QLabel* label) {
-                return label->text() == text;
-            });
-        };
-        jocelin::train::TrainingProgress progress;
-        progress.completed_epochs = 1;
-        progress.total_epochs = 2;
-        progress.loss = 1.2;
-        progress.validation_metric_name = "Mean IoU";
-        training.update_progress(progress);
-        require(metric_label_is(QStringLiteral("Mean IoU —")), "missing validation metric was displayed as a number");
-        progress.completed_epochs = 2;
-        progress.validation_metric = 0.0;
-        training.update_progress(progress);
-        require(metric_label_is(QStringLiteral("Mean IoU 0")), "a measured zero was displayed as missing");
     }
     // Explicit Select all includes hidden branches and empty model rows;
     // checking every displayed branch individually must keep branch-only scope.

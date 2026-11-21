@@ -7,6 +7,11 @@ function(studio_add_test target test_name source)
     add_test(NAME ${test_name} COMMAND ${target})
 endfunction()
 
+studio_add_test(annotation_components_test annotation_components
+    annotation_components_test.cpp)
+studio_add_test(task_sample_scope_test task_sample_scope
+    task_sample_scope_test.cpp)
+
 studio_add_test(image_viewport_transform_test image_viewport_transform
     image_viewport_transform_test.cpp)
 studio_add_test(dataset_visual_test dataset_visual_contract
@@ -28,6 +33,8 @@ studio_add_test(workflow_scene_test workflow_scene_interactions
 target_link_libraries(workflow_scene_test PRIVATE Qt5::Test)
 studio_add_test(main_window_test main_window_integration
     main_window_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc")
+studio_add_test(od_workflow_test od_workflow
+    od_workflow_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc")
 studio_add_test(shell_ui_test shell_ui_contract
     shell_ui_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc" "${STUDIO_TRANSLATIONS_QRC}")
 add_dependencies(shell_ui_test studio_translations)

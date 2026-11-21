@@ -28,6 +28,7 @@ public:
 private:
     void apply_filter();
     TaskWorkspaceService* service_ = nullptr;
+    QWidget* annotation_exchange_ = nullptr;
     QLineEdit* search_ = nullptr;
     QComboBox* filter_ = nullptr;
     QTableWidget* table_ = nullptr;

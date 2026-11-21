@@ -24,6 +24,7 @@
     <file alias="fit.svg">icons/fit.svg</file>
     <file alias="save.svg">icons/save.svg</file>
     <file alias="eye.svg">icons/eye.svg</file>
+    <file alias="select.svg">icons/select.svg</file>
     <file alias="trash.svg">icons/trash.svg</file>
     <file alias="add.svg">icons/add.svg</file>
     <file alias="rename.svg">icons/rename.svg</file>
@@ -43,6 +44,7 @@
     <file alias="dataset.svg">icons/dataset.svg</file>
     <file alias="task-cls.svg">icons/task-cls.svg</file>
     <file alias="task-sg.svg">icons/task-sg.svg</file>
+    <file alias="task-od.svg">icons/task-od.svg</file>
     <file alias="grid.svg">icons/grid.svg</file>
     <file alias="arrange.svg">icons/arrange.svg</file>
     <file alias="play-white.svg">icons/play-white.svg</file>

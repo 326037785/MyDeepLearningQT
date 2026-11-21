@@ -20,11 +20,13 @@ class QTabWidget;
 namespace studio {
 
 class ClassificationAnnotationWidget;
+class DetectionAnnotationWidget;
 class DatasetSelectionView;
 class DatasetSplitView;
 class InferenceWorkspace;
 class ResultsWorkspace;
 class SegmentationAnnotationWidget;
+class SegmentationClasses;
 class TrainingWorkspace;
 class ProjectModelBrowser;
 struct TrainingLaunchRequest;
@@ -42,6 +44,7 @@ public:
     void activate_step(Step step);
     Step active_step() const { return active_step_; }
     void set_runtime_busy(bool busy);
+    bool confirm_annotation_transition();
 
     void training_started();
     void update_training_progress(const jocelin::train::TrainingProgress& progress);
@@ -74,8 +77,8 @@ private:
     void build_segmentation_classes();
     void refresh_segmentation_classes(const std::string& class_id);
     const AnnotationClass* selected_segmentation_class() const;
-    std::string add_segmentation_class(const QString& name);
-    int choose_segmentation_class();
+    std::string add_annotation_class(const QString& name);
+    std::string choose_annotation_class();
     void refresh_annotation();
     void refresh_inference_result();
     void refresh_step_availability();
@@ -90,6 +93,7 @@ private:
     DatasetSelectionView* data_ = nullptr;
     SegmentationAnnotationWidget* segmentation_ = nullptr;
     ClassificationAnnotationWidget* classification_ = nullptr;
+    DetectionAnnotationWidget* detection_annotation_ = nullptr;
     DatasetSplitView* split_ = nullptr;
     TrainingWorkspace* training_ = nullptr;
     InferenceWorkspace* inference_ = nullptr;
@@ -99,7 +103,9 @@ private:
     QComboBox* annotation_weight_branch_ = nullptr;
     QTabWidget* segmentation_inspector_ = nullptr;
     QListWidget* segmentation_classes_ = nullptr;
+    SegmentationClasses* segmentation_class_editor_ = nullptr;
     QTabWidget* classification_inspector_ = nullptr;
+    QTabWidget* detection_inspector_ = nullptr;
     std::array<QPushButton*, 6> step_buttons_{};
     Step active_step_ = Step::Data;
     bool runtime_busy_ = false;

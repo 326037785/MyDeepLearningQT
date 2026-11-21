@@ -143,18 +143,6 @@ QWidget* metric_card(const QString& caption, QLabel*& value, QWidget* parent) {
     return card;
 }
 
-QString split_label(const std::string& value) {
-    if (value == "train") return QObject::tr("Train");
-    if (value == "validation") return QObject::tr("Validation");
-    if (value == "test") return QObject::tr("Test");
-    return QObject::tr("Unassigned");
-}
-
-QString annotation_label(const TaskSampleBinding& sample) {
-    if (sample.annotation_state == "annotated") return QObject::tr("Annotated");
-    return QObject::tr("Not annotated");
-}
-
 QString weight_type_label(jocelin::config::WeightType type) {
     switch (type) {
     case jocelin::config::WeightType::LibTorch: return QStringLiteral("LibTorch");

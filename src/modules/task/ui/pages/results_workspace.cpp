@@ -1,3 +1,4 @@
+#include "modules/task/presentation/results/detection_result_presentation.h"
 #include "modules/task/ui/pages/results_workspace.h"
 
 #include "common/ui/ui_metrics.h"
@@ -6,8 +7,8 @@
 #include "modules/task/presentation/result_presentation.h"
 #include "modules/task/presentation/sample_presentation.h"
 #include "modules/task/ui/annotation/cls/classification_annotation.h"
-#include "modules/task/ui/common/image_result_canvas.h"
-#include "modules/task/ui/common/project_model_browser.h"
+#include "modules/task/ui/results/image_result_canvas.h"
+#include "modules/task/ui/models/project_model_browser.h"
 #include "modules/task/ui/pages/task_page_ui.h"
 
 #include <QAbstractItemView>
@@ -37,7 +38,6 @@
 
 namespace studio {
 
-using task_page::annotation_label;
 using task_page::helper_label;
 using task_page::weight_type_label;
 
@@ -338,7 +338,11 @@ void ResultsWorkspace::refresh_selected_result() {
     content_->setVisible(has_result);
     open_folder_->setEnabled(has_result);
     export_button_->setEnabled(has_result);
-    benchmark_label_->setText(service_ && service_->task().task == "cls" ? tr("Accuracy") : tr("Mean IoU"));
+    const bool detection = service_ && service_->task().task == "od";
+    benchmark_label_->setText(detection ? tr("TP / FP / FN") :
+        service_ && service_->task().task == "cls" ? tr("Accuracy") : tr("Mean IoU"));
+    table_->setColumnHidden(3, detection);
+    table_->horizontalHeaderItem(2)->setText(detection ? tr("Top confidence") : tr("Confidence"));
     benchmark_->setText(QStringLiteral("—"));
     if (!has_result) {
         precision_->setText(QStringLiteral("—"));
@@ -362,6 +366,17 @@ void ResultsWorkspace::refresh_selected_result() {
         f1_->setText(metric_text(
             result_set->aggregate_metrics.available,
             result_set->aggregate_metrics.f1));
+    } else if (detection) {
+        const auto metric = [result_set](const char* key, int precision = 4) {
+            const auto found = result_set->detection_metrics.find(key);
+            return found == result_set->detection_metrics.end()
+                ? QStringLiteral("—") : QString::number(found->second, 'f', precision);
+        };
+        benchmark_->setText(tr("%1 / %2 / %3")
+            .arg(metric("true_positives", 0), metric("false_positives", 0), metric("false_negatives", 0)));
+        precision_->setText(metric("precision"));
+        recall_->setText(metric("recall"));
+        f1_->setText(metric("f1"));
     } else {
         precision_->setText(QStringLiteral("—"));
         recall_->setText(QStringLiteral("—"));
@@ -369,10 +384,14 @@ void ResultsWorkspace::refresh_selected_result() {
     }
 
     state_->show();
-    state_->setText(
-        tr("%1 sample result(s) · weight %2")
+    QString result_summary = tr("%1 sample result(s) · weight %2")
             .arg(result_set->samples.size())
-            .arg(QString::fromStdString(result_set->weight_id)));
+            .arg(QString::fromStdString(result_set->weight_id));
+    const auto negative_rate = result_set->detection_metrics.find("false_positives_per_negative_image");
+    if (negative_rate != result_set->detection_metrics.end()) {
+        result_summary += tr(" · False positives per negative image: %1").arg(negative_rate->second, 0, 'f', 2);
+    }
+    state_->setText(result_summary);
     table_->setRowCount(static_cast<int>(result_set->samples.size()));
     const auto& binding = service_->binding();
     for (int row = 0; row < static_cast<int>(result_set->samples.size()); ++row) {
@@ -381,7 +400,10 @@ void ResultsWorkspace::refresh_selected_result() {
         QString source_name = QString::fromStdString(result.source_sample_id);
         const auto* cls = std::get_if<jocelin::result::cls::ClsResult>(&result.result);
         const auto* sg = std::get_if<jocelin::result::sg::SgResult>(&result.result);
-        QString source_tooltip = QString::fromStdString(cls ? cls->image_path : sg->image_path);
+        const auto* od = std::get_if<jocelin::result::od::OdResult>(&result.result);
+        QString source_tooltip = std::visit([](const auto& value) {
+            return QString::fromStdString(value.image_path);
+        }, result.result);
         if (source_index >= 0) {
             const auto& source_sample = binding.samples[static_cast<size_t>(source_index)];
             source_name = image_display_name(source_index, source_sample);
@@ -394,12 +416,17 @@ void ResultsWorkspace::refresh_selected_result() {
         auto* prediction = new QTableWidgetItem(
             cls
                 ? (cls->predicted_class == -1 ? tr("Unknown") : tr("Class %1").arg(cls->predicted_class))
-                : tr("Segmentation"));
-        auto* confidence = new QTableWidgetItem(
-            QString::number(cls ? cls->confidence : sg->mean_confidence, 'f', 4));
-        auto* area = new QTableWidgetItem(
-            cls ? QStringLiteral("—")
-                           : QString::number(sg->predicted_area));
+                : od ? tr("%1 detection(s)").arg(od->detections.size()) : tr("Segmentation"));
+        QString confidence_text = QStringLiteral("—");
+        if (cls || sg) {
+            confidence_text = QString::number(cls ? cls->confidence : sg->mean_confidence, 'f', 4);
+        } else if (!od->detections.empty()) {
+            const auto best = std::max_element(od->detections.begin(), od->detections.end(),
+                [](const auto& left, const auto& right) { return left.score < right.score; });
+            confidence_text = metric_text(best->score.has_value(), best->score.value_or(0));
+        }
+        auto* confidence = new QTableWidgetItem(confidence_text);
+        auto* area = new QTableWidgetItem(sg ? QString::number(sg->predicted_area) : QStringLiteral("—"));
         for (auto* item : {sample, prediction, confidence, area})
             item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         table_->setItem(row, 0, sample);
@@ -424,6 +451,7 @@ void ResultsWorkspace::refresh_sample_detail() {
         result_set->samples[static_cast<size_t>(table_->currentRow())];
     const auto* cls = std::get_if<jocelin::result::cls::ClsResult>(&result.result);
     const auto* sg = std::get_if<jocelin::result::sg::SgResult>(&result.result);
+    const auto* od = std::get_if<jocelin::result::od::OdResult>(&result.result);
     const bool classification = cls != nullptr;
     if (sg) {
         benchmark_->setText(sg->metrics.available
@@ -440,11 +468,14 @@ void ResultsWorkspace::refresh_sample_detail() {
               .arg(cls->predicted_class == -1 ? tr("Unknown") : tr("Class %1").arg(cls->predicted_class))
               .arg(cls->confidence, 0, 'f', 4)
               .arg(cls->interest ? tr("Yes") : tr("No"))
+        : od ? detection_result_summary(*od)
         : tr("Confidence: %1\nPredicted area: %2 px")
               .arg(sg->mean_confidence, 0, 'f', 4).arg(sg->predicted_area));
 
     if (!canvas_stack_ || !segmentation_canvas_ || !classification_canvas_) return;
-    const QString source = QString::fromStdString(cls ? cls->image_path : sg->image_path);
+    const QString source = std::visit([](const auto& value) {
+        return QString::fromStdString(value.image_path);
+    }, result.result);
     canvas_stack_->setCurrentWidget(
         classification ? static_cast<QWidget*>(classification_canvas_)
                        : static_cast<QWidget*>(segmentation_canvas_));
@@ -471,8 +502,14 @@ void ResultsWorkspace::refresh_sample_detail() {
     const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
     const std::vector<jocelin::model::ModelClass> model_classes = model
         ? model->classes : std::vector<jocelin::model::ModelClass>{};
-    segmentation_canvas_->set_prediction_overlay(
-        prediction_overlay_from_result(*sg, model_classes, service_->binding().classes));
+    if (od) {
+        segmentation_canvas_->set_result_items(
+            present_detections(*od, model_classes, service_->binding().classes),
+            {od->source_size.width, od->source_size.height});
+    } else {
+        segmentation_canvas_->set_prediction_overlay(
+            prediction_overlay_from_result(*sg, model_classes, service_->binding().classes));
+    }
 }
 
 void ResultsWorkspace::export_results() {
@@ -488,12 +525,15 @@ void ResultsWorkspace::export_results() {
     if (QFileInfo(manifest).isFile()) sources.insert(manifest);
     for (const auto& result : result_set->samples) {
         std::visit([&](const auto& task_result) {
-            std::vector<std::string> paths{task_result.metadata_path};
+            std::vector<std::string> paths;
             using Result = std::decay_t<decltype(task_result)>;
+            if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                paths.push_back(task_result.metadata_path);
+            }
             if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                 paths.push_back(task_result.mask_path);
                 paths.push_back(task_result.visualization_path);
-            } else {
+            } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                 paths.push_back(task_result.heatmap_path);
             }
             for (const auto& source : paths) {

@@ -27,13 +27,14 @@ TaskNodeConfig task_config_for(const std::string& task) {
     config.task = task;
     config.model_index = model->index;
     config.model_scale = model->scale;
+    const bool detection = task == "od";
     config.device = {jocelin::config::DeviceType::Cpu, -1, "cpu"};
     config.training.batch_size = 4;
     config.training.epochs = 100;
     config.training.learning_rate = 0.001f;
     config.training.weight_decay = 0.0001f;
-    config.training.image_width = 256;
-    config.training.image_height = 256;
+    config.training.image_width = detection ? 640 : 256;
+    config.training.image_height = config.training.image_width;
     config.training.workers = 4;
     config.training.optimizer = "adam";
     config.training.scheduler = "cosine";
@@ -56,7 +57,7 @@ TaskNodeConfig task_config_for(const std::string& task) {
     config.dataset_binding.split_settings.test_percent = 0;
     config.dataset_binding.split_settings.seed = 42;
     config.dataset_binding.split_settings.strategy = "stratified";
-    config.dataset_binding.preprocessing.normalize = true;
+    config.dataset_binding.preprocessing.normalize = !detection;
     config.dataset_binding.preprocessing.bgr_to_rgb = true;
     config.inference_batch_size = 1;
     config.inference_use_all_images = true;
@@ -258,15 +259,20 @@ std::vector<ValidationIssue> WorkflowGraph::validate_for_execution() const {
                 issues.push_back({node_id, -1, "dataset directory does not exist"});
             }
             if (config.bucket_capacity != 1)
-                issues.push_back({node_id, -1, "standard sg/cls datasets require bucket capacity 1"});
+                issues.push_back({node_id, -1, "standard task datasets require bucket capacity 1"});
         } else if (node_value.kind == NodeKind::TaskConfig) {
             const auto& config = std::get<TaskNodeConfig>(node_value.config);
-            if (config.task != "sg" && config.task != "cls") issues.push_back({node_id, -1, "task type must be sg or cls"});
+            const TaskModuleDefinition* module = find_task_module(config.task);
+            if (!module || !module->available) {
+                issues.push_back({node_id, -1, "task module is not available"});
+            }
             if (config.model_index < 0) issues.push_back({node_id, -1, "model index must be non-negative"});
-            if (!supported_scale(config.model_scale)) issues.push_back({node_id, -1, "model scale must be n, s, m, l, or x"});
-            else if ((config.task == "sg" || config.task == "cls") &&
-                     !supports_model_spec(config.task, config.model_index, config.model_scale))
+            if (!supported_scale(config.model_scale)) {
+                issues.push_back({node_id, -1, "model scale must be n, s, m, l, or x"});
+            } else if (module && module->available &&
+                       !supports_model_spec(config.task, config.model_index, config.model_scale)) {
                 issues.push_back({node_id, -1, "model spec is not registered for the selected task"});
+            }
             if (config.training.batch_size <= 0 || config.training.epochs <= 0 ||
                 config.training.learning_rate <= 0.0f || config.training.weight_decay < 0.0f)
                 issues.push_back({node_id, -1, "training batch size, epochs, and learning rate must be positive"});

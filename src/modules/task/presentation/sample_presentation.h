@@ -12,6 +12,27 @@
 
 namespace studio {
 
+inline QString split_label(const std::string& value) {
+    if (value == "train") {
+        return QObject::tr("Train");
+    }
+    if (value == "validation") {
+        return QObject::tr("Validation");
+    }
+    if (value == "test") {
+        return QObject::tr("Test");
+    }
+    return QObject::tr("Test (default)");
+}
+
+inline QString annotation_label(const TaskSampleBinding& sample) {
+    if (sample.annotation_state == "annotated") {
+        return QObject::tr("Annotated");
+    }
+    return QObject::tr("Not annotated");
+}
+
+
 inline QString image_display_name(
     int sample_index,
     const TaskSampleBinding& sample)

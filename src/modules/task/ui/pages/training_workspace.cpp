@@ -5,9 +5,9 @@
 #include "modules/task/application/annotation/classification_annotation_state.h"
 #include "modules/task/application/catalog/model_spec_catalog.h"
 #include "modules/task/application/task_workspace_service.h"
-#include "modules/task/ui/common/model_presentation.h"
-#include "modules/task/ui/common/project_model_browser.h"
-#include "modules/task/ui/common/resource_monitor.h"
+#include "modules/task/ui/models/model_presentation.h"
+#include "modules/task/ui/models/project_model_browser.h"
+#include "modules/task/ui/monitoring/resource_monitor.h"
 #include "modules/task/ui/pages/augmentation_dialog.h"
 #include "modules/task/ui/pages/task_page_ui.h"
 
@@ -368,12 +368,21 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
         value->setButtonSymbols(QAbstractSpinBox::NoButtons);
         compact_control(value);
     }
-    auto* size_separator = new QLabel("×", image_size);
-    size_separator->setProperty("configFieldLabel", true);
-    size_separator->setAlignment(Qt::AlignCenter);
+    image_size_separator_ = new QLabel("×", image_size);
+    image_size_separator_->setProperty("configFieldLabel", true);
+    image_size_separator_->setAlignment(Qt::AlignCenter);
     image_size_layout->addWidget(image_width_);
-    image_size_layout->addWidget(size_separator);
+    image_size_layout->addWidget(image_size_separator_);
     image_size_layout->addWidget(image_height_);
+    image_size_preset_ = new QComboBox(image_size);
+    image_size_preset_->setObjectName("trainingImageSizePreset");
+    image_size_preset_->setAccessibleName(tr("Square training image size"));
+    for (const int side : {320, 640, 960}) {
+        image_size_preset_->addItem(QStringLiteral("%1 × %1").arg(side), side);
+    }
+    compact_control(image_size_preset_);
+    image_size_layout->addWidget(image_size_preset_);
+    image_size_preset_->hide();
     batch_size_ = new QSpinBox(run_section);
     batch_size_->setObjectName("trainingBatchSize");
     batch_size_->setRange(1, 1024);
@@ -665,6 +674,18 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     };
     connect(image_width_, qOverload<int>(&QSpinBox::valueChanged), this, [commit_settings](int) { commit_settings(); });
     connect(image_height_, qOverload<int>(&QSpinBox::valueChanged), this, [commit_settings](int) { commit_settings(); });
+    connect(image_size_preset_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this, commit_settings](int index) {
+        if (rebuilding_ || index < 0 || !service_ || service_->task().task != "od") {
+            return;
+        }
+        const int side = image_size_preset_->itemData(index).toInt();
+        const QSignalBlocker block_width(image_width_);
+        const QSignalBlocker block_height(image_height_);
+        image_width_->setValue(side);
+        image_height_->setValue(side);
+        commit_settings();
+    });
     connect(batch_size_, qOverload<int>(&QSpinBox::valueChanged), this, [commit_settings](int) { commit_settings(); });
     connect(epochs_, qOverload<int>(&QSpinBox::valueChanged), this, [commit_settings](int) { commit_settings(); });
     connect(learning_rate_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [commit_settings](double) { commit_settings(); });
@@ -806,29 +827,18 @@ QString TrainingWorkspace::training_source_mode() const {
         });
     if (found == models_.end()) return "new";
 
-    std::vector<jocelin::model::ModelClass> current_classes;
+    const std::vector<jocelin::model::ModelClass> current_classes = service_->training_classes();
     const bool classification = service_->task().task == "cls";
-    if (classification) {
-        for (const auto* value : classification_classes(service_->binding().classes))
-            current_classes.push_back({value->id, value->name, 0});
-    } else {
-        for (const AnnotationClass& value : service_->binding().classes) {
-            current_classes.push_back({value.id, value.name, value.mask_value});
-        }
-        std::sort(current_classes.begin(), current_classes.end(),
-            [](const auto& left, const auto& right) {
-                return left.mask_value < right.mask_value;
-            });
-    }
+    const bool detection = service_->task().task == "od";
     const bool same_classes =
         found->classes.size() == current_classes.size() &&
         std::equal(
             found->classes.begin(), found->classes.end(),
             current_classes.begin(), current_classes.end(),
-            [classification](const auto& left, const auto& right) {
+            [classification, detection](const auto& left, const auto& right) {
                 return left.id == right.id &&
-                    left.name == right.name &&
-                    (classification || left.mask_value == right.mask_value);
+                    (detection || left.name == right.name) &&
+                    (classification || detection || left.mask_value == right.mask_value);
             });
     const auto& task = service_->task();
     const bool same_model_spec =
@@ -885,7 +895,7 @@ void TrainingWorkspace::update_model_compatibility() {
     if (!training_weight ||
         !QFileInfo::exists(QString::fromStdString(training_weight->path)))
         incompatible << tr("LibTorch training weight is missing");
-    if (mode == "inherit") {
+    if (mode == "inherit" || task_type == jocelin::config::ToolType::Od) {
         if (model.task != task_type)
             incompatible << tr("task type differs");
         if (model.model_scale != model_scale)
@@ -947,6 +957,16 @@ void TrainingWorkspace::refresh() {
         std::max(0, model_index_->findData(task.model_index)));
     image_width_->setValue(task.training.image_width);
     image_height_->setValue(task.training.image_height);
+    const bool detection = task.task == "od";
+    model_browser_->set_import_available(!detection);
+    image_width_->setVisible(!detection);
+    image_height_->setVisible(!detection);
+    image_size_separator_->setVisible(!detection);
+    image_size_preset_->setVisible(detection);
+    image_size_preset_->setCurrentIndex(image_size_preset_->findData(
+        task.training.image_width == task.training.image_height ? task.training.image_width : 0));
+    augmentation_button_->setVisible(!detection);
+    static_cast<QFormLayout*>(advanced_panel_->layout())->labelForField(augmentation_button_)->setVisible(!detection);
     batch_size_->setValue(task.training.batch_size);
     epochs_->setValue(task.training.epochs);
     learning_rate_->setValue(task.training.learning_rate);
@@ -1026,6 +1046,7 @@ void TrainingWorkspace::set_busy(bool busy) {
             static_cast<QWidget*>(model_scale_),
             static_cast<QWidget*>(image_width_),
             static_cast<QWidget*>(image_height_),
+            static_cast<QWidget*>(image_size_preset_),
             static_cast<QWidget*>(batch_size_),
             static_cast<QWidget*>(epochs_),
             static_cast<QWidget*>(learning_rate_),

@@ -4,7 +4,7 @@
 #include "modules/task/application/task_dataset_binding.h"
 #include "modules/task/application/task_workspace_service.h"
 #include "modules/task/presentation/sample_presentation.h"
-#include "modules/task/ui/common/sample_browser.h"
+#include "modules/task/ui/samples/sample_browser.h"
 #include "modules/task/ui/pages/task_page_ui.h"
 
 #include <QAbstractItemView>
@@ -27,9 +27,7 @@
 
 namespace studio {
 
-using task_page::annotation_label;
 using task_page::metric_card;
-using task_page::split_label;
 
 DatasetSplitView::DatasetSplitView(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
@@ -186,7 +184,9 @@ void DatasetSplitView::refresh() {
     for (const auto& sample : samples) {
         if (!sample.selected) continue;
         ++selected_rows;
-        malformed += sample.quality_issues.empty() ? 0 : 1;
+        if (sample.split == "train" || sample.split == "validation") {
+            malformed += sample.quality_issues.empty() ? 0 : 1;
+        }
     }
     table_->setRowCount(selected_rows);
     int row = 0;

@@ -1,3 +1,4 @@
+#include "modules/task/presentation/results/detection_result_presentation.h"
 #include "modules/task/ui/pages/inference_workspace.h"
 
 #include "common/ui/ui_metrics.h"
@@ -9,9 +10,9 @@
 #include "modules/task/presentation/result_presentation.h"
 #include "modules/task/presentation/sample_presentation.h"
 #include "modules/task/ui/annotation/cls/classification_annotation.h"
-#include "modules/task/ui/common/image_result_canvas.h"
-#include "modules/task/ui/common/project_model_browser.h"
-#include "modules/task/ui/common/resource_monitor.h"
+#include "modules/task/ui/results/image_result_canvas.h"
+#include "modules/task/ui/models/project_model_browser.h"
+#include "modules/task/ui/monitoring/resource_monitor.h"
 #include "modules/task/ui/filters/inference_filter_panel.h"
 #include "modules/task/ui/filters/task_inference_filter.h"
 #include "modules/task/ui/pages/task_page_ui.h"
@@ -49,7 +50,6 @@
 
 namespace studio {
 
-using task_page::annotation_label;
 using task_page::set_runtime_state;
 using task_page::weight_type_label;
 
@@ -97,8 +97,8 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     checked_target_->setTextFormat(Qt::PlainText);
     checked_target_->setWordWrap(true);
     checked_target_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    auto* batch_label = new QLabel(tr("Batch"), command_bar);
-    batch_label->setProperty("meta", true);
+    batch_label_ = new QLabel(tr("Batch"), command_bar);
+    batch_label_->setProperty("meta", true);
     batch_size_ = new QSpinBox(command_bar);
     batch_size_->setObjectName("inferenceBatchSize");
     batch_size_->setRange(1, 1024);
@@ -124,7 +124,7 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
     command_layout->addWidget(device_label, 0, 2);
     command_layout->addWidget(device_, 0, 3);
     command_layout->addWidget(checked_target_, 0, 4, 1, 2);
-    command_layout->addWidget(batch_label, 0, 6);
+    command_layout->addWidget(batch_label_, 0, 6);
     command_layout->addWidget(batch_size_, 0, 7);
     command_layout->addWidget(state_, 0, 8);
     command_layout->addWidget(start_, 0, 9);
@@ -347,7 +347,8 @@ InferenceWorkspace::InferenceWorkspace(QWidget* parent) : QWidget(parent) {
         QListWidgetItem* first_visible = nullptr;
         for (int index = 0; index < images_->count(); ++index) {
             QListWidgetItem* item = images_->item(index);
-            const bool matches_split = split == "all" || item->data(Qt::UserRole + 1).toString() == split;
+            const bool matches_split = split == "all" || item->data(Qt::UserRole + 1).toString() == split ||
+                (split == "test" && item->data(Qt::UserRole + 1).toString() == "unassigned");
             const bool matches_query = query.isEmpty() ||
                 item->text().contains(query, Qt::CaseInsensitive) ||
                 item->data(Qt::UserRole).toString().contains(query, Qt::CaseInsensitive) ||
@@ -436,6 +437,10 @@ void InferenceWorkspace::refresh() {
         return;
     }
     const auto& task = service_->task();
+    const bool detection = task.task == "od";
+    model_browser_->set_import_available(!detection);
+    batch_label_->setVisible(!detection);
+    batch_size_->setVisible(!detection);
     available_devices_ = jocelin::runtime::available_compute_devices();
     const auto task_type = jocelin::config::tool_type_from_string(task.task);
     std::vector<jocelin::model::ModelEntry> task_models;
@@ -456,7 +461,7 @@ void InferenceWorkspace::refresh() {
          sample_index < static_cast<int>(samples.size());
          ++sample_index) {
         const auto& sample = samples[static_cast<size_t>(sample_index)];
-        if (!sample.selected) {
+        if (!sample.selected || (detection && sample.image_paths.size() != 1)) {
             continue;
         }
         const QString display_name = image_display_name(sample_index, sample);
@@ -485,7 +490,8 @@ void InferenceWorkspace::refresh() {
                 item->setIcon(QPixmap::fromImage(thumbnail));
             }
             const bool matches_split = split_filter == "all" ||
-                item->data(Qt::UserRole + 1).toString() == split_filter;
+                item->data(Qt::UserRole + 1).toString() == split_filter ||
+                (split_filter == "test" && item->data(Qt::UserRole + 1).toString() == "unassigned");
             const bool matches_query = query.isEmpty() ||
                 item->text().contains(query, Qt::CaseInsensitive) ||
                 item->data(Qt::UserRole).toString().contains(query, Qt::CaseInsensitive) ||
@@ -711,8 +717,14 @@ void InferenceWorkspace::refresh_canvas() {
         const jocelin::model::ModelEntry* model = service_->find_model(service_->selected_model_id());
         const std::vector<jocelin::model::ModelClass> model_classes = model
             ? model->classes : std::vector<jocelin::model::ModelClass>{};
-        segmentation_canvas_->set_prediction_overlay(prediction_overlay_from_result(
-            std::get<jocelin::result::sg::SgResult>(match->result), model_classes, service_->binding().classes));
+        if (const auto* sg = std::get_if<jocelin::result::sg::SgResult>(&match->result)) {
+            segmentation_canvas_->set_prediction_overlay(
+                prediction_overlay_from_result(*sg, model_classes, service_->binding().classes));
+        } else if (const auto* od = std::get_if<jocelin::result::od::OdResult>(&match->result)) {
+            segmentation_canvas_->set_result_items(
+                present_detections(*od, model_classes, service_->binding().classes),
+                {od->source_size.width, od->source_size.height});
+        }
     }
 }
 

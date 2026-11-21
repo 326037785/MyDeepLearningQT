@@ -274,15 +274,15 @@ void inference_persistence_roundtrip(const studio::ProjectModel& prototype) {
     require(wrong_scope && QDir(pending.first).exists(), "cleanup accepted another Node's pending branch");
 
     const jocelin::inference::InferenceReport detection = jocelin::result::od::OdInferenceResult{};
-    bool unsupported_result = false;
+    bool mismatched_result = false;
     try {
         project.commit_inference_result(first, "model_1", "libtorch_fp32", detection, pending.first);
     } catch (const std::runtime_error&) {
-        unsupported_result = true;
+        mismatched_result = true;
     }
-    require(unsupported_result && QDir(pending.first).exists() &&
+    require(mismatched_result && QDir(pending.first).exists() &&
             studio::ProjectStorage::read(QDir(first_dir).filePath("result.json")) == old_json,
-            "unsupported inference result changed a committed branch");
+            "inference result for a different Task changed a committed branch");
 
     // A failed worker discards only pending output, without publishing records or files.
     project.discard_inference_directory(first, "model_1", "libtorch_fp32", pending.first);
@@ -840,6 +840,63 @@ int main(int argc, char** argv) try {
     model.creation_mode = jocelin::model::ModelCreationMode::NewTraining;
     model_list_ownership_roundtrip(model);
     inference_persistence_roundtrip(model);
+    {
+        QTemporaryDir fixtures;
+        const QString source_path = fixtures.filePath("input.png");
+        QImage source_image(96, 72, QImage::Format_RGB888);
+        source_image.fill(Qt::white);
+        if (!fixtures.isValid() || !source_image.save(source_path)) {
+            throw std::runtime_error("cannot create OD persistence input");
+        }
+        studio::ProjectManager od_project;
+        studio::WorkflowDocument& document = od_project.active_workflow().document;
+        const int source = document.graph.add_node(studio::NodeKind::DatasetInput);
+        const int od_node = document.graph.add_task_node({"od"});
+        std::get<studio::DatasetConfig>(document.graph.node(source).config).items =
+            {{source_path.toStdString(), {}, true, "image-with-boxes"}};
+        document.graph.connect(source, 0, od_node, 0);
+        document.positions = {{source, {0, 0}}, {od_node, {200, 0}}};
+        od_project.save_project(fixtures.filePath("OD"));
+        studio::TaskWorkspaceService service(document.graph, od_node);
+        const std::string class_id = service.add_class("forklift", "#2073E4");
+        const std::string sample_id = service.binding().samples.front().sample_id;
+        service.set_detection_boxes(sample_id, {{class_id, {0, 11, 13, 16, 12}, std::nullopt}});
+        studio::ProjectModel od_model = model;
+        od_model.task = jocelin::config::ToolType::Od;
+        od_model.model_scale = jocelin::config::ModelScale::N;
+        od_model.classes = {{class_id, "forklift", 0}};
+        od_model.asset_directory = QDir(od_project.node_models_directory(od_node)).filePath("owned").toStdString();
+        od_model.weights.front().path = QDir(QString::fromStdString(od_model.asset_directory)).filePath("od.pt").toStdString();
+        od_model = service.add_model(od_model);
+        od_project.save_project();
+        const QString model_id = QString::fromStdString(od_model.id);
+        const QString weight_id = QString::fromStdString(od_model.weights.front().id);
+        const QString pending = od_project.prepare_inference_directory(od_node, model_id, weight_id);
+        jocelin::result::od::OdInferenceResult report;
+        report.classes = od_model.classes;
+        jocelin::result::od::OdResult result;
+        result.image_path = source_path.toStdString();
+        result.source_size = {source_image.width(), source_image.height()};
+        result.detections = {{class_id, {0, 20, 24, 15, 18}, 0.94f}};
+        report.samples.push_back(result);
+        od_project.commit_inference_result(od_node, model_id, weight_id, report, pending);
+        studio::ProjectManager reopened;
+        reopened.open_project(od_project.project_file());
+        studio::TaskWorkspaceService restored(reopened.active_workflow().document.graph, od_node);
+        restored.select_inference_result(model_id, weight_id);
+        const studio::InferenceResultSet* saved = restored.selected_inference_result();
+        if (!saved || saved->samples.size() != 1 || saved->samples.front().source_sample_id != sample_id) {
+            throw std::runtime_error("OD predictions lost their owning branch or sample after reopen");
+        }
+        const auto& od_result = std::get<jocelin::result::od::OdResult>(saved->samples.front().result);
+        const auto& truth = restored.binding().samples.front().bbox_comps;
+        if (od_result.source_size != result.source_size || od_result.detections.size() != 1 ||
+            od_result.detections.front().class_id != class_id || od_result.detections.front().score != 0.94f ||
+            od_result.detections.front().box.cx() != 20 || truth.size() != 1 || truth.front().score ||
+            truth.front().box.cx() != 11) {
+            throw std::runtime_error("OD ground truth or predictions did not round-trip separately");
+        }
+    }
     dataset_lifecycle_roundtrip(model);
     const auto added_model = studio::TaskWorkspaceService(project.active_workflow().document.graph, node_id).add_model(model);
     if (added_model.id != "model_1" ||

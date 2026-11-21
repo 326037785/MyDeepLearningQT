@@ -70,8 +70,14 @@ NodeWorkspace::NodeWorkspace(QWidget* parent) : QWidget(parent) {
     root->addWidget(content_host, 1);
 
     connect(back, &QPushButton::clicked, this, [this] {
-        if (back_requested) back_requested();
+        if (back_requested && confirm_annotation_transition()) {
+            back_requested();
+        }
     });
+}
+
+bool NodeWorkspace::confirm_annotation_transition() {
+    return !task_workspace_ || task_workspace_->confirm_annotation_transition();
 }
 
 void NodeWorkspace::edit_node(

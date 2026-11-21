@@ -148,15 +148,15 @@ QFrame#annotationSamplesPanel, QFrame#inferenceSamplesPanel, QFrame#resultsSampl
 QFrame#classificationImagesPanel { background: #EDF2F0; border: 1px solid #CBD8D5; border-radius: 7px; }
 QFrame#annotationClassesPanel, QFrame#inferenceModelsPanel, QFrame#resultsDetailPanel { background: #FFFFFF; border: 0; border-left: 1px solid #CBD8D5; border-radius: 0; }
 QFrame#classificationClassesPanel { background: #FFFFFF; border: 1px solid #CBD8D5; border-radius: 7px; }
-QListWidget#annotationImageList { background: #F9FBFA; border: 0; border-radius: 4px; }
-QListWidget#annotationImageList::item:selected { background: #CCE2DC; color: #173F46; }
+QListWidget#annotationImageList, QListWidget#odAnnotationSamples { background: #F9FBFA; border: 0; border-radius: 4px; }
+QListWidget#annotationImageList::item:selected, QListWidget#odAnnotationSamples::item:selected { background: #CCE2DC; color: #173F46; }
 QListWidget#classificationImageList { background: #F9FBFA; border: 0; border-radius: 5px; }
 QListWidget#classificationImageList::item:selected { background: #CCE2DC; color: #173F46; }
 QLabel#annotationQualitySummary[qualityState=ready] { color: #087A5C; }
 QLabel#annotationQualitySummary[qualityState=warning] { color: #9A5D13; }
-QListWidget#segmentationClassList { background: #F9FBFA; border: 1px solid #DCE4E7; border-radius: 5px; }
-QListWidget#segmentationClassList::item { padding: 3px 5px; }
-QListWidget#segmentationClassList::item:selected { background: #DDF5EE; color: #123C35; }
+QListWidget#segmentationClassList, QListWidget#odClassList { background: #F9FBFA; border: 1px solid #DCE4E7; border-radius: 5px; }
+QListWidget#segmentationClassList::item, QListWidget#odClassList::item { padding: 3px 5px; }
+QListWidget#segmentationClassList::item:selected, QListWidget#odClassList::item:selected { background: #DDF5EE; color: #123C35; }
 QFrame#annotationViewportPanel, QFrame#inferenceViewportPanel, QFrame#resultsViewportPanel { background: #18292D; border: 1px solid #31575C; border-radius: 7px; }
 QFrame#classificationPreviewPanel { background: #18292D; border: 1px solid #31575C; border-radius: 7px; }
 QFrame#annotationToolBar, QFrame#annotationLayerBar, QFrame#inferenceLayerBar, QFrame#resultsLayerBar { background: #E3EBE8; border: 0; }

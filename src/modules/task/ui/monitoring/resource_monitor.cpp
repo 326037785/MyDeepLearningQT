@@ -1,4 +1,4 @@
-#include "modules/task/ui/common/resource_monitor.h"
+#include "modules/task/ui/monitoring/resource_monitor.h"
 
 #include <QDir>
 #include <QLabel>

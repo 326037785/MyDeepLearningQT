@@ -1,4 +1,5 @@
 #include "modules/settings/ui/settings_module.h"
+#include "modules/settings/application/annotation_preferences.h"
 #include "common/ui/icon_provider.h"
 #include "modules/settings/application/ui_language.h"
 
@@ -7,7 +8,6 @@
 #include <QComboBox>
 #include <QMenu>
 #include <QMessageBox>
-#include <QSettings>
 #include <QSignalBlocker>
 #include <QToolBar>
 #include <QToolButton>
@@ -41,13 +41,10 @@ SettingsModule::SettingsModule(QWidget* parent) : QObject(parent), dialog_parent
     QAction* annotation_auto_save = preferences_->addAction(tr("Auto-save annotations"));
     annotation_auto_save->setObjectName("annotationAutoSaveAction");
     annotation_auto_save->setCheckable(true);
-    annotation_auto_save->setChecked(
-        QSettings(QSettings::IniFormat, QSettings::UserScope, "Jocelin", "DeepLearningStudio")
-            .value("annotation/autoSave", false).toBool());
+    annotation_auto_save->setChecked(studio::annotation_auto_save());
     annotation_auto_save->setToolTip(tr("Save the current annotation when switching samples."));
     connect(annotation_auto_save, &QAction::toggled, this, [](bool enabled) {
-        QSettings(QSettings::IniFormat, QSettings::UserScope, "Jocelin", "DeepLearningStudio")
-            .setValue("annotation/autoSave", enabled);
+        set_annotation_auto_save(enabled);
     });
     connect(language_, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this] { save_language(language_->currentData().toString()); });

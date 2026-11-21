@@ -1,7 +1,7 @@
 #pragma once
 
 #include "modules/workflow/model/workflow.h"
-#include "modules/task/ui/common/result_inspection.h"
+#include "modules/task/ui/results/result_inspection.h"
 
 #include <QImage>
 #include <QLabel>
@@ -20,6 +20,8 @@ class QResizeEvent;
 class QTabWidget;
 
 namespace studio {
+
+class SampleBrowser;
 
 class ClassificationCanvas final : public QLabel {
 public:
@@ -66,6 +68,7 @@ private:
     void rebuild_classes();
     void update_review_state();
     void show_class_menu(const QPoint& global_position);
+    void append_class_actions(QMenu& menu);
     int prompt_for_class();
     int add_or_select_class(const QString& name);
     void assign_selected(int class_index);
@@ -84,7 +87,7 @@ private:
     double confidence_ = 0.0;
     QImage current_image_;
     QImage current_heatmap_;
-    QListWidget* images_ = nullptr;
+    SampleBrowser* images_ = nullptr;
     QListWidget* classes_ = nullptr;
     QLabel* context_ = nullptr;
     ClassificationCanvas* preview_ = nullptr;

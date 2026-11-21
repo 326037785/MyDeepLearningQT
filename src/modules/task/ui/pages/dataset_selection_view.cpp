@@ -29,10 +29,8 @@
 
 namespace studio {
 
-using task_page::annotation_label;
 using task_page::helper_label;
 using task_page::metric_card;
-using task_page::split_label;
 
 DatasetSelectionView::DatasetSelectionView(QWidget* parent) : QWidget(parent) {
     auto* root = new QVBoxLayout(this);
@@ -53,28 +51,32 @@ DatasetSelectionView::DatasetSelectionView(QWidget* parent) : QWidget(parent) {
     open_dataset->setObjectName("taskOpenDatasetButton");
     open_dataset->setProperty("compact", true);
     open_dataset->setToolTip(tr("Open the connected source Dataset"));
-    auto* exchange_label = new QLabel(tr("Annotations"), exchange);
+    annotation_exchange_ = new QWidget(exchange);
+    QHBoxLayout* annotation_layout = new QHBoxLayout(annotation_exchange_);
+    annotation_layout->setContentsMargins(ThemeTokens::Space2, 0, 0, 0);
+    annotation_layout->setSpacing(ThemeTokens::Space1);
+    QLabel* exchange_label = new QLabel(tr("Annotations"), annotation_exchange_);
     exchange_label->setProperty("eyebrow", true);
-    auto* import_annotations = new QPushButton(tr("Import…"), exchange);
+    QPushButton* import_annotations = new QPushButton(tr("Import…"), annotation_exchange_);
     import_annotations->setObjectName("taskAnnotationImportButton");
     import_annotations->setProperty("compact", true);
     import_annotations->setToolTip(
         tr("Import a Studio bundle or an images/masks directory."));
-    auto* export_format = new QComboBox(exchange);
+    QComboBox* export_format = new QComboBox(annotation_exchange_);
     export_format->setObjectName("taskAnnotationExportFormat");
     export_format->setToolTip(tr("Annotation export format"));
     export_format->addItem(
         tr("Studio bundle"),
         static_cast<int>(AnnotationExchangeFormat::StudioNative));
-    auto* export_annotations = new QPushButton(tr("Export…"), exchange);
+    QPushButton* export_annotations = new QPushButton(tr("Export…"), annotation_exchange_);
     export_annotations->setObjectName("taskAnnotationExportButton");
     export_annotations->setProperty("compact", true);
     exchange_layout->addWidget(open_dataset);
-    exchange_layout->addSpacing(ThemeTokens::Space2);
-    exchange_layout->addWidget(exchange_label);
-    exchange_layout->addWidget(import_annotations);
-    exchange_layout->addWidget(export_format);
-    exchange_layout->addWidget(export_annotations);
+    annotation_layout->addWidget(exchange_label);
+    annotation_layout->addWidget(import_annotations);
+    annotation_layout->addWidget(export_format);
+    annotation_layout->addWidget(export_annotations);
+    exchange_layout->addWidget(annotation_exchange_);
     exchange_layout->addStretch();
     root->addWidget(exchange);
 
@@ -217,6 +219,7 @@ DatasetSelectionView::DatasetSelectionView(QWidget* parent) : QWidget(parent) {
 
 void DatasetSelectionView::set_service(TaskWorkspaceService* service) {
     service_ = service;
+    annotation_exchange_->setVisible(!service_ || service_->task().task != "od");
     refresh();
 }
 

@@ -23,6 +23,7 @@ public:
     void show_home();
     bool can_close();
     QDockWidget* dock() const { return dock_; }
+    std::function<bool()> confirm_annotation_transition;
     std::function<void()> before_switch;
     std::function<void()> after_switch;
     std::function<void()> show_workflow;

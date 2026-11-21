@@ -100,13 +100,15 @@ void relocate_graph_paths(
                 for (auto& result : result_set.samples) {
                     std::visit([&](auto& task_result) {
                         task_result.image_path = relocated_path(task_result.image_path, source_root, destination_root);
-                        task_result.save_dir = relocated_path(task_result.save_dir, source_root, destination_root);
-                        task_result.metadata_path = relocated_path(task_result.metadata_path, source_root, destination_root);
                         using Result = std::decay_t<decltype(task_result)>;
+                        if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                            task_result.save_dir = relocated_path(task_result.save_dir, source_root, destination_root);
+                            task_result.metadata_path = relocated_path(task_result.metadata_path, source_root, destination_root);
+                        }
                         if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                             task_result.mask_path = relocated_path(task_result.mask_path, source_root, destination_root);
                             task_result.visualization_path = relocated_path(task_result.visualization_path, source_root, destination_root);
-                        } else {
+                        } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                             task_result.heatmap_path = relocated_path(task_result.heatmap_path, source_root, destination_root);
                         }
                     }, result.result);
@@ -146,13 +148,15 @@ WorkflowGraph portable_graph(const WorkflowGraph& source, const QString& root_di
                 for (auto& result : result_set.samples) {
                     std::visit([&](auto& task_result) {
                         task_result.image_path = ProjectStorage::portable_path(task_result.image_path, root_directory).toStdString();
-                        task_result.save_dir = ProjectStorage::portable_path(task_result.save_dir, root_directory).toStdString();
-                        task_result.metadata_path = ProjectStorage::portable_path(task_result.metadata_path, root_directory).toStdString();
                         using Result = std::decay_t<decltype(task_result)>;
+                        if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                            task_result.save_dir = ProjectStorage::portable_path(task_result.save_dir, root_directory).toStdString();
+                            task_result.metadata_path = ProjectStorage::portable_path(task_result.metadata_path, root_directory).toStdString();
+                        }
                         if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                             task_result.mask_path = ProjectStorage::portable_path(task_result.mask_path, root_directory).toStdString();
                             task_result.visualization_path = ProjectStorage::portable_path(task_result.visualization_path, root_directory).toStdString();
-                        } else {
+                        } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                             task_result.heatmap_path = ProjectStorage::portable_path(task_result.heatmap_path, root_directory).toStdString();
                         }
                     }, result.result);
@@ -192,13 +196,15 @@ void resolve_graph_paths(WorkflowGraph& graph, const QString& root_directory) {
                 for (auto& result : result_set.samples) {
                     std::visit([&](auto& task_result) {
                         task_result.image_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.image_path), root_directory);
-                        task_result.save_dir = ProjectStorage::runtime_path(QString::fromStdString(task_result.save_dir), root_directory);
-                        task_result.metadata_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.metadata_path), root_directory);
                         using Result = std::decay_t<decltype(task_result)>;
+                        if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                            task_result.save_dir = ProjectStorage::runtime_path(QString::fromStdString(task_result.save_dir), root_directory);
+                            task_result.metadata_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.metadata_path), root_directory);
+                        }
                         if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                             task_result.mask_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.mask_path), root_directory);
                             task_result.visualization_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.visualization_path), root_directory);
-                        } else {
+                        } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                             task_result.heatmap_path = ProjectStorage::runtime_path(QString::fromStdString(task_result.heatmap_path), root_directory);
                         }
                     }, result.result);
@@ -237,12 +243,16 @@ void validate_inference_results(const WorkflowGraph& graph, const QString& workf
             for (const auto& sample : result.samples) {
                 if (sample.source_sample_id.empty()) throw std::runtime_error("inference result requires source_sample_id");
                 std::visit([&](const auto& value) {
-                    inspect(value.save_dir);
-                    inspect(value.metadata_path);
                     using Result = std::decay_t<decltype(value)>;
+                    if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                        inspect(value.save_dir);
+                        inspect(value.metadata_path);
+                    }
                     if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                         inspect(value.mask_path); inspect(value.visualization_path);
-                    } else inspect(value.heatmap_path);
+                    } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
+                        inspect(value.heatmap_path);
+                    }
                 }, sample.result);
             }
         }
@@ -693,8 +703,6 @@ void ProjectManager::commit_inference_result(int node_id, const QString& model_i
         relocate_artifacts(*cls);
     } else if (auto* sg = std::get_if<jocelin::result::sg::SgInferenceResult>(&relocated)) {
         relocate_artifacts(*sg);
-    } else {
-        throw std::runtime_error("Object detection results require an OD workspace.");
     }
     service.record_inference_result(relocated, model_id.toStdString(), weight_id.toStdString(), weight->format,
         final.toStdString(), {});
@@ -776,13 +784,15 @@ size_t ProjectManager::external_reference_count() const {
                     for (const auto& result : result_set.samples) {
                         std::visit([&](const auto& task_result) {
                             inspect(task_result.image_path);
-                            inspect(task_result.save_dir);
-                            inspect(task_result.metadata_path);
                             using Result = std::decay_t<decltype(task_result)>;
+                            if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                                inspect(task_result.save_dir);
+                                inspect(task_result.metadata_path);
+                            }
                             if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                                 inspect(task_result.mask_path);
                                 inspect(task_result.visualization_path);
-                            } else {
+                            } else if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                                 inspect(task_result.heatmap_path);
                             }
                         }, result.result);

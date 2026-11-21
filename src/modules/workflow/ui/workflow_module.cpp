@@ -389,7 +389,7 @@ void WorkflowModule::build_library() {
     for (const auto& module : task_modules) {
         if (!module.available) continue;
         const QString id = QString::fromLatin1(module.id);
-        auto* button = new QPushButton(IconProvider::icon("task-" + id), tr(module.display_name), library);
+        QPushButton* button = new QPushButton(IconProvider::icon("task-" + id), tr(module.display_name), library);
         button->setObjectName("addTask_" + id + "Button");
         button->setProperty("nodeLibraryItem", true);
         button->setProperty("group", "task");
@@ -538,6 +538,9 @@ void WorkflowModule::addWorkflow() {
     const QString name = QInputDialog::getText(&shell_, tr("Add workflow"), tr("Workflow name"), QLineEdit::Normal,
                                                 tr("Workflow %1").arg(project_.workflows().size() + 1), &accepted).trimmed();
     if (!accepted || name.isEmpty()) return;
+    if (!node_workspace_->confirm_annotation_transition()) {
+        return;
+    }
     unbindWorkflowViews();
     try {
         project_.add_workflow(name);
@@ -556,6 +559,11 @@ bool WorkflowModule::activateWorkflow(int index) {
         return false;
     }
     if (static_cast<size_t>(index) == project_.active_index()) return true;
+    if (!node_workspace_->confirm_annotation_transition()) {
+        const QSignalBlocker block(workflow_tabs_);
+        workflow_tabs_->setCurrentIndex(static_cast<int>(project_.active_index()));
+        return false;
+    }
     unbindWorkflowViews();
     try {
         project_.set_active_index(static_cast<size_t>(index));
@@ -569,6 +577,10 @@ bool WorkflowModule::activateWorkflow(int index) {
 }
 
 void WorkflowModule::closeWorkflow(int index) {
+    if (static_cast<size_t>(index) == project_.active_index() &&
+        !node_workspace_->confirm_annotation_transition()) {
+        return;
+    }
     if (!activateWorkflow(index)) return;
     if (QMessageBox::question(&shell_, tr("Remove workflow"),
         tr("Remove workflow '%1' from this project?").arg(project_.active_workflow().name)) != QMessageBox::Yes) return;
@@ -614,6 +626,9 @@ void WorkflowModule::addNode(NodeKind kind, const QString& task_module) {
 }
 
 void WorkflowModule::clearWorkflow() {
+    if (!node_workspace_->confirm_annotation_transition()) {
+        return;
+    }
     if (!graph().nodes().empty() &&
         QMessageBox::question(&shell_, tr("Clear workflow"), tr("Remove all nodes from the active workflow?")) != QMessageBox::Yes) return;
     unbindWorkflowViews();
@@ -623,6 +638,9 @@ void WorkflowModule::clearWorkflow() {
 }
 
 void WorkflowModule::loadExampleWorkflow() {
+    if (!node_workspace_->confirm_annotation_transition()) {
+        return;
+    }
     if (!graph().nodes().empty() &&
         QMessageBox::question(&shell_, tr("Load example"), tr("Replace the active workflow with the example?")) != QMessageBox::Yes) return;
     unbindWorkflowViews();
@@ -779,6 +797,9 @@ void WorkflowModule::showWorkflowWorkspace() {
 
 void WorkflowModule::openNodeWorkspace(int node_id) {
     if (graph().nodes().count(node_id) == 0) return;
+    if (!node_workspace_->confirm_annotation_transition()) {
+        return;
+    }
     const QString dataset = graph().node(node_id).kind == NodeKind::TaskConfig
         ? connectedDatasetDirectory(node_id) : QString{};
     node_workspace_->edit_node(&graph(), node_id, dataset);

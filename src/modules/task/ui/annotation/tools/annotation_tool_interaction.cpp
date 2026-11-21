@@ -1,4 +1,4 @@
-#include "modules/task/ui/common/annotation_tool_interaction.h"
+#include "modules/task/ui/annotation/tools/annotation_tool_interaction.h"
 
 #include <QLineF>
 #include <QPainter>

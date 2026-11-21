@@ -76,6 +76,7 @@ private:
     QComboBox* device_ = nullptr;
     QLabel* checked_target_ = nullptr;
     QSpinBox* batch_size_ = nullptr;
+    QLabel* batch_label_ = nullptr;
     QPushButton* start_ = nullptr;
     QLabel* state_ = nullptr;
     QLabel* current_image_ = nullptr;

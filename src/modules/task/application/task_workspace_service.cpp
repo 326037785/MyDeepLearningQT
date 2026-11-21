@@ -79,7 +79,12 @@ std::string split_stratum(
 {
     if (task.task == "cls")
         return sample.class_id.empty() ? "unannotated" : "class:" + sample.class_id;
-    if (sample.annotation_state != "annotated") return "unannotated";
+    if (sample.annotation_state != "annotated") {
+        return "unannotated";
+    }
+    if (task.task == "od") {
+        return sample.bbox_comps.empty() ? "empty-target" : "detection-target";
+    }
     std::set<int> present;
     for (const auto& region : sample.regions)
         for (const auto& run : region.vRun) present.insert(run.label);
@@ -423,6 +428,9 @@ void TaskWorkspaceService::refresh_quality() {
     if (source_node_id() == 0) return;
     for (auto& sample : binding().samples) {
         sample.quality_issues = structural_issues(sample);
+        if (task().task == "od" && sample.image_paths.size() != 1) {
+            add_issue(sample.quality_issues, "OD requires one image per sample");
+        }
         for (const auto& image_path : sample.image_paths) {
             QImageReader reader(QString::fromStdString(image_path));
             reader.setDecideFormatFromContent(true);
@@ -615,6 +623,31 @@ void TaskWorkspaceService::set_class_for_sample(
     refresh_classification_annotation(binding().classes, sample);
 }
 
+void TaskWorkspaceService::set_detection_boxes(
+    const std::string& sample_id, const std::vector<jocelin::meta::BboxComp>& boxes,
+    bool confirmed_empty)
+{
+    if (task().task != "od") {
+        throw std::runtime_error("detection boxes require an OD Task");
+    }
+    TaskSampleBinding& sample = require_sample(sample_id);
+    if (sample.image_paths.size() != 1) {
+        throw std::runtime_error("OD annotation requires exactly one image per sample");
+    }
+    for (const jocelin::meta::BboxComp& value : boxes) {
+        require_class(value.class_id);
+        const jocelin::geo::RotatedBBox& box = value.box;
+        if (value.score || box.theta != 0.0 || !std::isfinite(box.x_center) ||
+            !std::isfinite(box.y_center) || !std::isfinite(box.width) || !std::isfinite(box.height) ||
+            box.width <= 0 || box.height <= 0) {
+            throw std::runtime_error("an OD annotation requires a finite, horizontal box without a score");
+        }
+    }
+    sample.bbox_comps = boxes;
+    // Only an explicit review confirms that an empty target is a negative sample.
+    sample.annotation_state = boxes.empty() && !confirmed_empty ? "unannotated" : "annotated";
+}
+
 std::string TaskWorkspaceService::add_class(
     const std::string& name,
     const std::string& color)
@@ -630,7 +663,7 @@ std::string TaskWorkspaceService::add_class(
     }
     int mask_value = 0;
     int color_index = static_cast<int>(binding().classes.size()) + 1;
-    if (task().task != "cls") {
+    if (task().task == "sg") {
         std::set<int> used;
         for (const AnnotationClass& value : binding().classes) {
             used.insert(value.mask_value);
@@ -664,6 +697,10 @@ void TaskWorkspaceService::rename_class(const std::string& class_id, const std::
     value.name = name;
 }
 
+void TaskWorkspaceService::set_class_color(const std::string& class_id, const std::string& color) {
+    require_class(class_id).color = color;
+}
+
 void TaskWorkspaceService::remove_class(const std::string& class_id) {
     auto& classes = binding().classes;
     const auto found = std::find_if(classes.begin(), classes.end(),
@@ -672,10 +709,22 @@ void TaskWorkspaceService::remove_class(const std::string& class_id) {
         throw std::runtime_error("Annotation class does not exist");
     }
     const bool classification = task().task == "cls";
+    const bool detection = task().task == "od";
     const int mask_value = found->mask_value;
     const std::string removed_id = found->id;
     classes.erase(found);
     for (TaskSampleBinding& sample : binding().samples) {
+        if (detection) {
+            const auto first_removed = std::remove_if(sample.bbox_comps.begin(), sample.bbox_comps.end(),
+                [&removed_id](const jocelin::meta::BboxComp& value) { return value.class_id == removed_id; });
+            if (first_removed != sample.bbox_comps.end()) {
+                sample.bbox_comps.erase(first_removed, sample.bbox_comps.end());
+                if (sample.bbox_comps.empty()) {
+                    sample.annotation_state = "unannotated";
+                }
+            }
+            continue;
+        }
         if (classification) {
             if (sample.class_id == removed_id) {
                 sample.class_id.clear();
@@ -729,6 +778,25 @@ void TaskWorkspaceService::set_class_locked(const std::string& class_id, bool lo
     value.locked = locked;
 }
 
+std::vector<jocelin::model::ModelClass> TaskWorkspaceService::training_classes() const {
+    std::vector<jocelin::model::ModelClass> classes;
+    if (task().task == "cls") {
+        for (const AnnotationClass* value : classification_classes(binding().classes)) {
+            classes.push_back({value->id, value->name, 0});
+        }
+    } else {
+        for (const AnnotationClass& value : binding().classes) {
+            classes.push_back({value.id, value.name, value.mask_value});
+        }
+        if (task().task == "sg") {
+            std::sort(classes.begin(), classes.end(), [](const auto& left, const auto& right) {
+                return left.mask_value < right.mask_value;
+            });
+        }
+    }
+    return classes;
+}
+
 jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     const jocelin::config::Device& device,
     jocelin::config::WeightSource weight_source,
@@ -736,6 +804,7 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
 {
     const auto& config = task();
     const auto tool_type = jocelin::config::tool_type_from_string(config.task);
+    const bool detection = tool_type == jocelin::config::ToolType::Od;
     const auto model_scale = jocelin::config::model_scale_from_string(config.model_scale);
     if (!supports_model_spec(config.task, config.model_index, config.model_scale))
         throw std::runtime_error("model spec is not registered for the selected task");
@@ -745,7 +814,19 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     int maximum_mask_value = 0;
     std::map<std::string, int> classification_labels;
     std::vector<std::string> class_names;
-    if (tool_type == jocelin::config::ToolType::Cls) {
+    std::vector<jocelin::model::ModelClass> detection_classes;
+    if (detection) {
+        if (source_dataset().bucket_capacity != 1) {
+            throw std::runtime_error("OD training requires one image per sample");
+        }
+        detection_classes = resume_model ? resume_model->classes : training_classes();
+        if (resume_model && (detection_classes.size() != binding().classes.size() ||
+            std::any_of(detection_classes.begin(), detection_classes.end(), [this](const auto& value) {
+                return !find_annotation_class(binding(), value.id);
+            }))) {
+            throw std::runtime_error("paused OD checkpoint classes do not match the current Task classes");
+        }
+    } else if (tool_type == jocelin::config::ToolType::Cls) {
         auto ordered_classes = classification_classes(binding().classes);
         if (resume_model) {
             ordered_classes.clear();
@@ -776,8 +857,9 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             throw std::runtime_error("paused model class schema does not match the current task");
         }
     }
-    if (maximum_mask_value == 0 && classification_labels.empty())
+    if (maximum_mask_value == 0 && classification_labels.empty() && detection_classes.empty()) {
         throw std::runtime_error("add at least one annotation class before training");
+    }
     if (tool_type == jocelin::config::ToolType::Sg && maximum_mask_value > 255)
         throw std::runtime_error(
             "segmentation training reserves class zero for background and supports mask values up to 255");
@@ -796,7 +878,9 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             refresh_classification_annotation(binding().classes, verified);
         if (verified.annotation_state != "annotated") continue;
         const std::string split = normalized_split(sample_binding.split);
-        if (split == "unassigned") continue;
+        if (split != "train" && split != "validation") {
+            continue;
+        }
         if (!sample_binding.quality_issues.empty()) {
             malformed.push_back(sample_binding.sample_id);
             continue;
@@ -809,13 +893,19 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             : jocelin::meta::AiMetaData::Split::Train;
         sample.image_paths = sample_binding.image_paths;
         sample.annotation_state = jocelin::meta::AiMetaData::AnnotationState::Annotated;
-        auto exclusion = training_mask_region(sample_binding.training_mask_path);
-        if (!exclusion.empty()) sample.mask.push_back(std::move(exclusion));
+        if (!detection) {
+            auto exclusion = training_mask_region(sample_binding.training_mask_path);
+            if (!exclusion.empty()) {
+                sample.mask.push_back(std::move(exclusion));
+            }
+        }
         has_train = has_train || split == "train";
         if (tool_type == jocelin::config::ToolType::Sg) {
             sample.regions = sample_binding.regions;
         } else if (tool_type == jocelin::config::ToolType::Cls) {
             sample.class_label = classification_labels.at(sample_binding.class_id);
+        } else if (detection) {
+            sample.bbox_comps = sample_binding.bbox_comps;
         }
         samples.samples.push_back(std::move(sample));
     }
@@ -878,6 +968,16 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
             : std::max<size_t>(
                 1, static_cast<size_t>(
                     std::lround(train_indices.size() * 0.20)));
+        if (detection && !train_indices.empty()) {
+            const auto has_boxes = [&samples](size_t index) { return !samples.samples[index].bbox_comps.empty(); };
+            const auto validation_end = train_indices.begin() + std::min(derived_count, train_indices.size());
+            if (std::none_of(train_indices.begin(), validation_end, has_boxes)) {
+                const auto positive = std::find_if(validation_end, train_indices.end(), has_boxes);
+                if (positive != train_indices.end()) {
+                    std::iter_swap(train_indices.begin(), positive);
+                }
+            }
+        }
         for (size_t offset = 0;
              offset < std::min(derived_count, train_indices.size());
              ++offset) {
@@ -888,6 +988,11 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
                 "split_origin", "derived-validation");
             samples.samples.push_back(std::move(validation));
         }
+    }
+    if (detection && std::none_of(samples.begin(), samples.end(), [](const auto& sample) {
+            return sample.split == jocelin::meta::AiMetaData::Split::Validation && !sample.bbox_comps.empty();
+        })) {
+        throw std::runtime_error("assign at least one sample with detection boxes to validation");
     }
 
     jocelin::config::AiConfig backend;
@@ -900,8 +1005,8 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.model_num_heads = 12;
     backend.batch_size = config.training.batch_size;
     backend.bucket_capacity = std::max(1, source_dataset().bucket_capacity);
-    backend.num_classes = tool_type == jocelin::config::ToolType::Cls
-        ? static_cast<int>(class_names.size()) : maximum_mask_value + 1;
+    backend.num_classes = detection ? static_cast<int>(detection_classes.size()) :
+        tool_type == jocelin::config::ToolType::Cls ? static_cast<int>(class_names.size()) : maximum_mask_value + 1;
     backend.num_epochs = config.training.epochs;
     backend.learning_rate = config.training.learning_rate;
     backend.weight_decay = config.training.weight_decay;
@@ -923,8 +1028,12 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.model_save_dir = config.training.output_directory;
     backend.weight_type = jocelin::config::WeightType::LibTorch;
     backend.device = device;
-    backend.augment = config.training.augment;
-    backend.normalize = binding().preprocessing.normalize;
+    if (!detection) {
+        backend.augment = config.training.augment;
+    } else {
+        backend.augment.enable = {};
+    }
+    backend.normalize = !detection && binding().preprocessing.normalize;
     backend.bgr_to_rgb = true;
     backend.loss_type = jocelin::config::LossType::Auto;
     backend.metric_type = jocelin::config::MetricType::Auto;
@@ -945,6 +1054,7 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     request.config = backend;
     request.samples = std::move(samples);
     request.class_names = std::move(class_names);
+    request.classes = std::move(detection_classes);
     request.weight_source = std::move(weight_source);
     return request;
 }
@@ -955,6 +1065,11 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     const jocelin::model::ModelWeight& weight, const std::string& output_directory) const
 {
     const auto& config = task();
+    const jocelin::config::ToolType task_type = jocelin::config::tool_type_from_string(config.task);
+    const bool detection = task_type == jocelin::config::ToolType::Od;
+    if (detection && weight.format != jocelin::config::WeightType::LibTorch) {
+        throw std::runtime_error("OD inference requires a LibTorch checkpoint");
+    }
     const auto& output = output_directory.empty() ? config.inference_output_directory : output_directory;
     if (weight.path.empty()) throw std::runtime_error("select a model weight");
     if (weight.format == jocelin::config::WeightType::OpenVino) {
@@ -966,7 +1081,6 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
             throw std::runtime_error("OpenVINO weight normalization metadata is missing");
         }
     }
-    const auto task_type = jocelin::config::tool_type_from_string(config.task);
     if (model.task != task_type)
         throw std::runtime_error("selected checkpoint belongs to a different task repository");
     const std::string model_scale = jocelin::config::to_string(model.model_scale);
@@ -993,6 +1107,9 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     std::vector<jocelin::inference::InferenceTarget> targets;
     for (const auto& sample : binding().samples) {
         if (!sample.selected) continue;
+        if (detection && sample.image_paths.size() != 1) {
+            continue;
+        }
         jocelin::inference::InferenceTarget target;
         auto verified = sample;
         if (task_type == jocelin::config::ToolType::Cls)
@@ -1015,6 +1132,15 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
             if (target.available) {
                 target.regions = sample.regions;
             }
+        } else if (target.available && detection) {
+            target.available = std::all_of(sample.bbox_comps.begin(), sample.bbox_comps.end(),
+                [&model](const auto& box) {
+                    return std::any_of(model.classes.begin(), model.classes.end(),
+                        [&box](const auto& value) { return box.class_id == value.id; });
+                });
+            if (target.available) {
+                target.bbox_comps = sample.bbox_comps;
+            }
         }
         for (const auto& image : sample.image_paths) {
             const auto name = QFileInfo(QString::fromStdString(image)).fileName().toStdString();
@@ -1035,7 +1161,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.model_embed_dim = 768;
     backend.model_depth = 12;
     backend.model_num_heads = 12;
-    backend.batch_size = config.inference_batch_size;
+    backend.batch_size = detection ? 1 : config.inference_batch_size;
     backend.num_classes = num_classes;
     backend.image_width = model.image_width;
     backend.image_height = model.image_height;
@@ -1051,7 +1177,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     request.config = backend;
     request.weight_path = weight.path;
     request.selected_weight_id = weight.id;
-    request.available_weights = model.weights;
+    request.available_weights = detection ? std::vector<jocelin::model::ModelWeight>{weight} : model.weights;
     request.image_paths = std::move(images);
     request.targets = std::move(targets);
     request.segmentation_result.save_dir = output;
@@ -1107,6 +1233,12 @@ void TaskWorkspaceService::record_inference_result(
         throw std::runtime_error("inference result has no bound source_sample_id");
     };
 
+    if ((task().task == "cls" && !std::holds_alternative<jocelin::result::cls::ClsInferenceResult>(report)) ||
+        (task().task == "sg" && !std::holds_alternative<jocelin::result::sg::SgInferenceResult>(report)) ||
+        (task().task == "od" && !std::holds_alternative<jocelin::result::od::OdInferenceResult>(report))) {
+        throw std::runtime_error("inference result task does not match this TaskNode");
+    }
+
     if (const auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&report)) {
         set.aggregate_metrics = cls->metrics;
         for (const auto& record : cls->samples) {
@@ -1122,8 +1254,18 @@ void TaskWorkspaceService::record_inference_result(
             stored.result = record;
             set.samples.push_back(std::move(stored));
         }
-    } else {
-        throw std::runtime_error("Object detection results require an OD workspace.");
+    } else if (const auto* od = std::get_if<jocelin::result::od::OdInferenceResult>(&report)) {
+        if (od->classes.size() != model->classes.size() ||
+            !std::equal(od->classes.begin(), od->classes.end(), model->classes.begin(),
+                [](const auto& actual, const auto& registered) { return actual.id == registered.id; })) {
+            throw std::runtime_error("OD checkpoint class order differs from its ModelList entry");
+        }
+        if (od->metrics) {
+            set.detection_metrics = od->metrics->values;
+        }
+        for (const jocelin::result::od::OdResult& record : od->samples) {
+            set.samples.push_back({sample_id_for(record.image_path), record});
+        }
     }
 
     runtime.results.erase(

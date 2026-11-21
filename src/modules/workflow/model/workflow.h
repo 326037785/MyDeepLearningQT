@@ -4,8 +4,10 @@
 #include <common/config/augment.h>
 #include <common/geometry/run.h>
 #include <common/config/runtime_route.h>
+#include <common/meta/bbox_comp.h>
 #include <common/model/model_list.h>
 #include <Result/cls/cls_result.h>
+#include <Result/od/od_result.h>
 #include <Result/sg/sg_result.h>
 
 #include <cstddef>
@@ -80,8 +82,10 @@ struct TaskSampleBinding {
     std::vector<std::string> quality_issues;
     // Automatic assignments can be recalculated when split settings change.
     // Manual assignments are preserved until the user explicitly restores
-    // this sample to automatic mode. Kept last for aggregate compatibility.
+    // this sample to automatic mode.
     bool split_manual = false;
+    // OD annotations use horizontal boxes in source-image pixels.
+    std::vector<jocelin::meta::BboxComp> bbox_comps;
 };
 
 struct DatasetSplitSettings {
@@ -125,7 +129,7 @@ struct TrainingSettings {
 
 struct ResultReference {
     std::string source_sample_id;
-    std::variant<jocelin::result::cls::ClsResult, jocelin::result::sg::SgResult> result;
+    std::variant<jocelin::result::cls::ClsResult, jocelin::result::sg::SgResult, jocelin::result::od::OdResult> result;
 };
 
 struct InferenceResultSet {
@@ -135,6 +139,7 @@ struct InferenceResultSet {
     std::string result_directory;
     jocelin::result::cls::ClsScopeMetrics aggregate_metrics;
     std::vector<ResultReference> samples;
+    std::map<std::string, double> detection_metrics;
 };
 
 struct TaskRuntimeState {

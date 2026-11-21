@@ -99,7 +99,7 @@ status. Stopping before the first completed epoch leaves the weight collection e
 
 Inference belongs to a TaskNode. Within that Node, `model_id + weight_id` identifies one latest result. The ids come from Core ModelEntry and ModelWeight. Format and precision describe a branch; they do not identify a result.
 
-`ResultReference` associates source_sample_id with a complete Core ClsResult or SgResult. The Core image path distinguishes image records within a bucket. Qt keeps the typed result and its application association together.
+`ResultReference` associates source_sample_id with a complete Core ClsResult, SgResult or OdResult. The Core image path distinguishes image records within a bucket. Qt keeps the typed result and its application association together.
 
 Annotation, Inference and Results share the TaskWorkspaceService model/weight selection. Annotation's right-side inspector combines the Task's Classes, its ModelList view and a current-sample Results view. In Annotation, a model row and its format cell select an existing model_id and weight_id; changing the selected branch does not create or convert a weight.
 
@@ -174,3 +174,9 @@ Core's pipeline exceptions carry execution errors to Qt. Pause, Stop and Complet
 Paused and Completed require their selected checkpoint; an unavailable checkpoint
 produces one failure diagnostic for the model state, training run and activity log.
 Stopped keeps its completed-epoch weight availability rules.
+
+## Sample scope at the Core boundary
+
+Only selected, annotated Train and Validation samples enter a Core training request. Test and Unassigned samples are inference-only; Unassigned means Test by default without rewriting the persisted assignment or its manual/automatic provenance. Derived validation copies only eligible Train samples. Prediction can use samples from any split and does not require annotation. The inference Test filter includes Unassigned; the separate Unassigned filter narrows that subset.
+
+OD keeps the current Core constraints: one image per sample, a Validation set containing ground-truth boxes, and explicitly reviewed empty targets. These constraints do not change the shared selection or split rules.

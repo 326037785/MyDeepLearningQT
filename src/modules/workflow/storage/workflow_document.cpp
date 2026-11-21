@@ -314,8 +314,20 @@ QJsonObject binding_to_json(const TaskDatasetBinding& binding, const std::string
             {"split", QString::fromStdString(value.split)},
             {"split_manual", value.split_manual},
             {"annotation_state", QString::fromStdString(value.annotation_state)}};
-        if (task == "cls") sample.insert("class_id", QString::fromStdString(value.class_id));
-        else {
+        if (task == "cls") {
+            sample.insert("class_id", QString::fromStdString(value.class_id));
+        } else if (task == "od") {
+            QJsonArray boxes;
+            for (const jocelin::meta::BboxComp& box : value.bbox_comps) {
+                boxes.append(QJsonObject{
+                    {"class_id", QString::fromStdString(box.class_id)},
+                    {"x_center", box.box.cx()},
+                    {"y_center", box.box.cy()},
+                    {"width", box.box.w()},
+                    {"height", box.box.h()}});
+            }
+            sample.insert("bbox_comps", boxes);
+        } else {
             QString file;
             if (!value.regions.empty()) {
                 file = region_file_name(node_id, value.sample_id);
@@ -457,8 +469,10 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::strin
                 sample_context, "must be an object");
         const auto value = entry.toObject();
         auto fields = value;
-        const char* target_field = task == "cls" ? "class_id" : "region_file";
-        if (!fields.contains(target_field)) invalid_document(sample_context, "missing task target");
+        const char* target_field = task == "cls" ? "class_id" : task == "od" ? "bbox_comps" : "region_file";
+        if (!fields.contains(target_field)) {
+            invalid_document(sample_context, "missing task target");
+        }
         fields.remove(target_field);
         require_exact_fields(fields, {"sample_id", "image_paths", "selected", "training_mask_path", "split",
             "split_manual", "annotation_state"}, sample_context);
@@ -475,8 +489,30 @@ TaskDatasetBinding binding_from_json(const QJsonObject& object, const std::strin
             required_string(
                 value, "training_mask_path",
                 sample_context).toStdString();
-        if (task == "cls") sample.class_id = required_string(value, "class_id", sample_context).toStdString();
-        else {
+        if (task == "cls") {
+            sample.class_id = required_string(value, "class_id", sample_context).toStdString();
+        } else if (task == "od") {
+            const QJsonArray boxes = required_array(value, "bbox_comps", sample_context);
+            for (const QJsonValue& entry : boxes) {
+                if (!entry.isObject()) {
+                    invalid_document(sample_context, "OD box must be an object");
+                }
+                const QJsonObject box = entry.toObject();
+                require_exact_fields(box, {"class_id", "x_center", "y_center", "width", "height"}, sample_context);
+                const std::string class_id = required_string(box, "class_id", sample_context).toStdString();
+                if (class_ids.count(class_id) == 0) {
+                    invalid_document(sample_context, "OD box class_id does not reference a Task class");
+                }
+                const double width = required_number(box, "width", sample_context);
+                const double height = required_number(box, "height", sample_context);
+                if (width <= 0 || height <= 0) {
+                    invalid_document(sample_context, "OD box dimensions must be positive");
+                }
+                sample.bbox_comps.push_back({class_id, {0.0,
+                    required_number(box, "x_center", sample_context),
+                    required_number(box, "y_center", sample_context), width, height}, std::nullopt});
+            }
+        } else {
             const QString file = required_string(value, "region_file", sample_context);
             if (!file.isEmpty()) {
                 if (node_asset_root.isEmpty() || file != region_file_name(node_id, sample.sample_id))
@@ -545,18 +581,19 @@ jocelin::result::cls::ClsScopeMetrics result_metrics_from_json(
     return metrics;
 }
 
-QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
+QJsonObject runtime_to_json(const TaskRuntimeState& runtime, const std::string& task) {
     QJsonArray results;
     for (const auto& set : runtime.results) {
         QJsonArray samples;
         for (const auto& value : set.samples) {
             const auto payload = std::visit([](const auto& result) {
-                QJsonObject data{
-                    {"image_path", QString::fromStdString(result.image_path)},
-                    {"result_name", QString::fromStdString(result.result_name)},
-                    {"save_dir", QString::fromStdString(result.save_dir)},
-                    {"metadata_path", QString::fromStdString(result.metadata_path)}};
                 using Result = std::decay_t<decltype(result)>;
+                QJsonObject data{{"image_path", QString::fromStdString(result.image_path)}};
+                if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                    data.insert("result_name", QString::fromStdString(result.result_name));
+                    data.insert("save_dir", QString::fromStdString(result.save_dir));
+                    data.insert("metadata_path", QString::fromStdString(result.metadata_path));
+                }
                 if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                     QJsonArray probabilities;
                     for (double probability : result.probabilities) probabilities.append(probability);
@@ -568,7 +605,7 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
                     data.insert("interest", result.interest);
                     data.insert("heatmap_class", result.heatmap_class);
                     data.insert("heatmap_path", QString::fromStdString(result.heatmap_path));
-                } else {
+                } else if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                     QJsonArray components;
                     for (const auto& component : result.components) {
                         QJsonArray runs;
@@ -606,20 +643,44 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime) {
                         {"recall", result.metrics.recall}, {"f1", result.metrics.f1}, {"mean_iou", result.metrics.mean_iou}});
                     data.insert("mask_path", QString::fromStdString(result.mask_path));
                     data.insert("visualization_path", QString::fromStdString(result.visualization_path));
+                } else {
+                    QJsonArray detections;
+                    for (const jocelin::meta::BboxComp& detection : result.detections) {
+                        detections.append(QJsonObject{
+                            {"class_id", QString::fromStdString(detection.class_id)},
+                            {"x_center", detection.box.cx()}, {"y_center", detection.box.cy()},
+                            {"width", detection.box.w()}, {"height", detection.box.h()},
+                            {"score", static_cast<double>(detection.score.value())}});
+                    }
+                    data.insert("source_width", result.source_size.width);
+                    data.insert("source_height", result.source_size.height);
+                    data.insert("detections", detections);
+                    data.insert("confidence_threshold", result.confidence_threshold);
+                    data.insert("nms_iou_threshold", result.nms_iou_threshold);
+                    data.insert("max_detections", result.max_detections);
                 }
                 return data;
             }, value.result);
             samples.append(QJsonObject{
                 {"source_sample_id", QString::fromStdString(value.source_sample_id)},
-                {"task", std::holds_alternative<jocelin::result::cls::ClsResult>(value.result) ? "cls" : "sg"},
+                {"task", std::holds_alternative<jocelin::result::cls::ClsResult>(value.result) ? "cls" :
+                    std::holds_alternative<jocelin::result::sg::SgResult>(value.result) ? "sg" : "od"},
                 {"result", payload}});
+        }
+        QJsonObject aggregate_metrics;
+        if (task == "od") {
+            for (const auto& [name, value] : set.detection_metrics) {
+                aggregate_metrics.insert(QString::fromStdString(name), value);
+            }
+        } else {
+            aggregate_metrics = result_metrics_to_json(set.aggregate_metrics);
         }
         results.append(QJsonObject{
             {"model_id", QString::fromStdString(set.model_id)},
             {"weight_id", QString::fromStdString(set.weight_id)},
             {"weight_format", QString::fromStdString(set.weight_format)},
             {"result_directory", QString::fromStdString(set.result_directory)},
-            {"aggregate_metrics", result_metrics_to_json(set.aggregate_metrics)},
+            {"aggregate_metrics", aggregate_metrics},
             {"samples", samples}});
     }
     return {
@@ -670,9 +731,16 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
             invalid_document(result_context, "unknown weight_format");
         set.result_directory = required_string(
             value, "result_directory", result_context).toStdString();
-        set.aggregate_metrics = result_metrics_from_json(
-            required_object(value, "aggregate_metrics", result_context),
-            result_context + " aggregate_metrics");
+        const QJsonObject aggregate = required_object(value, "aggregate_metrics", result_context);
+        if (task_name == "od") {
+            for (auto metric = aggregate.begin(); metric != aggregate.end(); ++metric) {
+                const QByteArray key = metric.key().toUtf8();
+                set.detection_metrics.emplace(key.toStdString(),
+                    required_number(aggregate, key.constData(), result_context + " aggregate_metrics"));
+            }
+        } else {
+            set.aggregate_metrics = result_metrics_from_json(aggregate, result_context + " aggregate_metrics");
+        }
         const std::string key = set.model_id + ":" + set.weight_id;
         if (set.model_id.empty() || set.weight_id.empty() ||
             set.result_directory.empty() || !result_keys.insert(key).second)
@@ -695,15 +763,23 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
             if (task.toStdString() != task_name)
                 invalid_document(sample_context, "result task does not match the Task node");
             const auto data = required_object(sample, "result", sample_context);
-            if (task == "cls") result.result = jocelin::result::cls::ClsResult{};
-            else if (task == "sg") result.result = jocelin::result::sg::SgResult{};
-            else invalid_document(sample_context, "unknown result task");
+            if (task == "cls") {
+                result.result = jocelin::result::cls::ClsResult{};
+            } else if (task == "sg") {
+                result.result = jocelin::result::sg::SgResult{};
+            } else if (task == "od") {
+                result.result = jocelin::result::od::OdResult{};
+            } else {
+                invalid_document(sample_context, "unknown result task");
+            }
             std::visit([&](auto& value) {
                 value.image_path = required_string(data, "image_path", sample_context).toStdString();
-                value.result_name = required_string(data, "result_name", sample_context).toStdString();
-                value.save_dir = required_string(data, "save_dir", sample_context).toStdString();
-                value.metadata_path = required_string(data, "metadata_path", sample_context).toStdString();
                 using Result = std::decay_t<decltype(value)>;
+                if constexpr (!std::is_same_v<Result, jocelin::result::od::OdResult>) {
+                    value.result_name = required_string(data, "result_name", sample_context).toStdString();
+                    value.save_dir = required_string(data, "save_dir", sample_context).toStdString();
+                    value.metadata_path = required_string(data, "metadata_path", sample_context).toStdString();
+                }
                 if constexpr (std::is_same_v<Result, jocelin::result::cls::ClsResult>) {
                     require_exact_fields(data, {"image_path", "result_name", "save_dir", "metadata_path",
                         "predicted_class", "confidence", "probabilities", "confidence_threshold",
@@ -720,7 +796,7 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
                     value.interest = required_bool(data, "interest", sample_context);
                     value.heatmap_class = required_integer(data, "heatmap_class", sample_context);
                     value.heatmap_path = required_string(data, "heatmap_path", sample_context).toStdString();
-                } else {
+                } else if constexpr (std::is_same_v<Result, jocelin::result::sg::SgResult>) {
                     require_exact_fields(data, {"image_path", "result_name", "save_dir", "metadata_path",
                         "components", "present_labels", "image_width", "image_height", "morph_kernel_size",
                         "morph_iterations", "min_component_area", "max_component_area", "aspect_ratio_range",
@@ -800,6 +876,34 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
                         }
                         value.components.push_back(std::move(component));
                     }
+                } else {
+                    require_exact_fields(data, {"image_path", "source_width", "source_height", "detections",
+                        "confidence_threshold", "nms_iou_threshold", "max_detections"}, sample_context);
+                    value.source_size.width = required_integer(data, "source_width", sample_context);
+                    value.source_size.height = required_integer(data, "source_height", sample_context);
+                    value.confidence_threshold = static_cast<float>(required_number(data, "confidence_threshold", sample_context));
+                    value.nms_iou_threshold = static_cast<float>(required_number(data, "nms_iou_threshold", sample_context));
+                    value.max_detections = required_integer(data, "max_detections", sample_context);
+                    if (value.source_size.empty()) {
+                        invalid_document(sample_context, "OD prediction requires source image dimensions");
+                    }
+                    for (const QJsonValue& entry : required_array(data, "detections", sample_context)) {
+                        if (!entry.isObject()) {
+                            invalid_document(sample_context, "OD detection must be an object");
+                        }
+                        const QJsonObject box = entry.toObject();
+                        require_exact_fields(box, {"class_id", "x_center", "y_center", "width", "height", "score"}, sample_context);
+                        const std::string id = required_string(box, "class_id", sample_context).toStdString();
+                        const double width = required_number(box, "width", sample_context);
+                        const double height = required_number(box, "height", sample_context);
+                        const double score = required_number(box, "score", sample_context);
+                        if (id.empty() || width <= 0 || height <= 0 || score < 0 || score > 1) {
+                            invalid_document(sample_context, "invalid OD detection dimensions, class or score");
+                        }
+                        value.detections.push_back({id, {0.0,
+                            required_number(box, "x_center", sample_context),
+                            required_number(box, "y_center", sample_context), width, height}, static_cast<float>(score)});
+                    }
                 }
             }, result.result);
             if (result.source_sample_id.empty())
@@ -868,7 +972,7 @@ QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByt
     if (node.kind == NodeKind::TaskConfig) {
         const auto& config = std::get<TaskNodeConfig>(node.config);
         const auto& training = config.training;
-        auto runtime = runtime_to_json(config.runtime);
+        auto runtime = runtime_to_json(config.runtime, config.task);
         QJsonArray references;
         for (const auto& entry : runtime.value("results").toArray()) {
             const auto result = entry.toObject();

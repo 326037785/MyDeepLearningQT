@@ -42,6 +42,25 @@ Missing weight files produce diagnostics while the Project opens readably.
 A missing model_list.json opens its TaskNode with an empty ModelList and retained
 inference references. Qt asks before cleaning up missing dependencies.
 
+## Object detection and shared annotation UI
+
+Classification, semantic segmentation and object detection are available Task
+branches. OD uses the existing Core LibTorch pipeline, Task-owned classes and
+ModelList, box annotation, training, inference and typed result persistence. Its
+current input contract is one image per sample; explicitly reviewed empty images
+are valid negative samples. OD currently uses LibTorch checkpoints for inference.
+
+SG and OD compose one Classes panel for add/rename/delete interactions. SG keeps
+pixel, lock and ordering behavior in its own adapter; OD keeps box edits in its
+adapter. Sample browsing, split menus and result inspection use shared UI modules.
+The annotation save preference applies across tasks. See
+[annotation rules](docs/annotation_spec.md) and
+[UI component boundaries](docs/annotation-tool-layering.md).
+
+Only selected, annotated Train and Validation samples enter Core training
+requests. Test and Unassigned samples are inference-only; Unassigned means Test
+by default. Prediction may use any split without requiring annotation.
+
 ## Binding and result ownership
 
 Each TaskNode owns its Annotation, Core ModelList and Inference results. Within
@@ -103,7 +122,7 @@ runtime files stay under `<build>/.test-artifacts/Release`. Test programs and
 `Qt5Test.dll` must not enter the product directory.
 
 The root CMake file owns dependencies, common build settings, runtime deployment
-and CTest. Application targets live in `src/CMakeLists.txt`; the 13 test targets
+and CTest. Application targets live in `src/CMakeLists.txt`; the test targets
 live in `test/CMakeLists.txt`. Their compiler and Qt autogen intermediates stay
 under `<build>/src` and `<build>/test`, while the output paths above remain fixed.
 
@@ -135,8 +154,9 @@ remain in English. The Qt Linguist catalog is
 **Preferences**: Settings > Preferences... contains a Language submenu and a
 peer Auto-save annotations checkable item. The toolbar Settings button opens
 the same menu. Auto-save defaults to off, takes effect immediately and remembers
-the user's choice. SG commits the current annotation through its existing Save
-action when the user switches samples. Project saving writes the committed data
+the user's choice. SG and OD share the component confirmation policy when switching
+samples, pages, nodes, workflows or projects. Enabled means save directly; disabled
+means offer Save, Discard and Cancel. Project saving writes the committed data
 through the existing persistence flow.
 
 Diagnostics are written as UTF-8 session files under `logs/` beside the executable

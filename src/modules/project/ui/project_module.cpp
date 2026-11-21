@@ -177,6 +177,9 @@ void ProjectModule::updateRecentProjects(const QString& project_file) {
 
 bool ProjectModule::confirmProjectTransition() {
     if (busy && busy()) return false;
+    if (confirm_annotation_transition && !confirm_annotation_transition()) {
+        return false;
+    }
     if (!project_.is_dirty()) return true;
     const auto answer = QMessageBox::warning(
         &shell_, tr("Unsaved project"), tr("Save changes to %1 before continuing?").arg(project_.metadata().name),

@@ -2,6 +2,7 @@
 <TS version="2.1" language="zh_CN" sourcelanguage="en">
   <context>
     <name>QObject</name>
+    <message><source>%1 detection(s)&#10;Confidence threshold: %2&#10;NMS IoU: %3&#10;Max detections: %4</source><translation>%1 个检测框&#10;置信度阈值：%2&#10;NMS IoU：%3&#10;最多检测框数：%4</translation></message>
     <message>
       <location filename="../../src/modules/project/application/project_path_validator.cpp" line="28" />
       <source>Please enter a project name.</source>
@@ -312,6 +313,10 @@
     <message>
       <source>Classification</source>
       <translation>分类</translation>
+    </message>
+    <message>
+      <source>Object Detection</source>
+      <translation>目标检测</translation>
     </message>
   </context>
   <context>
@@ -707,6 +712,7 @@ Cancel keeps Project data unchanged; unavailable weights cannot be used for trai
     <message><source>Task</source><translation>任务</translation></message>
     <message><source>Semantic Segmentation</source><translation>语义分割</translation></message>
     <message><source>Classification</source><translation>分类</translation></message>
+    <message><source>Object Detection</source><translation>目标检测</translation></message>
     <message><source>Add workflow</source><translation>添加工作流</translation></message>
     <message><source>Close workflow</source><translation>关闭工作流</translation></message>
     <message><source>Clear workflow</source><translation>清空工作流</translation></message>
@@ -747,5 +753,53 @@ Cancel keeps Project data unchanged; unavailable weights cannot be used for trai
     <message><source>Weight conversion failed: %1</source><translation>权重转换失败：%1</translation></message>
     <message><source>Weight conversion</source><translation>权重转换</translation></message>
     <message><source>Error</source><translation>错误</translation></message>
+  </context>
+  <context>
+    <name>QWidget</name>
+    <message><source>Square training image size</source><translation>训练图像尺寸</translation></message>
+    <message><source>TP / FP / FN</source><translation>TP / FP / FN</translation></message>
+    <message><source>Top confidence</source><translation>最高置信度</translation></message>
+    <message><source>%1 detection(s)</source><translation>%1 个检测框</translation></message>
+    <message><source> · False positives per negative image: %1</source><translation> · 每张负样本误检数：%1</translation></message>
+  </context>
+  <context>
+    <name>studio::DetectionAnnotationWidget</name>
+    <message><source>Results</source><translation>结果</translation></message>
+    <message><source>No inference result for this image.</source><translation>此图像暂无推理结果。</translation></message>
+    <message><source>Annotated</source><translation>已标注</translation></message>
+    <message><source>Unannotated</source><translation>未标注</translation></message>
+    <message><source>Samples</source><translation>样本</translation></message>
+    <message><source>SAMPLES</source><translation>样本</translation></message>
+    <message><source>Inspector</source><translation>检查器</translation></message>
+    <message><source>Annotation</source><translation>标注</translation></message>
+    <message><source>Inference</source><translation>推理</translation></message>
+    <message><source>Classes</source><translation>类别</translation></message>
+    <message><source>Annotation classes</source><translation>标注类别</translation></message>
+    <message><source>Select box</source><translation>选择标注框</translation></message>
+    <message><source>Draw box (R)</source><translation>绘制标注框（R）</translation></message>
+    <message><source>Delete selected box (Del)</source><translation>删除所选标注框（Del）</translation></message>
+    <message><source>Undo</source><translation>撤销</translation></message>
+    <message><source>Redo</source><translation>重做</translation></message>
+    <message><source>Show annotations</source><translation>显示标注</translation></message>
+    <message><source>Show predictions</source><translation>显示预测</translation></message>
+    <message><source>Zoom out</source><translation>缩小</translation></message>
+    <message><source>Zoom in</source><translation>放大</translation></message>
+    <message><source>Fit image</source><translation>适应画布</translation></message>
+    <message><source>Previous sample</source><translation>上一个样本</translation></message>
+    <message><source>Next sample</source><translation>下一个样本</translation></message>
+    <message><source>Save annotations</source><translation>保存标注</translation></message>
+    <message><source>Add class</source><translation>添加类别</translation></message>
+    <message><source>Rename class</source><translation>重命名类别</translation></message>
+    <message><source>Delete class</source><translation>删除类别</translation></message>
+    <message><source>Class name</source><translation>类别名称</translation></message>
+    <message><source>Cannot edit class</source><translation>无法编辑类别</translation></message>
+    <message><source>Delete “%1” and its boxes from all samples?</source><translation>删除类别“%1”及所有样本中的该类标注框？</translation></message>
+    <message><source>Mark as reviewed with no objects</source><translation>确认此图没有目标</translation></message>
+    <message><source>Select a sample</source><translation>请选择样本</translation></message>
+    <message><source>Cannot read image</source><translation>无法读取图像</translation></message>
+    <message><source>OD requires one image per sample</source><translation>目标检测要求每个样本只有一张图像</translation></message>
+    <message><source>Cannot save boxes</source><translation>无法保存标注框</translation></message>
+    <message><source>Unsaved boxes</source><translation>未保存的标注框</translation></message>
+    <message><source>Save the current boxes before continuing?</source><translation>继续之前保存当前的标注框？</translation></message>
   </context>
 </TS>

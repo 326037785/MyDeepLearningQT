@@ -1,13 +1,17 @@
 #pragma once
 
+#include <QColor>
 #include <QMenu>
 #include <QPair>
 #include <QPointF>
+#include <QRectF>
 #include <QString>
 #include <QVector>
 #include <QWidget>
 
 #include <functional>
+
+class QPainter;
 
 namespace studio {
 
@@ -17,7 +21,13 @@ struct ResultPresentationItem {
     QString text;
     QVector<QPair<QString, QString>> attributes;
     std::function<bool(const QPointF&)> hit_test;
+    QRectF outline;
+    QColor color;
 };
+
+void paint_labeled_box(QPainter& painter, const QRectF& frame, const QRectF& clip,
+                       const QString& name, const QString& score, const QColor& color,
+                       bool prediction, bool selected = false);
 
 inline int result_item_at(const QVector<ResultPresentationItem>& items, const QPointF& position) {
     for (int index = items.size() - 1; index >= 0; --index) {

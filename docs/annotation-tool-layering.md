@@ -6,14 +6,14 @@
 
 | 位置 | 当前职责 | 判断 |
 | --- | --- | --- |
-| [`annotation_tool_interaction.h/.cpp`](../src/modules/task/ui/common/annotation_tool_interaction.h) | 独立定义工具种类，维护笔触、图形、多边形、平移和选区变换的交互状态与矩阵计算；输出轨迹或几何结果。 | 不包含 mask、类别、TaskNode、撤销栈或持久化。`TransformSelection` 是通用手势；选择哪个带标签 Region 由 SG 决定。 |
+| [`annotation_tool_interaction.h/.cpp`](../src/modules/task/ui/annotation/tools/annotation_tool_interaction.h) | 独立定义工具种类，维护笔触、图形、多边形、平移和选区变换的交互状态与矩阵计算；输出轨迹或几何结果。 | 不包含 mask、类别、TaskNode、撤销栈或持久化。`TransformSelection` 是通用手势；选择哪个带标签 Region 由 SG 决定。 |
 | [`segmentation_annotation.h/.cpp`](../src/modules/task/ui/annotation/sg/segmentation_annotation.h) 的 `MaskCanvas` | 接收工具手势，编辑 SG 暂态 mask，维护每张图的撤销历史、类别可视化和 Region 选择，并提供 SG 编辑视图。 | 是 SG target 编辑边界，不是通用工具定义。直接 PNG `load/save` 供局部画布使用；产品提交仍由 TaskWorkspaceService 处理。 |
-| [`segmentation_annotation.cpp`](../src/modules/task/ui/annotation/sg/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 组装 SG 工具、画布和样本切换，发起 Task 标注保存。 | Classes 面板与类别确认由 TaskWorkspace 组装，类别数据由 TaskNode 持有。 |
-| [`image_viewport_transform.*`](../src/modules/task/ui/common/image_viewport_transform.h) | 独立维护缩放、平移和坐标转换。 | 已处于合适层级，迁移时直接复用。 |
+| [`segmentation_annotation.cpp`](../src/modules/task/ui/annotation/sg/segmentation_annotation.cpp) 的 `SegmentationAnnotationWidget` | 组装 SG 工具、画布和样本切换，发起 Task 标注保存。 | Classes 面板由 `segmentation_classes.*` 接入公共 `AnnotationClassesPanel`，类别 Board 由 TaskWorkspace 接入公共对话框；类别数据由 TaskNode 持有。 |
+| [`image_viewport_transform.*`](../src/modules/task/ui/image/image_viewport_transform.h) | 独立维护缩放、平移和坐标转换。 | 已处于合适层级，迁移时直接复用。 |
 | [`annotation_region_edit_service.*`](../src/modules/task/ui/annotation/sg/annotation_region_edit_service.h) | 选择带标签的连通 Region，并对该 Region 做变换。 | 已抽离画布，但标签值和 Core Region 仍属于 mask/SG 适配语义；不要将其整体误认作所有任务通用工具。 |
 | [`segmentation_annotation_state.*`](../src/modules/task/application/annotation/segmentation_annotation_state.h)、[`classification_annotation_state.*`](../src/modules/task/application/annotation/classification_annotation_state.h) | 分别确定有效 target、两态和 Core 数据转换。 | 留在各自 Task；工具不得决定 `annotation_state`。 |
 | [`classification_annotation.*`](../src/modules/task/ui/annotation/cls/classification_annotation.h) | CL 预览、选择类别并请求赋值；目前没有像素绘制工具。 | CL 不需要为了共用框架而获得笔刷或 mask。 |
-| [`image_result_canvas.h/.cpp`](../src/modules/task/ui/common/image_result_canvas.h) | 推理和结果页显示输入图像及 prediction overlay，支持原有滚轮缩放与中键平移。 | 只读页面不再构造 `MaskCanvas` 或持有 mask 编辑历史。 |
+| [`image_result_canvas.h/.cpp`](../src/modules/task/ui/results/image_result_canvas.h) | 推理和结果页显示输入图像及 prediction overlay，支持原有滚轮缩放与中键平移。 | 只读页面不再构造 `MaskCanvas` 或持有 mask 编辑历史。 |
 
 ## 2. 固定的三层依赖方向
 
@@ -83,3 +83,21 @@ SG 推理预览按所选模型的类别 ID 对应当前 TaskNode 的类别颜色
 展示项及其命中规则只随当前图片和结果分支存在。任务适配器必须让命中规则拥有所需几何数据，不能捕获会先于展示项销毁的临时 Result 引用。SG 当前按值保存 Core Region；切换结果或图片时替换展示项并关闭菜单，隐藏推理层时关闭菜单并暂停命中。Core Result、TaskNode 和 Project 仍是原有数据所有者，展示项不持久化。
 
 该契约适用于能够把结果表示为文本属性并把交互映射到当前视图坐标的 Task。检测框、实例区域和关键点可以提供各自命中规则；CL 文本不需要空间命中。三维或其他非图像任务可将交互投影到自己的视图坐标；需要图片、曲线等非文本属性时应扩展展示项，而不是修改查看器加入 Task 判断。
+
+## 7. 公共组件与 Task 组装
+
+公共 UI 按职责分目录：`ui/samples` 负责浏览、缩略图和 split 菜单；`ui/image` 负责视口变换；`ui/results` 负责只读结果查看；`ui/models` 与 `ui/monitoring` 分别负责模型浏览和资源显示。标注公共组件在 `ui/annotation/shared`，手势在 `ui/annotation/tools`。OD 画布在 `ui/annotation/od/canvas`，框撤销命令在 `ui/annotation/od/editing`。
+
+`common/ui/editing/confirm_transition` 只依赖组件的 dirty、自动保存开关、保存和丢弃操作，不检查 Task 类型。Settings 的 `application/annotation_preferences` 是保存偏好的读写入口。TaskWorkspace 组装当前编辑器，页面、节点、Workflow 和项目切换负责在继续前检查返回值。绘制后的类别 Board、同样式 Results 面板、类别列表、色块和图标按钮由公共标注 UI 创建。
+
+CL/SG/OD 共用 SampleBrowser 和标注样本可见性规则：所选样本且第一张图可读。Task 仍验证自己的完整 bucket 和 target；OD 不把多图样本当单图使用。稳定 sample_id 和源下标独立于筛选后的列表行。通用菜单创建 split 操作，各 Task 扩展自身目标操作，刷新列表保留当前样本及仍存在的多选样本。
+
+测试验证保存设置、失败/取消阻止切换、丢弃恢复状态、样本身份和训练/推理范围，不固定标签格式、菜单动作次序或 Board 控件显隐。
+
+## 8. Classes 面板与类别交互
+
+`ui/annotation/shared/annotation_classes_panel.*` 是 SG/OD 共用的 Classes 面板：创建列表、添加/改名/删除按钮和扩展按钮区，维护基础操作的可用状态，处理命名、删除确认及操作失败提示。它不读取 Task 类型，不持有 TaskWorkspaceService，也不修改标注数据。
+
+任务通过回调执行类别操作并刷新自己的显示。SG 的适配位于 `ui/annotation/sg/segmentation_classes.*`，负责 mask 类别映射、锁定、排序、显隐和删除类别后的像素处理；TaskWorkspace 只装配这个模块。OD 负责删除类别后的框处理，并沿用既定的未保存编辑确认。SG/OD 列表项都独立保存原始类别名，改名弹窗不会把“locked”等显示说明当成名称。
+
+CL 在自己的适配中组装“选择已有类别或输入名称，然后赋给所选图片”的赋值流程。SG/OD 则组装公共类别管理面板及各自的目标操作。

@@ -83,15 +83,20 @@ public:
                                    bool replace_manual_overrides = false);
     void set_segmentation_mask(const std::string& sample_id, const QImage& mask);
     void set_segmentation_sample_empty(const std::string& sample_id);
+    void set_detection_boxes(const std::string& sample_id,
+                             const std::vector<jocelin::meta::BboxComp>& boxes,
+                             bool confirmed_empty = false);
     void set_class_for_sample(const std::string& sample_id,
                               const std::string& class_id);
 
     std::string add_class(const std::string& name, const std::string& color = {});
     void rename_class(const std::string& class_id, const std::string& name);
+    void set_class_color(const std::string& class_id, const std::string& color);
     void remove_class(const std::string& class_id);
     void move_class(const std::string& class_id, int direction);
     void set_class_visible(const std::string& class_id, bool visible);
     void set_class_locked(const std::string& class_id, bool locked);
+    std::vector<jocelin::model::ModelClass> training_classes() const;
 
     jocelin::training::TrainingRequest build_training_request(
         const jocelin::config::Device& device,

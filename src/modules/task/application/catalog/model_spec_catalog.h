@@ -11,11 +11,12 @@ struct ModelSpecOption {
     const char* scale;
 };
 
-inline constexpr std::array<ModelSpecOption, 4> model_spec_options{{
+inline constexpr std::array<ModelSpecOption, 5> model_spec_options{{
     {"sg", 0, "s"},
     {"sg", 1, "m"},
     {"cls", 1, "s"},
     {"cls", 2, "n"},
+    {"od", 0, "n"},
 }};
 
 inline bool supports_model_spec(const std::string& task, int index, const std::string& scale) {

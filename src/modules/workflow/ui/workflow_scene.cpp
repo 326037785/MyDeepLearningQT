@@ -1,4 +1,5 @@
 #include "modules/workflow/ui/workflow_scene.h"
+#include "common/ui/icon_provider.h"
 #include "modules/task/application/catalog/task_module_catalog.h"
 
 #include <QApplication>
@@ -117,6 +118,10 @@ NodeItem::NodeItem(WorkflowGraph* graph, int node_id) : graph_(graph), node_id_(
     setData(0, node_id);
     setZValue(2);
     const auto& node_value = graph_->node(node_id_);
+    if (node_value.kind == NodeKind::TaskConfig) {
+        const TaskNodeConfig& task = std::get<TaskNodeConfig>(node_value.config);
+        task_icon_ = IconProvider::icon("task-" + QString::fromStdString(task.task));
+    }
     const auto& inputs = WorkflowGraph::input_ports(node_value.kind);
     const auto& outputs = WorkflowGraph::output_ports(node_value.kind);
     for (size_t i = 0; i < inputs.size(); ++i) {
@@ -197,11 +202,6 @@ void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget
     header_gradient.setColorAt(1, QColor("#24646A"));
     painter->setBrush(header_gradient);
     painter->drawRoundedRect(QRectF(0, 0, Width, 32), 7, 7);
-    const QColor badge_color = node_value.kind == NodeKind::DatasetInput
-        ? data_type_color(DataType::Dataset)
-        : std::get<TaskNodeConfig>(node_value.config).task == "sg" ? QColor("#0EA67A") : QColor("#C7782B");
-    painter->setBrush(badge_color);
-    painter->drawEllipse(QRectF(10, 8, 16, 16));
     painter->setPen(Qt::white);
     QFont title_font = painter->font(); title_font.setPointSizeF(8.5); title_font.setWeight(QFont::DemiBold);
     painter->setFont(title_font);
@@ -216,10 +216,19 @@ void NodeItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget
     node_title = QFontMetrics(title_font).elidedText(node_title, Qt::ElideRight,
         static_cast<int>(Width - 44 - QFontMetrics(title_font).horizontalAdvance(node_id)));
     painter->drawText(QRectF(32, 0, Width - 40, 32), Qt::AlignVCenter, node_title + node_id);
-    QFont badge_font = painter->font(); badge_font.setPointSizeF(6.5); badge_font.setBold(true);
-    painter->setFont(badge_font);
-    painter->drawText(QRectF(10, 8, 16, 16), Qt::AlignCenter,
-                      node_title.left(1));
+    if (node_value.kind == NodeKind::TaskConfig) {
+        task_icon_.paint(painter, QRect(8, 6, 20, 20));
+    } else {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(data_type_color(DataType::Dataset));
+        painter->drawEllipse(QRectF(10, 8, 16, 16));
+        painter->setPen(Qt::white);
+        QFont badge_font = painter->font();
+        badge_font.setPointSizeF(6.5);
+        badge_font.setBold(true);
+        painter->setFont(badge_font);
+        painter->drawText(QRectF(10, 8, 16, 16), Qt::AlignCenter, node_title.left(1));
+    }
 
     QFont detail_font = painter->font(); detail_font.setPointSizeF(7.0); detail_font.setWeight(QFont::Normal);
     painter->setFont(detail_font);
@@ -299,16 +308,22 @@ void NodeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event) {
     auto* open = menu.addAction(QObject::tr("Open node workspace"));
     QAction* train = nullptr;
     QAction* infer = nullptr;
-    if (graph_->node(node_id_).kind == NodeKind::TaskConfig) {
+    const Node& node = graph_->node(node_id_);
+    const TaskNodeConfig* task = std::get_if<TaskNodeConfig>(&node.config);
+    if (task) {
         menu.addSeparator();
         train = menu.addAction(QObject::tr("Train..."));
         infer = menu.addAction(QObject::tr("Infer..."));
     }
     QAction* selected = menu.exec(event->screenPos());
     auto* workflow_scene = static_cast<WorkflowScene*>(scene());
-    if (selected == open) workflow_scene->activate_node(node_id_);
-    else if (selected == train) workflow_scene->request_node_action(node_id_, "train");
-    else if (selected == infer) workflow_scene->request_node_action(node_id_, "infer");
+    if (selected == open) {
+        workflow_scene->activate_node(node_id_);
+    } else if (selected && selected == train) {
+        workflow_scene->request_node_action(node_id_, "train");
+    } else if (selected && selected == infer) {
+        workflow_scene->request_node_action(node_id_, "infer");
+    }
     event->accept();
 }
 

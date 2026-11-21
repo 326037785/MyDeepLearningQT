@@ -1,9 +1,9 @@
 #pragma once
 
-#include "modules/task/ui/common/image_viewport_transform.h"
-#include "modules/task/ui/common/annotation_tool_interaction.h"
+#include "modules/task/ui/image/image_viewport_transform.h"
+#include "modules/task/ui/annotation/tools/annotation_tool_interaction.h"
 #include "modules/task/ui/annotation/sg/annotation_region_edit_service.h"
-#include "modules/task/ui/common/result_inspection.h"
+#include "modules/task/ui/results/result_inspection.h"
 #include "modules/workflow/model/workflow.h"
 #include <common/geometry/interval.h>
 
@@ -180,6 +180,7 @@ public:
                               const std::vector<jocelin::model::ModelClass>& model_schema = {},
                               const std::vector<AnnotationClass>& task_classes = {});
     void refresh_inference_layers();
+    bool confirm_transition();
     std::function<void(const QString&)> status;
     std::function<bool(const std::string&, const QImage&)> save_mask;
     std::function<void(const std::vector<std::string>&, const std::string&)>
@@ -190,7 +191,6 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private:
-    bool confirm_transition();
     void load_index(int index);
     bool save_current();
     void set_selected_empty(const std::vector<std::string>& ids);

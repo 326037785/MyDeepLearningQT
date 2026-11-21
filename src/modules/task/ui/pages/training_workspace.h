@@ -73,6 +73,8 @@ private:
     QComboBox* model_scale_ = nullptr;
     QSpinBox* image_width_ = nullptr;
     QSpinBox* image_height_ = nullptr;
+    QLabel* image_size_separator_ = nullptr;
+    QComboBox* image_size_preset_ = nullptr;
     QSpinBox* batch_size_ = nullptr;
     QSpinBox* epochs_ = nullptr;
     QDoubleSpinBox* learning_rate_ = nullptr;

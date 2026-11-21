@@ -112,6 +112,9 @@ void MainWindow::buildUi() {
     models_ = std::make_unique<ModelActions>(*project_, this);
     execution_ = std::make_unique<ExecutionModule>(*project_, workspace, this);
 
+    project_module_->confirm_annotation_transition = [this] {
+        return workflow_->node_workspace().confirm_annotation_transition();
+    };
     project_module_->before_switch = [this] { workflow_->unbindWorkflowViews(); };
     project_module_->after_switch = [this] { workflow_->bindActiveWorkflow(); };
     project_module_->show_workflow = [this] { workflow_->showWorkflowWorkspace(); };

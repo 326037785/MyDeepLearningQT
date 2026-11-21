@@ -6,6 +6,7 @@
 #include <QGraphicsObject>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
+#include <QIcon>
 #include <QPointF>
 #include <QColor>
 
@@ -71,6 +72,7 @@ private:
     QString summary() const;
     QString status_text() const;
 
+    QIcon task_icon_;
     WorkflowGraph* graph_;
     int node_id_;
     std::vector<PortItem*> input_ports_;

@@ -32,6 +32,7 @@ public:
         const QString& dataset_directory);
     void refresh_models();
     void clear_node();
+    bool confirm_annotation_transition();
     void show_inference();
     void set_runtime_busy(bool busy);
     void training_started(int node_id);

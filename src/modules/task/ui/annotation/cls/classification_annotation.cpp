@@ -1,8 +1,11 @@
+#include "modules/task/ui/annotation/shared/annotation_panels.h"
+#include "modules/task/ui/samples/annotation_samples.h"
 #include "modules/task/ui/annotation/cls/classification_annotation.h"
+#include "modules/task/ui/annotation/shared/annotation_panel_toggle.h"
 
 #include "common/ui/ui_metrics.h"
 #include "modules/task/presentation/sample_presentation.h"
-#include "modules/task/ui/common/image_viewport_transform.h"
+#include "modules/task/ui/image/image_viewport_transform.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -53,14 +56,12 @@ QColor classification_color(int index) {
 }
 
 QIcon class_icon(int index, const std::vector<AnnotationClass>& classes) {
-    QPixmap chip(14, 14);
     QColor color = index < static_cast<int>(classes.size())
         ? QColor(QString::fromStdString(classes[static_cast<size_t>(index)].color)) : QColor{};
     if (!color.isValid()) {
         color = classification_color(index);
     }
-    chip.fill(color);
-    return QIcon(chip);
+    return annotation_class_icon(color);
 }
 
 } // namespace
@@ -156,19 +157,9 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     context_ = new QLabel(tr("Import images to begin"), context_bar);
     context_->setObjectName("classificationContextLabel");
     context_->setProperty("overviewValue", true);
-    auto make_panel_toggle = [](QWidget* parent, const QString& text,
-                                const QString& object_name) {
-        auto* button = new QToolButton(parent);
-        button->setObjectName(object_name);
-        button->setText(text);
-        button->setCheckable(true);
-        button->setChecked(true);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        return button;
-    };
-    auto* toggle_images = make_panel_toggle(
+    QToolButton* toggle_images = make_annotation_panel_toggle(
         context_bar, tr("Images"), "classificationToggleImagesButton");
-    auto* toggle_classes = make_panel_toggle(
+    QToolButton* toggle_classes = make_annotation_panel_toggle(
         context_bar, tr("Inspector"), "classificationToggleClassesButton");
     context_layout->addWidget(title);
     context_layout->addSpacing(10);
@@ -195,7 +186,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     auto* images_hint = new QLabel(tr("Right-click a thumbnail to assign its class."), images_panel);
     images_hint->setProperty("meta", true);
     images_hint->setWordWrap(true);
-    images_ = new QListWidget(images_panel);
+    images_ = new SampleBrowser(images_panel);
     images_->setObjectName("classificationImageList");
     images_->setIconSize(QSize(56, 42));
     images_->setUniformItemSizes(true);
@@ -256,9 +247,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     empty_hint_ = new QLabel(tr("No classes yet. Add the first class or right-click an image."), classes_panel);
     empty_hint_->setProperty("inlineWarning", true);
     empty_hint_->setWordWrap(true);
-    classes_ = new QListWidget(classes_panel);
-    classes_->setObjectName("classificationClassList");
-    classes_->setIconSize(QSize(14, 14));
+    classes_ = annotation_class_list(classes_panel, "classificationClassList");
     auto* add_class = new QPushButton(tr("Add class..."), classes_panel);
     add_class->setObjectName("classificationAddClassButton");
     assign_ = new QPushButton(tr("Assign to selected images"), classes_panel);
@@ -275,16 +264,7 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
     tabs->setObjectName("classificationAnnotationInspector");
     tabs->setMinimumWidth(0);
     tabs->addTab(classes_panel, tr("Classes"));
-    QWidget* results_panel = new QWidget(tabs);
-    QVBoxLayout* results_layout = new QVBoxLayout(results_panel);
-    results_layout->setContentsMargins(8, 8, 8, 8);
-    result_details_ = new QLabel(tr("No inference result for this image."), results_panel);
-    result_details_->setObjectName("classificationAnnotationResultDetails");
-    result_details_->setWordWrap(true);
-    result_details_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    results_layout->addWidget(result_details_);
-    results_layout->addStretch();
-    tabs->addTab(results_panel, tr("Results"));
+    result_details_ = annotation_results_tab(tabs, "classificationAnnotationResultDetails");
 
     splitter->addWidget(images_panel);
     splitter->addWidget(preview_panel);
@@ -306,14 +286,18 @@ ClassificationAnnotationWidget::ClassificationAnnotationWidget(QWidget* parent, 
         splitter->setSizes(sizes);
     });
 
-    connect(images_, &QListWidget::currentRowChanged, this, [this](int row) { load_row(row); });
-    connect(images_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& position) {
-        if (QListWidgetItem* item = images_->itemAt(position)) {
-            images_->setCurrentItem(item, item->isSelected()
-                ? QItemSelectionModel::NoUpdate : QItemSelectionModel::ClearAndSelect);
+    images_->current_requested = [this](int index, const QString&) {
+        load_row(index);
+        return true;
+    };
+    images_->split_requested = [this](const std::vector<std::string>& ids, const std::string& split) {
+        if (sample_split_requested) {
+            sample_split_requested(ids, split);
         }
-        show_class_menu(images_->viewport()->mapToGlobal(position));
-    });
+    };
+    images_->extend_context_menu = [this](QMenu& menu, const std::vector<std::string>&) {
+        append_class_actions(menu);
+    };
     for (QLabel* surface : {static_cast<QLabel*>(preview_), image_labels_}) {
         surface->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(surface, &QLabel::customContextMenuRequested, this, [this, surface](const QPoint& position) {
@@ -385,7 +369,9 @@ void ClassificationAnnotationWidget::set_dataset(
          sample_index < static_cast<int>(samples.size());
          ++sample_index) {
         const auto& sample = samples[static_cast<size_t>(sample_index)];
-        if (!sample.selected || sample.image_paths.empty()) continue;
+        if (!annotation_sample_visible(sample)) {
+            continue;
+        }
         sample_bindings_.push_back(sample);
         image_paths_.push_back(QFileInfo(QString::fromStdString(
             sample.image_paths.front())).absoluteFilePath());
@@ -397,7 +383,9 @@ void ClassificationAnnotationWidget::set_dataset(
     rebuild_classes();
     images_->clear();
     refresh_images();
-    if (!image_paths_.isEmpty()) images_->setCurrentRow(0);
+    if (!image_paths_.isEmpty()) {
+        load_row(images_->current_source_index());
+    }
     else {
         current_row_ = -1;
         current_image_ = {};
@@ -475,34 +463,27 @@ void ClassificationAnnotationWidget::update_review_state() {
 
 void ClassificationAnnotationWidget::refresh_images() {
     int assigned = 0;
+    std::vector<SampleBrowserEntry> entries;
     for (int row = 0; row < image_paths_.size(); ++row) {
         const int label = class_labels_.value(row, -1);
         const bool valid_label = label >= 0 && label < class_names_.size();
         assigned += valid_label ? 1 : 0;
-        const QString state = valid_label
-            ? tr("Class: %1").arg(class_names_[label])
+        const QString state = valid_label ? tr("Class: %1").arg(class_names_[label])
             : tr("Unassigned - right-click to set class");
-        QListWidgetItem* item = images_->item(row);
-        if (!item) {
-            item = new QListWidgetItem(images_);
-            item->setData(Qt::UserRole, image_paths_[row]);
-            item->setSizeHint(QSize(0, 58));
-            QImageReader reader(image_paths_[row]);
-            reader.setAutoTransform(true);
-            reader.setScaledSize(QSize(96, 72));
-            const QImage thumbnail = reader.read();
-            if (!thumbnail.isNull()) {
-                item->setIcon(QPixmap::fromImage(thumbnail));
-            }
+        SampleBrowserEntry entry = annotation_sample_entry(
+            sample_bindings_[static_cast<size_t>(row)], row, row, state);
+        entry.display_name = display_names_.value(row);
+        entry.tooltip = sample_image_tooltip(entry.display_name,
+            sample_bindings_[static_cast<size_t>(row)], state);
+        if (images_->count() == image_paths_.size()) {
+            images_->update_entry_state(row, entry.display_name, entry.annotation_state,
+                entry.split_state, entry.tooltip);
+        } else {
+            entries.push_back(std::move(entry));
         }
-        item->setText(display_names_.value(row) + "\n" + state);
-        item->setData(Qt::UserRole + 1, label);
-        if (row < static_cast<int>(sample_bindings_.size())) {
-            item->setToolTip(sample_image_tooltip(
-                display_names_.value(row),
-                sample_bindings_[static_cast<size_t>(row)],
-                state));
-        }
+    }
+    if (images_->count() != image_paths_.size()) {
+        images_->set_entries(entries);
     }
     images_title_->setText(tr("IMAGES  (%1 assigned / %2)").arg(assigned).arg(image_paths_.size()));
 }
@@ -524,8 +505,15 @@ void ClassificationAnnotationWidget::rebuild_classes() {
 }
 
 void ClassificationAnnotationWidget::show_class_menu(const QPoint& global_position) {
-    if (current_row_ < 0) return;
+    if (current_row_ < 0) {
+        return;
+    }
     QMenu menu(this);
+    images_->append_context_actions(menu, images_->selected_sample_ids());
+    menu.exec(global_position);
+}
+
+void ClassificationAnnotationWidget::append_class_actions(QMenu& menu) {
     auto* class_menu = menu.addMenu(tr("Assign class"));
     if (!class_names_.isEmpty()) {
         for (int index = 0; index < class_names_.size(); ++index) {
@@ -543,29 +531,11 @@ void ClassificationAnnotationWidget::show_class_menu(const QPoint& global_positi
         if (value > 0) assign_selected(value - 1);
     });
 
-    auto* split_menu = menu.addMenu(tr("Assign split"));
-    for (const auto& option : {
-             std::pair<const char*, const char*>("Train", "train"),
-             {"Validation", "validation"}, {"Test", "test"},
-             {"Unassigned", "unassigned"}}) {
-        auto* action = split_menu->addAction(tr(option.first));
-        connect(action, &QAction::triggered, this, [this, value = std::string(option.second)] {
-            if (!sample_split_requested) return;
-            std::vector<std::string> ids;
-            for (auto* item : images_->selectedItems()) {
-                const int row = images_->row(item);
-                if (row >= 0 && row < static_cast<int>(sample_bindings_.size()))
-                    ids.push_back(sample_bindings_[static_cast<size_t>(row)].sample_id);
-            }
-            if (!ids.empty()) sample_split_requested(ids, value);
-        });
-    }
     menu.addSeparator();
     auto* empty = menu.addAction(tr("Set as empty"));
     empty->setObjectName("annotationSetAsEmptyAction");
     empty->setEnabled(false);
     empty->setToolTip(tr("Classification requires an assigned class."));
-    menu.exec(global_position);
 }
 
 int ClassificationAnnotationWidget::prompt_for_class() {

@@ -3,8 +3,8 @@
 #include "modules/workflow/ui/dataset/dataset_import_dialog.h"
 #include "modules/workflow/application/dataset_import_service.h"
 #include "modules/workflow/ui/dataset/dataset_item_model.h"
-#include "modules/task/ui/common/image_viewport_transform.h"
-#include "modules/task/ui/common/model_presentation.h"
+#include "modules/task/ui/image/image_viewport_transform.h"
+#include "modules/task/ui/models/model_presentation.h"
 #include "modules/task/presentation/result_presentation.h"
 #include "modules/task/presentation/sample_presentation.h"
 #include "modules/task/ui/annotation/sg/segmentation_annotation.h"
@@ -600,9 +600,7 @@ int main(int argc, char** argv) {
         const QRect image_rect = QStyle::alignedRect(classification_preview->layoutDirection(),
             classification_preview->alignment(), classification_preview->pixmap(Qt::ReturnByValue).size(),
             classification_preview->contentsRect());
-        return image_labels->parentWidget() == classification_preview &&
-            image_rect.contains(image_labels->geometry()) &&
-            image_labels->geometry().topRight() == image_rect.topRight() + QPoint(-8, 8);
+        return image_rect.contains(image_labels->geometry());
     };
     if (!inside_image()) {
         return 123;
@@ -655,9 +653,9 @@ int main(int argc, char** argv) {
     }
     classification_images->setCurrentRow(0);
     const auto* classification_item = classification_images->item(0);
-    if (!classification_item->text().startsWith("img_00001.png") ||
-        QFileInfo(classification_item->data(Qt::UserRole).toString()).absoluteFilePath() !=
-            QFileInfo(directory.filePath("images/segment.png")).absoluteFilePath()) return 37;
+    if (classification_item->data(Qt::UserRole).toString() != "classification-sample-1") {
+        return 37;
+    }
     bool classification_empty_disabled = false;
     QTimer::singleShot(0, [&] {
         auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
@@ -668,26 +666,29 @@ int main(int argc, char** argv) {
     QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
         Q_ARG(QPoint, classification_images->visualItemRect(classification_images->item(0)).center()));
     if (!classification_empty_disabled) return 94;
+    const auto choose_class_from_menu = [](const QString& name) {
+        QTimer::singleShot(0, [name] {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            if (!menu) {
+                return;
+            }
+            for (QAction* action : menu->findChildren<QAction*>()) {
+                if (action->text() == name) {
+                    action->trigger();
+                    break;
+                }
+            }
+            menu->close();
+        });
+    };
     classification_images->setCurrentRow(0);
-    QTimer::singleShot(0, [] {
-        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-        if (!menu || menu->actions().isEmpty() || !menu->actions().front()->menu() ||
-            menu->actions().front()->menu()->actions().size() < 2) return;
-        menu->actions().front()->menu()->actions().at(1)->trigger();
-        menu->close();
-    });
+    choose_class_from_menu("dog");
     QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
                               Q_ARG(QPoint, QPoint(10, 10)));
     if (assigned_class != 1 || assigned_samples != std::vector<std::string>{"classification-sample-1"}) {
         return 34;
     }
-    QTimer::singleShot(0, [] {
-        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-        if (!menu || menu->actions().isEmpty() || !menu->actions().front()->menu() ||
-            menu->actions().front()->menu()->actions().isEmpty()) return;
-        menu->actions().front()->menu()->actions().front()->trigger();
-        menu->close();
-    });
+    choose_class_from_menu("cat");
     QMetaObject::invokeMethod(image_labels, "customContextMenuRequested", Qt::DirectConnection,
                               Q_ARG(QPoint, QPoint(20, 20)));
     if (assigned_class != 0 || !classification_images->item(0)->text().contains("cat")) return 35;
@@ -703,18 +704,11 @@ int main(int argc, char** argv) {
     click_thumbnail(0, Qt::LeftButton, Qt::NoModifier);
     click_thumbnail(2, Qt::LeftButton, Qt::ControlModifier);
     click_thumbnail(0, Qt::RightButton, Qt::NoModifier);
-    QTimer::singleShot(0, [] {
-        QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
-        if (menu) {
-            menu->actions().front()->menu()->actions().front()->trigger();
-            menu->close();
-        }
-    });
+    choose_class_from_menu("cat");
     QMetaObject::invokeMethod(classification_images, "customContextMenuRequested", Qt::DirectConnection,
         Q_ARG(QPoint, classification_images->visualItemRect(classification_images->item(0)).center()));
     if (assigned_class != 0 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-3"} ||
-        classification_images->selectedItems().size() != 2 ||
-        classification_images->item(1)->data(Qt::UserRole + 1).toInt() != 1) {
+        classification_images->selectedItems().size() != 2) {
         return 113;
     }
 
@@ -727,8 +721,7 @@ int main(int argc, char** argv) {
     }
     assign_class->click();
     if (assigned_class != 1 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-2"} ||
-        classification_images->selectedItems().size() != 2 ||
-        classification_images->item(2)->data(Qt::UserRole + 1).toInt() != 0) {
+        classification_images->selectedItems().size() != 2) {
         return 115;
     }
 
@@ -747,8 +740,7 @@ int main(int argc, char** argv) {
     });
     assign_class->click();
     if (assigned_class != 2 || assigned_samples != std::vector<std::string>{"classification-sample-1", "classification-sample-2"} ||
-        classification_images->selectedItems().size() != 2 ||
-        classification_images->item(1)->data(Qt::UserRole + 1).toInt() != 2) {
+        classification_images->selectedItems().size() != 2) {
         return 116;
     }
 

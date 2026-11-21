@@ -1,11 +1,16 @@
+#include "modules/task/ui/annotation/shared/annotation_panels.h"
+#include "modules/task/ui/samples/annotation_samples.h"
 #include "modules/task/ui/annotation/sg/segmentation_annotation.h"
+#include "modules/task/ui/annotation/shared/annotation_panel_toggle.h"
 #include "modules/task/presentation/result_presentation.h"
 #include "modules/task/application/annotation/segmentation_annotation_state.h"
 
 #include "common/ui/icon_provider.h"
 #include "modules/task/presentation/sample_presentation.h"
-#include "modules/task/ui/common/sample_browser.h"
+#include "modules/task/ui/samples/sample_browser.h"
 #include "common/ui/ui_metrics.h"
+#include "common/ui/editing/confirm_transition.h"
+#include "modules/settings/application/annotation_preferences.h"
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -35,7 +40,6 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSaveFile>
-#include <QSettings>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSlider>
@@ -1251,19 +1255,9 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent, QTab
                                       "annotationPreviousButton");
     auto* next = make_icon_button(context_bar, "next", tr("Next sample"),
                                   "annotationNextButton");
-    auto make_panel_toggle = [](QWidget* parent, const QString& text,
-                                const QString& object_name) {
-        auto* button = new QToolButton(parent);
-        button->setObjectName(object_name);
-        button->setText(text);
-        button->setCheckable(true);
-        button->setChecked(true);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        return button;
-    };
-    auto* toggle_samples = make_panel_toggle(
+    QToolButton* toggle_samples = make_annotation_panel_toggle(
         context_bar, tr("Samples"), "annotationToggleSamplesButton");
-    auto* toggle_classes = make_panel_toggle(
+    QToolButton* toggle_classes = make_annotation_panel_toggle(
         context_bar, tr("Inspector"), "annotationToggleClassesButton");
     toggle_samples_ = toggle_samples;
     toggle_classes_ = toggle_classes;
@@ -1434,16 +1428,7 @@ SegmentationAnnotationWidget::SegmentationAnnotationWidget(QWidget* parent, QTab
     QTabWidget* tabs = inspector ? inspector : new QTabWidget(content);
     tabs->setObjectName("segmentationAnnotationInspector");
     tabs->setMinimumWidth(0);
-    QWidget* results_panel = new QWidget(tabs);
-    QVBoxLayout* results_layout = new QVBoxLayout(results_panel);
-    results_layout->setContentsMargins(8, 8, 8, 8);
-    result_details_ = new QLabel(tr("No inference result for this image."), results_panel);
-    result_details_->setObjectName("segmentationAnnotationResultDetails");
-    result_details_->setWordWrap(true);
-    result_details_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    results_layout->addWidget(result_details_);
-    results_layout->addStretch();
-    tabs->addTab(results_panel, tr("Results"));
+    result_details_ = annotation_results_tab(tabs, "segmentationAnnotationResultDetails");
 
     content->addWidget(samples_panel); content->addWidget(viewport_panel); content->addWidget(tabs);
     content->setCollapsible(0, true); content->setCollapsible(1, false); content->setCollapsible(2, true);
@@ -1649,18 +1634,13 @@ void SegmentationAnnotationWidget::set_task_dataset(
          sample_index < static_cast<int>(samples.size());
          ++sample_index) {
         const TaskSampleBinding& sample = samples[static_cast<size_t>(sample_index)];
-        if (!sample.selected || sample.image_paths.empty()) {
+        if (!annotation_sample_visible(sample)) {
             continue;
         }
-        const QString image = QString::fromStdString(sample.image_paths.front());
-        QImageReader reader(image);
-        reader.setDecideFormatFromContent(true);
-        if (!QFileInfo(image).isFile() || !reader.canRead()) {
-            continue;
-        }
-        const QString display_name = image_display_name(sample_index, sample);
-        entries.push_back({sample.sample_id, image, display_name, {}, {}, {},
-            static_cast<int>(entries.size())});
+        const SampleBrowserEntry entry = annotation_sample_entry(
+            sample, sample_index, static_cast<int>(entries.size()));
+        entries.push_back(entry);
+        const QString display_name = entry.display_name;
         sample_bindings_.push_back(sample);
         display_names_.push_back(display_name);
     }
@@ -1673,7 +1653,7 @@ void SegmentationAnnotationWidget::set_task_dataset(
         state_->setText(tr("No valid imported images are connected."));
         refresh_inference_layers();
     } else if (current_index_ < 0) {
-        load_index(0);
+        load_index(images_->current_source_index());
     }
 }
 
@@ -1802,10 +1782,7 @@ void SegmentationAnnotationWidget::refresh_sample_status() {
                 ? tr("  +%1").arg(image_count - 1)
                 : QString{}) +
             marker;
-        QString split_state = sample
-            ? QString::fromStdString(sample->split)
-            : QString{};
-        if (!split_state.isEmpty()) split_state[0] = split_state[0].toUpper();
+        const QString split_state = sample ? split_label(sample->split) : QString{};
         images_->update_entry_state(
             row,
             browser_name,
@@ -1834,22 +1811,9 @@ void SegmentationAnnotationWidget::refresh_sample_status() {
 }
 
 bool SegmentationAnnotationWidget::confirm_transition() {
-    if (!canvas_ || !canvas_->is_dirty()) {
-        return true;
-    }
-    if (QSettings(QSettings::IniFormat, QSettings::UserScope, "Jocelin", "DeepLearningStudio")
-            .value("annotation/autoSave", false).toBool()) {
-        return save_current();
-    }
-    const QMessageBox::StandardButton answer = QMessageBox::warning(this, tr("Unsaved mask"), tr("Save the current mask before continuing?"),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-    if (answer == QMessageBox::Cancel) {
-        return false;
-    }
-    if (answer == QMessageBox::Save) {
-        return save_current();
-    }
-    return true;
+    return studio::confirm_transition(this, canvas_ && canvas_->is_dirty(), annotation_auto_save(),
+        [this] { return save_current(); },
+        [this] { load_index(current_index_); });
 }
 
 void SegmentationAnnotationWidget::load_index(int index) {

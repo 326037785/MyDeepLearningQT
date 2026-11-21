@@ -15,9 +15,10 @@ struct TaskModuleDefinition {
     const char* unavailable_reason;
 };
 
-inline constexpr std::array<TaskModuleDefinition, 2> task_modules{{
+inline constexpr std::array<TaskModuleDefinition, 3> task_modules{{
     {"sg", "Semantic Segmentation", "Train and run pixel-level semantic segmentation models.", true, ""},
     {"cls", "Classification", "Train and run image classification models.", true, ""},
+    {"od", "Object Detection", "Set up an object detection task and its annotation data.", true, ""},
 }};
 
 inline const TaskModuleDefinition* find_task_module(const std::string& id) {

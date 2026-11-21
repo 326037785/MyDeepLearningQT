@@ -1,6 +1,6 @@
 #include "modules/workflow/ui/properties_editor.h"
 #include "common/ui/icon_provider.h"
-#include "modules/task/ui/common/model_presentation.h"
+#include "modules/task/ui/models/model_presentation.h"
 #include "modules/task/application/catalog/model_spec_catalog.h"
 
 #include <QCheckBox>

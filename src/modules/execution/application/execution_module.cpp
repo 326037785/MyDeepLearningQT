@@ -186,8 +186,19 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
             error = tr("Training ended without an available checkpoint: %1")
                 .arg(QString::fromStdString(weight_path));
         }
-        if ((paused || completed || stopped) && !weight_path.empty() &&
-            QFileInfo(QString::fromStdString(weight_path)).isFile()) {
+        const bool has_weight = (paused || completed || stopped) && !weight_path.empty() &&
+            QFileInfo(QString::fromStdString(weight_path)).isFile();
+        if (has_weight && model->task == jocelin::config::ToolType::Od) {
+            try {
+                const auto checkpoint = jocelin::checkpoint::inspect_checkpoint(weight_path);
+                model->classes = checkpoint.classes;
+                model->image_width = checkpoint.image_width;
+                model->image_height = checkpoint.image_height;
+            } catch (const std::exception& failure) {
+                error = QString::fromUtf8(failure.what());
+            }
+        }
+        if (has_weight && error.isEmpty()) {
             const auto created_at =
                 QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
             if (auto* weight = jocelin::model::find_training_weight(*model)) {
@@ -640,20 +651,28 @@ void ExecutionModule::start_training(
             weight_source.mode = jocelin::config::WeightMode::Transfer;
         else if (launch.mode == "resume")
             weight_source.mode = jocelin::config::WeightMode::Resume;
-        else
-            weight_source.mode = jocelin::config::WeightMode::DefaultPretrained;
+        else {
+            weight_source.mode = tool_type == jocelin::config::ToolType::Od
+                ? jocelin::config::WeightMode::RandomInitialization
+                : jocelin::config::WeightMode::DefaultPretrained;
+        }
         if (launch.mode == "resume")
             weight_source.path = jocelin::model::find_training_weight(*resume_model)->path;
         else if (parent_training_weight)
             weight_source.path = parent_training_weight->path;
+        std::optional<ProjectModel> od_resume_schema;
+        if (resume_model && tool_type == jocelin::config::ToolType::Od) {
+            od_resume_schema = *resume_model;
+            od_resume_schema->classes = resume_metadata.classes;
+        }
         auto request = service.build_training_request(
             device.device, std::move(weight_source),
-            launch.mode == "resume" ? resume_model : nullptr);
+            od_resume_schema ? &*od_resume_schema : resume_model);
         if (launch.mode == "resume" &&
-            resume_metadata.num_classes !=
-                static_cast<int>(request.class_names.size()))
+            resume_metadata.num_classes != request.config.num_classes) {
             throw std::runtime_error(
                 "paused checkpoint class schema does not match the current task");
+        }
         request.config.model_save_dir = run_directory.toStdString();
         if (resume_model) {
             request.history_path = QDir(run_parent)
@@ -680,18 +699,8 @@ void ExecutionModule::start_training(
             model.task = tool_type;
             model.model_index = task.model_index;
             model.model_scale = model_scale;
-            if (tool_type == jocelin::config::ToolType::Cls) {
-                for (const auto* value : classification_classes(service.binding().classes))
-                    model.classes.push_back({value->id, value->name, 0});
-            } else {
-                for (const AnnotationClass& value : service.binding().classes) {
-                    model.classes.push_back({value.id, value.name, value.mask_value});
-                }
-                std::sort(model.classes.begin(), model.classes.end(),
-                    [](const auto& left, const auto& right) {
-                        return left.mask_value < right.mask_value;
-                    });
-            }
+            model.classes = tool_type == jocelin::config::ToolType::Od
+                ? request.classes : service.training_classes();
             model.image_width = task.training.image_width;
             model.image_height = task.training.image_height;
             model.asset_directory = run_directory.toStdString();

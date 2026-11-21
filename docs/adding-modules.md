@@ -19,7 +19,7 @@ The system definitions are in [project-overview.md](project-overview.md). Backen
 | src/modules/project/application/project_manager.cpp | Project save/open, resource paths and persistence coordination |
 | src/modules/task/integration/exchange/annotation_codec.* and src/modules/task/integration/exchange/annotation_exchange.* | External annotation decoding, mapping and export |
 | [Task pages](../src/modules/task/ui/pages) and annotation widgets | Editing, display and operation requests |
-| src/modules/task/ui/common/resource_monitor.cpp | Read-only system resource display shared by Training and Inference |
+| src/modules/task/ui/monitoring/resource_monitor.cpp | Read-only system resource display shared by Training and Inference |
 | src/modules/task/ui/task_workspace.cpp | Task page composition and shared result selection |
 | src/app/main_window.cpp | Application shell: feature composition, page/Dock mounting, window layout and status presentation |
 | src/modules/project/ui/project_module.cpp | Project commands, home page and metadata panel, using ProjectManager |

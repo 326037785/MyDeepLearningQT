@@ -3,7 +3,8 @@
 #include "modules/task/ui/pages/inference_workspace.h"
 #include "modules/task/ui/task_workspace.h"
 #include "modules/task/ui/annotation/sg/segmentation_annotation.h"
-#include "modules/task/ui/common/image_result_canvas.h"
+#include "modules/task/ui/results/image_result_canvas.h"
+#include "modules/task/ui/image/image_viewport_transform.h"
 #include "modules/project/application/project_manager.h"
 #include "modules/project/storage/project_storage.h"
 #include "modules/workflow/ui/node_workspace.h"
@@ -27,6 +28,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QMenu>
 #include <QGraphicsView>
 #include <QImage>
 #include <QInputDialog>
@@ -1273,6 +1275,192 @@ int main(int argc, char** argv) try {
     window.findChild<QPushButton*>("addDatasetButton")->click();
     if (scene->model()->nodes().begin()->first != next_node_before_clear)
         throw std::runtime_error("clearing the workflow recycled a persistent Node id");
+
+    QPushButton* add_detection = window.findChild<QPushButton*>("addTask_odButton");
+    if (!add_detection) {
+        throw std::runtime_error("OD TaskNode is missing from the node library");
+    }
+    const int detection_node = scene->model()->next_node_id();
+    add_detection->click();
+    studio::WorkflowGraph& detection_graph = *scene->model();
+    std::get<studio::DatasetConfig>(detection_graph.node(next_node_before_clear).config).items =
+        {{sample_path.toStdString(), {}, true, "od-sample"}};
+    detection_graph.connect(next_node_before_clear, 0, detection_node, 0);
+    studio::TaskWorkspaceService od_service(detection_graph, detection_node);
+    const std::string forklift = "prediction-forklift";
+    studio::ProjectModel od_model;
+    od_model.training_run_id = "od-preview-fixture";
+    od_model.asset_directory = root.filePath("od-preview-fixture").toStdString();
+    od_model.task = jocelin::config::ToolType::Od;
+    od_model.classes = {{forklift, "forklift", 0}};
+    od_model.image_width = 640;
+    od_model.image_height = 640;
+    jocelin::model::ModelWeight preview;
+    preview.id = "preview";
+    preview.created_at = "2026-07-27T00:00:00Z";
+    preview.path = QDir(QString::fromStdString(od_model.asset_directory)).filePath("yolov8n.pt").toStdString();
+    preview.format = jocelin::config::WeightType::LibTorch;
+    preview.role = jocelin::model::WeightRole::Training;
+    od_model.weights.push_back(preview);
+    preview.id = "no_result";
+    preview.role = jocelin::model::WeightRole::Inference;
+    od_model.weights.push_back(preview);
+    od_model = od_service.add_model(od_model);
+    jocelin::result::od::OdInferenceResult prediction;
+    prediction.classes = od_model.classes;
+    jocelin::result::od::OdResult predicted_sample;
+    predicted_sample.image_path = sample_path.toStdString();
+    predicted_sample.source_size = {sample.width(), sample.height()};
+    predicted_sample.detections = {{forklift, {0, 74, 41, 20, 36}, 0.94f}};
+    prediction.samples.push_back(predicted_sample);
+    od_service.record_inference_result(prediction, od_model.id, "preview",
+        jocelin::config::WeightType::LibTorch, "fixture-result", {});
+
+    scene->node_activated(detection_node);
+    studio::TaskWorkspace* detection_workspace =
+        dynamic_cast<studio::TaskWorkspace*>(window.findChild<QWidget*>("taskWorkspace"));
+    if (!detection_workspace) {
+        throw std::runtime_error("OD TaskNode did not open its workspace");
+    }
+    detection_workspace->activate_step(studio::TaskWorkspace::Step::Annotation);
+    if (detection_workspace->active_step() != studio::TaskWorkspace::Step::Annotation) {
+        throw std::runtime_error("OD workspace did not open the Annotation step");
+    }
+    application.processEvents();
+    QWidget* od_canvas = detection_workspace->findChild<QWidget*>("odAnnotationCanvas");
+    QListWidget* od_samples = detection_workspace->findChild<QListWidget*>("odAnnotationSamples");
+    QToolButton* od_save = detection_workspace->findChild<QToolButton*>("odSaveBoxes");
+    if (!od_canvas || !od_samples || od_samples->count() != 1 || !od_save || !od_canvas->isVisible()) {
+        throw std::runtime_error("OD Annotation did not load the connected sample");
+    }
+    QComboBox* od_branch = detection_workspace->findChild<QComboBox*>("annotationWeightBranch");
+    QCheckBox* od_predictions = detection_workspace->findChild<QCheckBox*>("odShowPredictions");
+    const QImage visible_prediction = od_canvas->grab().toImage();
+    od_predictions->click();
+    const QImage hidden_prediction = od_canvas->grab().toImage();
+    od_predictions->click();
+    od_branch->setCurrentIndex(od_branch->findData("no_result"));
+    if (visible_prediction == hidden_prediction || od_canvas->grab().toImage() != hidden_prediction) {
+        throw std::runtime_error("OD prediction layer did not follow visibility and exact weight branch");
+    }
+
+    const QRectF image = studio::ImageViewportTransform{}.target_rect(sample.size(), od_canvas->size());
+    const QPoint start = (image.topLeft() + QPointF(image.width() * 0.12, image.height() * 0.20)).toPoint();
+    const QPoint end = (image.topLeft() + QPointF(image.width() * 0.42, image.height() * 0.60)).toPoint();
+    const auto send_mouse = [od_canvas](QEvent::Type type, const QPoint& position) {
+        QMouseEvent event(type, position, type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                          type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(od_canvas, &event);
+    };
+    const auto draw_box = [&](const QString& new_class, bool accept, bool expect_board = true) {
+        send_mouse(QEvent::MouseButtonPress, start);
+        send_mouse(QEvent::MouseMove, end);
+        bool matched = !expect_board;
+        QTimer picker;
+        QObject::connect(&picker, &QTimer::timeout, [&] {
+            QDialog* board = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!board) {
+                return;
+            }
+            QLineEdit* name = board->findChild<QLineEdit*>("annotationNewClassName");
+            QComboBox* existing = board->findChild<QComboBox*>("annotationExistingClass");
+            QDialogButtonBox* buttons = board->findChild<QDialogButtonBox*>();
+            matched = expect_board && board->objectName() == "annotationClassBoard" && name && existing && buttons;
+            if (matched && !new_class.isEmpty()) {
+                name->setText(new_class);
+            }
+            if (matched && accept) {
+                buttons->button(QDialogButtonBox::Ok)->click();
+            } else {
+                board->reject();
+            }
+        });
+        picker.start(10);
+        send_mouse(QEvent::MouseButtonRelease, end);
+        return matched;
+    };
+    const auto& od_target = od_service.binding().samples.front();
+    if (!draw_box("discarded class", false) || od_save->isEnabled() ||
+        !od_target.bbox_comps.empty() || !od_service.binding().classes.empty()) {
+        throw std::runtime_error("Cancelling the OD Board committed a class or dirtied a box");
+    }
+    if (!draw_box("person", true) || !od_save->isEnabled() || !od_target.bbox_comps.empty() ||
+        od_service.binding().classes.size() != 1 || od_service.binding().classes.front().name != "person") {
+        throw std::runtime_error("OD Board could not create the first class and draft its box");
+    }
+    const std::string person = od_service.binding().classes.front().id;
+    od_save->click();
+    if (od_target.bbox_comps.size() != 1 || od_target.bbox_comps.front().score ||
+        od_target.bbox_comps.front().class_id != person || od_target.annotation_state != "annotated") {
+        throw std::runtime_error("OD save did not commit the chosen stable class to the sample");
+    }
+    const jocelin::geo::RotatedBBox before = od_target.bbox_comps.front().box;
+    QListWidget* od_classes = detection_workspace->findChild<QListWidget*>("odClassList");
+    if (!od_classes || !od_classes->selectedItems().isEmpty()) {
+        throw std::runtime_error("OD Board selected a class for subsequent boxes");
+    }
+    od_classes->setCurrentRow(0);
+    if (!draw_box({}, false, false) || !od_save->isEnabled()) {
+        throw std::runtime_error("OD opened the Board despite a selected class");
+    }
+    od_save->click();
+    if (od_target.bbox_comps.size() != 2 || od_target.bbox_comps.back().class_id != person) {
+        throw std::runtime_error("OD box did not use the selected class");
+    }
+    detection_workspace->findChild<QToolButton*>("odUndo")->click();
+    od_save->click();
+    od_classes->setCurrentRow(-1);
+    if (!draw_box({}, true) || !od_save->isEnabled()) {
+        throw std::runtime_error("OD Board could not assign an existing class");
+    }
+    detection_workspace->findChild<QToolButton*>("odUndo")->click();
+    const QPoint inside = (start + end) / 2;
+    const QPoint shifted = inside + QPoint(qRound(image.width() / 5.0), 0);
+    send_mouse(QEvent::MouseButtonDblClick, inside);
+    send_mouse(QEvent::MouseButtonRelease, inside);
+    send_mouse(QEvent::MouseButtonPress, inside);
+    send_mouse(QEvent::MouseMove, shifted);
+    send_mouse(QEvent::MouseButtonRelease, shifted);
+    od_save->click();
+    const jocelin::geo::RotatedBBox after = od_target.bbox_comps.front().box;
+    if (after.cx() <= before.cx() || after.cy() != before.cy() ||
+        after.w() != before.w() || after.h() != before.h() || after.theta != 0.0) {
+        throw std::runtime_error("Double-click translation did not preserve OD geometry");
+    }
+    detection_workspace->findChild<QToolButton*>("odUndo")->click();
+    od_save->click();
+    if (od_target.bbox_comps.front().box.cx() != before.cx()) {
+        throw std::runtime_error("Undo did not restore the OD box position");
+    }
+    detection_workspace->findChild<QToolButton*>("odRedo")->click();
+    od_save->click();
+    if (od_target.bbox_comps.front().box.cx() != after.cx()) {
+        throw std::runtime_error("Redo did not restore the OD box move");
+    }
+    send_mouse(QEvent::MouseButtonDblClick, shifted);
+    send_mouse(QEvent::MouseButtonRelease, shifted);
+    detection_workspace->findChild<QToolButton*>("odDeleteBox")->click();
+    od_save->click();
+    if (!od_target.bbox_comps.empty() || od_target.annotation_state != "unannotated") {
+        throw std::runtime_error("OD Samples did not refresh after saving removal of the last box");
+    }
+    QTimer review;
+    QObject::connect(&review, &QTimer::timeout, [&] {
+        QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        if (menu && menu->parentWidget() == od_samples) {
+            QAction* action = menu->findChild<QAction*>("annotationSetAsEmptyAction");
+            if (action) {
+                action->trigger();
+                menu->close();
+            }
+        }
+    });
+    review.start(10);
+    Q_EMIT od_samples->customContextMenuRequested(od_samples->visualItemRect(od_samples->item(0)).center());
+    review.stop();
+    if (!od_target.bbox_comps.empty() || od_target.annotation_state != "annotated") {
+        throw std::runtime_error("OD Samples did not display the confirmed empty sample as annotated");
+    }
     return 0;
 } catch (...) {
     std::cerr << jocelin::exception::message(std::current_exception()) << '\n';
