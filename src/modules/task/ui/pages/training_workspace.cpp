@@ -965,8 +965,6 @@ void TrainingWorkspace::refresh() {
     image_size_preset_->setVisible(detection);
     image_size_preset_->setCurrentIndex(image_size_preset_->findData(
         task.training.image_width == task.training.image_height ? task.training.image_width : 0));
-    augmentation_button_->setVisible(!detection);
-    static_cast<QFormLayout*>(advanced_panel_->layout())->labelForField(augmentation_button_)->setVisible(!detection);
     batch_size_->setValue(task.training.batch_size);
     epochs_->setValue(task.training.epochs);
     learning_rate_->setValue(task.training.learning_rate);

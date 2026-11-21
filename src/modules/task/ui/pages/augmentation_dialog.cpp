@@ -40,7 +40,7 @@ AugmentationDialog::AugmentationDialog(
     const jocelin::config::Augment& current,
     QWidget* parent)
     : QDialog(parent), task_(task), draft_(current),
-      descriptors_(jocelin::config::AugmentCatalog::describe(task))
+      descriptors_(jocelin::config::AugmentCatalog::available(task))
 {
     setObjectName("trainingAugmentationDialog");
     setWindowTitle(tr("Data Augmentation"));

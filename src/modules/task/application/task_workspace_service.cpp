@@ -1028,11 +1028,7 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.model_save_dir = config.training.output_directory;
     backend.weight_type = jocelin::config::WeightType::LibTorch;
     backend.device = device;
-    if (!detection) {
-        backend.augment = config.training.augment;
-    } else {
-        backend.augment.enable = {};
-    }
+    backend.augment = config.training.augment;
     backend.normalize = !detection && binding().preprocessing.normalize;
     backend.bgr_to_rgb = true;
     backend.loss_type = jocelin::config::LossType::Auto;

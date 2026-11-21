@@ -50,6 +50,12 @@ ModelList, box annotation, training, inference and typed result persistence. Its
 current input contract is one image per sample; explicitly reviewed empty images
 are valid negative samples. OD currently uses LibTorch checkpoints for inference.
 
+Configure OD training augmentation under **Train → Advanced → Data augmentation**.
+Core provides brightness, contrast, Gaussian noise, horizontal and vertical
+flip, scale, random crop and translation. The probability applies per training
+image, with at most one operator per sample. The project saves these settings,
+and validation and inference use deterministic preprocessing.
+
 SG and OD compose one Classes panel for add/rename/delete interactions. SG keeps
 pixel, lock and ordering behavior in its own adapter; OD keeps box edits in its
 adapter. Sample browsing, split menus and result inspection use shared UI modules.

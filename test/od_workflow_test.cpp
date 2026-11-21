@@ -9,7 +9,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -23,6 +25,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QThread>
@@ -129,6 +132,30 @@ int main(int argc, char** argv) try {
         } else if (QMessageBox* message = qobject_cast<QMessageBox*>(modal)) {
             dialog_error = message->text();
             message->accept();
+        } else if (QDialog* augmentation = qobject_cast<QDialog*>(modal);
+                   augmentation && augmentation->objectName() == "trainingAugmentationDialog") {
+            QTreeWidget* operators = control<QTreeWidget>(*augmentation, "augmentationOperatorCatalog");
+            QStringList ids;
+            QTreeWidgetItem* flip = nullptr;
+            for (int row = 0; row < operators->topLevelItemCount(); ++row) {
+                QTreeWidgetItem* item = operators->topLevelItem(row);
+                const QString id = item->data(0, Qt::UserRole).toString();
+                ids.push_back(id);
+                if (id == "flip_horizontal") {
+                    flip = item;
+                }
+            }
+            ids.sort();
+            const QStringList expected{"brightness", "contrast", "crop", "flip_horizontal",
+                "flip_vertical", "gaussian_noise", "scale", "translate"};
+            if (ids != expected || !flip) {
+                dialog_error = "OD augmentation did not list its eight operators";
+                augmentation->reject();
+                return;
+            }
+            flip->setCheckState(0, Qt::Checked);
+            control<QDoubleSpinBox>(*augmentation, "augmentationProbability")->setValue(1.0);
+            control<QPushButton>(*augmentation, "augmentationApply")->click();
         }
     });
     dialogs.start(10);
@@ -157,6 +184,13 @@ int main(int argc, char** argv) try {
     size->setCurrentIndex(size->findData(320));
     control<QSpinBox>(window, "trainingBatchSize")->setValue(2);
     control<QSpinBox>(window, "trainingEpochs")->setValue(1);
+    control<QPushButton>(window, "trainingAdvancedToggle")->click();
+    QPushButton* augmentation = control<QPushButton>(window, "trainingAugmentationButton");
+    require(augmentation->isVisible(), "OD training did not expose the augmentation dialog");
+    augmentation->click();
+    require(dialog_error.isEmpty(), qPrintable(dialog_error));
+    require(task().training.augment.enable.flip_horizontal && task().training.augment.probability == 1.0f,
+        "OD dialog did not apply the selected augmentation");
     QPushButton* train = control<QPushButton>(window, "trainingStartButton");
     require(train->isVisible() && train->isEnabled(), "OD training could not be started");
     train->click();
@@ -211,6 +245,13 @@ int main(int argc, char** argv) try {
     studio::ProjectManager reopened;
     reopened.open_project(project_file);
     studio::TaskWorkspaceService recovered(reopened.active_workflow().document.graph, task_id);
+    require(recovered.task().training.augment.enable.flip_horizontal &&
+        recovered.task().training.augment.probability == 1.0f,
+        "OD augmentation settings did not reopen with the project");
+    const jocelin::training::TrainingRequest request =
+        recovered.build_training_request(jocelin::config::cpu_device());
+    require(request.config.augment.enable.flip_horizontal && request.config.augment.probability == 1.0f,
+        "OD training request did not receive the saved augmentation");
     const studio::InferenceResultSet* saved = recovered.inference_result(
         QString::fromStdString(model_id), QString::fromStdString(weight_id));
     require(saved && saved->samples.size() == 1 && saved->samples.front().source_sample_id == "validation" &&
