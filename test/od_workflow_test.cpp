@@ -71,6 +71,8 @@ void wait_for(Condition done, const QString& dialog_error, const char* timeout) 
 int main(int argc, char** argv) try {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication application(argc, argv);
+    const bool yolo26 = application.arguments().contains("--yolo26");
+    const int model_index = yolo26 ? 1 : 0;
     QTemporaryDir fixtures;
     require(fixtures.isValid(), "Could not create OD project fixture");
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -179,6 +181,10 @@ int main(int argc, char** argv) try {
     }
     QApplication::processEvents();
     control<QPushButton>(window, "workspaceStep4Button")->click();
+    QComboBox* model_index_combo = control<QComboBox>(window, "modelIndexCombo");
+    const int choice = model_index_combo->findData(model_index);
+    require(choice >= 0, "OD training did not offer the requested model index");
+    model_index_combo->setCurrentIndex(choice);
     QComboBox* size = control<QComboBox>(window, "trainingImageSizePreset");
     require(size->findData(320) >= 0, "OD training did not offer the 320 preset");
     size->setCurrentIndex(size->findData(320));
@@ -201,7 +207,8 @@ int main(int argc, char** argv) try {
     }, dialog_error, "OD training did not finish");
     const auto* model = task().model_list.find(model_id);
     require(model->training_status == jocelin::model::ModelTrainingStatus::Completed &&
-        model->completed_epochs == 1 && model->image_width == 320 && model->image_height == 320 &&
+        model->model_index == model_index && model->completed_epochs == 1 &&
+        model->image_width == 320 && model->image_height == 320 &&
         model->classes.size() == 2 && model->classes[0].id == box_class &&
         model->classes[1].id == other_class && model->metric_name.find("mAP50-95") != std::string::npos,
         "Qt ModelList did not register the trained OD model and checkpoint schema");
@@ -239,7 +246,8 @@ int main(int argc, char** argv) try {
             break;
         }
     }
-    require(control<QLabel>(window, "odAnnotationResultDetails")->text().contains("NMS IoU"),
+    const QString details = control<QLabel>(window, "odAnnotationResultDetails")->text();
+    require(details.contains("0.25") && details.contains("NMS IoU") == !yolo26,
         "OD Annotation did not receive the result of the same model and branch");
 
     studio::ProjectManager reopened;
@@ -250,14 +258,18 @@ int main(int argc, char** argv) try {
         "OD augmentation settings did not reopen with the project");
     const jocelin::training::TrainingRequest request =
         recovered.build_training_request(jocelin::config::cpu_device());
-    require(request.config.augment.enable.flip_horizontal && request.config.augment.probability == 1.0f,
-        "OD training request did not receive the saved augmentation");
+    require(request.config.model_index == model_index &&
+        request.config.augment.enable.flip_horizontal && request.config.augment.probability == 1.0f,
+        "OD training request did not receive the saved model and augmentation");
     const studio::InferenceResultSet* saved = recovered.inference_result(
         QString::fromStdString(model_id), QString::fromStdString(weight_id));
     require(saved && saved->samples.size() == 1 && saved->samples.front().source_sample_id == "validation" &&
         std::holds_alternative<jocelin::result::od::OdResult>(saved->samples.front().result) &&
         saved->detection_metrics.count("recall") == 1,
         "OD inference result and measured metrics did not reopen on the trained Weight branch");
+    const auto& result = std::get<jocelin::result::od::OdResult>(saved->samples.front().result);
+    require(result.nms_iou_threshold.has_value() == !yolo26,
+        "OD inference result did not preserve its postprocessing settings");
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

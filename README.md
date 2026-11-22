@@ -50,6 +50,11 @@ ModelList, box annotation, training, inference and typed result persistence. Its
 current input contract is one image per sample; explicitly reviewed empty images
 are valid negative samples. OD currently uses LibTorch checkpoints for inference.
 
+OD offers Model 0 at capacity N for YOLOv8n and Model 1 at capacity N for
+YOLO26n. Open the corresponding checkpoint from the existing ModelList to run
+inference. YOLO26n uses the one-to-one Top-K output and its results show the
+effective confidence threshold and detection limit.
+
 Configure OD training augmentation under **Train → Advanced → Data augmentation**.
 Core provides brightness, contrast, Gaussian noise, horizontal and vertical
 flip, scale, random crop and translation. The probability applies per training

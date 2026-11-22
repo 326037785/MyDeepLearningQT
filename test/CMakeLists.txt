@@ -35,6 +35,7 @@ studio_add_test(main_window_test main_window_integration
     main_window_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc")
 studio_add_test(od_workflow_test od_workflow
     od_workflow_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc")
+add_test(NAME od_yolo26_workflow COMMAND od_workflow_test --yolo26)
 studio_add_test(shell_ui_test shell_ui_contract
     shell_ui_test.cpp "${CMAKE_SOURCE_DIR}/resources/studio.qrc" "${STUDIO_TRANSLATIONS_QRC}")
 add_dependencies(shell_ui_test studio_translations)

@@ -656,7 +656,9 @@ QJsonObject runtime_to_json(const TaskRuntimeState& runtime, const std::string& 
                     data.insert("source_height", result.source_size.height);
                     data.insert("detections", detections);
                     data.insert("confidence_threshold", result.confidence_threshold);
-                    data.insert("nms_iou_threshold", result.nms_iou_threshold);
+                    data.insert("nms_iou_threshold", result.nms_iou_threshold
+                        ? QJsonValue(static_cast<double>(*result.nms_iou_threshold))
+                        : QJsonValue(QJsonValue::Null));
                     data.insert("max_detections", result.max_detections);
                 }
                 return data;
@@ -882,7 +884,12 @@ TaskRuntimeState runtime_from_json(const QJsonObject& object, const std::string&
                     value.source_size.width = required_integer(data, "source_width", sample_context);
                     value.source_size.height = required_integer(data, "source_height", sample_context);
                     value.confidence_threshold = static_cast<float>(required_number(data, "confidence_threshold", sample_context));
-                    value.nms_iou_threshold = static_cast<float>(required_number(data, "nms_iou_threshold", sample_context));
+                    if (data.value("nms_iou_threshold").isNull()) {
+                        value.nms_iou_threshold.reset();
+                    } else {
+                        value.nms_iou_threshold = static_cast<float>(
+                            required_number(data, "nms_iou_threshold", sample_context));
+                    }
                     value.max_detections = required_integer(data, "max_detections", sample_context);
                     if (value.source_size.empty()) {
                         invalid_document(sample_context, "OD prediction requires source image dimensions");

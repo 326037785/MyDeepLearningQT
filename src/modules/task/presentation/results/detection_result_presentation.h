@@ -54,9 +54,14 @@ inline QVector<ResultPresentationItem> present_detections(
 }
 
 inline QString detection_result_summary(const jocelin::result::od::OdResult& result) {
+    if (!result.nms_iou_threshold) {
+        return QObject::tr("%1 detection(s)\nConfidence threshold: %2\nMax detections: %3")
+            .arg(result.detections.size()).arg(result.confidence_threshold, 0, 'f', 2)
+            .arg(result.max_detections);
+    }
     return QObject::tr("%1 detection(s)\nConfidence threshold: %2\nNMS IoU: %3\nMax detections: %4")
         .arg(result.detections.size()).arg(result.confidence_threshold, 0, 'f', 2)
-        .arg(result.nms_iou_threshold, 0, 'f', 2).arg(result.max_detections);
+        .arg(*result.nms_iou_threshold, 0, 'f', 2).arg(result.max_detections);
 }
 
 } // namespace studio

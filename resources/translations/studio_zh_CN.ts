@@ -3,6 +3,7 @@
   <context>
     <name>QObject</name>
     <message><source>%1 detection(s)&#10;Confidence threshold: %2&#10;NMS IoU: %3&#10;Max detections: %4</source><translation>%1 个检测框&#10;置信度阈值：%2&#10;NMS IoU：%3&#10;最多检测框数：%4</translation></message>
+    <message><source>%1 detection(s)&#10;Confidence threshold: %2&#10;Max detections: %3</source><translation>%1 个检测框&#10;置信度阈值：%2&#10;最多检测框数：%3</translation></message>
     <message>
       <location filename="../../src/modules/project/application/project_path_validator.cpp" line="28" />
       <source>Please enter a project name.</source>
