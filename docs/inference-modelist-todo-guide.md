@@ -68,7 +68,7 @@ Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显
 
 **Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Core 恢复训练状态，从下一个 epoch 继续。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
 
-**训练历史**：模型资产目录下的 `training_history.csv` 每个已完成 epoch 保存一行，包含训练和验证 loss、主指标名称及两组指标值。CL 使用 Accuracy，SG 使用 Mean IoU。没有验证集时，验证字段为空。Resume 延续同一模型的 CSV，新的 checkpoint 和执行日志保存在模型目录下本次执行的子目录。Training 页选中模型行时读取 CSV 并显示趋势。缺少 CSV 的模型显示空曲线。
+**训练历史**：模型资产目录下的 `training_history.csv` 每个已完成 epoch 保存一行，包含训练和验证 loss、由 Core 对应 Task 提供的主指标名称及两组指标值。Qt 按记录中的指标名称和数值显示趋势，不在 Qt 中定义或选择各 Task 的评价标准。没有验证集时，验证字段为空。Resume 延续同一模型的 CSV，新的 checkpoint 和执行日志保存在模型目录下本次执行的子目录。Training 页选中模型行时读取 CSV 并显示趋势。缺少 CSV 的模型显示空曲线。
 
 TaskNode 的任务类型决定清单范围。各行可以有不同的 model_index、model_scale、输入尺寸和类别 schema。具体操作检查所选模型的兼容性。
 
@@ -231,3 +231,5 @@ Annotation package import 显式提供接收 Task 的新类别和标注。它保
 **删除收尾**：ProjectManager 协调当前 TaskNode 的删除与保存，Qt 更新当前 Model/Weight selection。ModelList 和 Workflow 引用共同记录删除结果，其他 TaskNode 保留各自资产。
 
 相关定义见 [project-overview.md](project-overview.md)。Annotation 的任务语义见 [annotation_spec.md](annotation_spec.md)。
+
+<!-- 迁移说明：本文档已按 Core/Qt 所有权边界清理不应由 Qt 对外声明的 Core 内部设计规格；当前 Qt 源码尚未同步调整。代码迁移应以本文档更新后的契约为准，不要因暂时存在的实现差异恢复旧规格。对应代码完成迁移后，删除本注释。 -->
