@@ -32,7 +32,7 @@ cmake --build --preset gpu-vs2022-release --target openvino_sg_acceptance_test
 ctest --preset gpu-vs2022-release -R '^openvino_sg_acceptance$' -V
 ```
 
-验收程序使用仓库的合成数据生成器，固定 Torch 初始化种子为 `173`，用 32 张图训练、8 张图选取 best checkpoint，每个模型训练 8 个 epoch。另留出 8 张合成图和 1 张纯背景图用于分支验收。网络输入为 `H=192, W=256`，原图为 `H=197, W=253`。ViT checkpoint 使用 `embed_dim=96, depth=3, heads=6`，并覆盖非方形位置编码插值。后处理置信度阈值为 `0.5`，关闭形态学处理。
+验收程序使用仓库的合成数据生成器，固定 Torch 初始化种子为 `173`，用 32 张图训练、8 张图选取 best checkpoint，每个模型训练 8 个 epoch。另留出 8 张合成图和 1 张纯背景图用于分支验收。网络输入为 `H=192, W=256`，原图为 `H=197, W=253`。ViT 使用 Core 中注册的固定模型结构，并覆盖非方形位置编码插值。后处理置信度阈值为 `0.5`，关闭形态学处理。
 
 | 模型 | 样本 / 配对区域 | 空前景 / 同类多区域样本 | `logits` / `features` 最大绝对误差 | 像素误差 P99 / 最大值 | 区域最低 IoU | 最大面积差 / 最大框边差 | 区域置信度最大绝对误差 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -70,3 +70,5 @@ ctest --preset gpu-vs2022-release -R '^openvino_cls_acceptance$' -V
 两个模型均通过三个网络输出的数值检查和 `1e-4` 的置信度精度门槛。实测使用 OpenVINO 2025.4.0，覆盖含中文文件名的 XML/BIN、源 checkpoint 移走后的独立推理，以及原图尺寸的分类热力图。见 [Core CL 验收程序](../../MyLibtorchLearning/test/test_openvino_cls_acceptance.cpp)。
 
 实现边界见 [推理模型架构与权重转换规范](inference_model_weight_handle.md)。
+
+<!-- 迁移说明：本文档已按 Core/Qt 所有权边界清理不应由 Qt 对外声明的 Core 内部设计规格；当前 Qt 源码尚未同步调整。代码迁移应以本文档更新后的契约为准，不要因暂时存在的实现差异恢复旧规格。对应代码完成迁移后，删除本注释。 -->
