@@ -482,10 +482,6 @@ void ProjectModelBrowser::set_model_check_eligible(const QString& id, bool eligi
     }
 }
 
-void ProjectModelBrowser::set_import_available(bool available) {
-    import_->setVisible(available);
-}
-
 void ProjectModelBrowser::set_management_actions_enabled(bool enabled) {
     management_actions_enabled_ = enabled;
     delete_button_->setVisible(enabled);

@@ -10,10 +10,12 @@
 #include "modules/workflow/storage/workflow_document.h"
 
 #include <common/config/ai_config.h>
+#include <infer_network/ov/od/od_native_export.h>
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QImage>
 #include <QImageReader>
 #include <QStringList>
@@ -1063,9 +1065,6 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     const auto& config = task();
     const jocelin::config::ToolType task_type = jocelin::config::tool_type_from_string(config.task);
     const bool detection = task_type == jocelin::config::ToolType::Od;
-    if (detection && weight.format != jocelin::config::WeightType::LibTorch) {
-        throw std::runtime_error("OD inference requires a LibTorch checkpoint");
-    }
     const auto& output = output_directory.empty() ? config.inference_output_directory : output_directory;
     if (weight.path.empty()) throw std::runtime_error("select a model weight");
     if (weight.format == jocelin::config::WeightType::OpenVino) {
@@ -1157,7 +1156,7 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     backend.model_embed_dim = 768;
     backend.model_depth = 12;
     backend.model_num_heads = 12;
-    backend.batch_size = detection ? 1 : config.inference_batch_size;
+    backend.batch_size = config.inference_batch_size;
     backend.num_classes = num_classes;
     backend.image_width = model.image_width;
     backend.image_height = model.image_height;
@@ -1169,11 +1168,19 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
     // Core restores this model's normalization when it loads the selected asset.
     backend.morph_kernel_size = 5;
 
+    if (detection && weight.format != jocelin::config::WeightType::LibTorch &&
+        (weight.format != jocelin::config::WeightType::OpenVino || !jocelin::Ov::supports_od_network(backend))) {
+        throw std::runtime_error("OD inference is unavailable for the selected weight and model spec");
+    }
     jocelin::inference::InferenceRequest request;
     request.config = backend;
     request.weight_path = weight.path;
     request.selected_weight_id = weight.id;
-    request.available_weights = detection ? std::vector<jocelin::model::ModelWeight>{weight} : model.weights;
+    request.available_weights = model.weights;
+    if (detection) {
+        request.detection_batch_size = config.inference_batch_size;
+        request.detection_classes = model.classes;
+    }
     request.image_paths = std::move(images);
     request.targets = std::move(targets);
     request.segmentation_result.save_dir = output;
@@ -1218,22 +1225,29 @@ void TaskWorkspaceService::record_inference_result(
     set.weight_format = jocelin::config::to_string(weight_format);
     set.result_directory = output_directory;
 
-    const auto sample_id_for = [this](const std::string& image_path) {
-        const auto path = QFileInfo(QString::fromStdString(image_path)).absoluteFilePath();
-        for (const auto& sample : binding().samples) {
-            if (std::any_of(sample.image_paths.begin(), sample.image_paths.end(), [&path](const auto& input) {
-                    return QFileInfo(QString::fromStdString(input)).absoluteFilePath() == path;
-                }))
-                return sample.sample_id;
-        }
-        throw std::runtime_error("inference result has no bound source_sample_id");
-    };
-
     if ((task().task == "cls" && !std::holds_alternative<jocelin::result::cls::ClsInferenceResult>(report)) ||
         (task().task == "sg" && !std::holds_alternative<jocelin::result::sg::SgInferenceResult>(report)) ||
         (task().task == "od" && !std::holds_alternative<jocelin::result::od::OdInferenceResult>(report))) {
         throw std::runtime_error("inference result task does not match this TaskNode");
     }
+
+    QHash<QString, const TaskSampleBinding*> samples_by_path;
+    for (const TaskSampleBinding& sample : binding().samples) {
+        for (const std::string& input : sample.image_paths) {
+            const QString path = QFileInfo(QString::fromStdString(input)).absoluteFilePath();
+            if (!samples_by_path.contains(path)) {
+                samples_by_path.insert(path, &sample);
+            }
+        }
+    }
+    const auto sample_id_for = [&samples_by_path](const std::string& image_path) -> const std::string& {
+        const QString path = QFileInfo(QString::fromStdString(image_path)).absoluteFilePath();
+        const TaskSampleBinding* sample = samples_by_path.value(path, nullptr);
+        if (!sample) {
+            throw std::runtime_error("inference result has no bound source_sample_id");
+        }
+        return sample->sample_id;
+    };
 
     if (const auto* cls = std::get_if<jocelin::result::cls::ClsInferenceResult>(&report)) {
         set.aggregate_metrics = cls->metrics;

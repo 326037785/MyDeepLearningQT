@@ -12,6 +12,7 @@
 #include <common/exception/pipeline_exception.h>
 #include <infer_network/conversion/onnx/native_export.h>
 #include <infer_network/ov/cls/cls_native_export.h>
+#include <infer_network/ov/od/od_native_export.h>
 #include <infer_network/ov/sg/sg_native_export.h>
 #include <runtime/device_service.h>
 #include <runtime/inference_route.h>
@@ -467,8 +468,19 @@ void ExecutionModule::start_weight_conversion(
             try {
                 if (openvino) {
                     const jocelin::Ov::NativeExportRequest request{config, checkpoint, path, id, parent_id};
-                    outcome.first = config.tool_type == jocelin::config::ToolType::Sg
-                        ? jocelin::Ov::export_sg_model(request) : jocelin::Ov::export_cls_model(request);
+                    switch (config.tool_type) {
+                    case jocelin::config::ToolType::Sg:
+                        outcome.first = jocelin::Ov::export_sg_model(request);
+                        break;
+                    case jocelin::config::ToolType::Cls:
+                        outcome.first = jocelin::Ov::export_cls_model(request);
+                        break;
+                    case jocelin::config::ToolType::Od:
+                        outcome.first = jocelin::Ov::export_od_model(request);
+                        break;
+                    default:
+                        throw std::runtime_error("OpenVINO conversion is unavailable for this Task");
+                    }
                 } else {
                     outcome.first = jocelin::infer_network::conversion::onnx::export_task_model(
                         {config, checkpoint, path, id, parent_id});

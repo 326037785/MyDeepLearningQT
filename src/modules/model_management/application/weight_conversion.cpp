@@ -2,6 +2,7 @@
 
 #include <infer_network/conversion/onnx/native_export.h>
 #include <infer_network/ov/cls/cls_native_export.h>
+#include <infer_network/ov/od/od_native_export.h>
 #include <infer_network/ov/common/openvino_runtime.h>
 #include <infer_network/ov/sg/sg_native_export.h>
 #include <QFileInfo>
@@ -24,7 +25,8 @@ bool can_convert_weight(const jocelin::model::ModelEntry& model, const jocelin::
         return jocelin::infer_network::conversion::onnx::supports_native_export(config);
     }
     return target == WeightType::OpenVino && jocelin::Ov::cpu_runtime_available() &&
-        (jocelin::Ov::supports_sg_network(config) || jocelin::Ov::supports_cls_network(config));
+        (jocelin::Ov::supports_sg_network(config) || jocelin::Ov::supports_cls_network(config) ||
+         jocelin::Ov::supports_od_network(config));
 }
 
 } // namespace studio

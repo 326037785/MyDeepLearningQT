@@ -25,7 +25,7 @@ class InferenceFilterPanel final : public QFrame {
 public:
     explicit InferenceFilterPanel(QWidget* parent = nullptr);
     void set_content(std::unique_ptr<InferenceFilterContent> content);
-    void set_config(jocelin::config::AiConfig* config);
+    void set_config(std::function<jocelin::config::AiConfig&()> config);
 
     std::function<void()> applied;
 
@@ -34,7 +34,7 @@ private:
     void connect_controls();
 
     InferenceFilterContent* content_ = nullptr; // Owned by the Qt widget tree.
-    jocelin::config::AiConfig* config_ = nullptr;
+    std::function<jocelin::config::AiConfig&()> config_;
     QToolButton* toggle_ = nullptr;
     QPushButton* reset_ = nullptr;
     QPushButton* apply_ = nullptr;

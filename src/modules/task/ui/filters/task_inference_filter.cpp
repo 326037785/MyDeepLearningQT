@@ -1,6 +1,7 @@
 #include "modules/task/ui/filters/task_inference_filter.h"
 
 #include "modules/task/ui/filters/cls_inference_filter.h"
+#include "modules/task/ui/filters/od_inference_filter.h"
 #include "modules/task/ui/filters/sg_inference_filter.h"
 
 namespace studio {
@@ -13,6 +14,9 @@ const TaskInferenceFilterSpec filter_specs[] = {
     }},
     {"cls", []() -> std::unique_ptr<InferenceFilterContent> {
         return std::make_unique<ClsInferenceFilterContent>();
+    }},
+    {"od", []() -> std::unique_ptr<InferenceFilterContent> {
+        return std::make_unique<OdInferenceFilterContent>();
     }},
 };
 

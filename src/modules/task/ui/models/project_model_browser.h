@@ -58,7 +58,6 @@ public:
     void set_model_check_eligible(const QString& id, bool eligible);
 
     void set_management_actions_enabled(bool enabled);
-    void set_import_available(bool available);
 
     void set_detail_visible(bool visible);
 

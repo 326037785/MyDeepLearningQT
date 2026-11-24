@@ -958,7 +958,6 @@ void TrainingWorkspace::refresh() {
     image_width_->setValue(task.training.image_width);
     image_height_->setValue(task.training.image_height);
     const bool detection = task.task == "od";
-    model_browser_->set_import_available(!detection);
     image_width_->setVisible(!detection);
     image_height_->setVisible(!detection);
     image_size_separator_->setVisible(!detection);

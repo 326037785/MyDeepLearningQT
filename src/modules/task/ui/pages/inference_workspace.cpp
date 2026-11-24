@@ -15,6 +15,8 @@
 #include "modules/task/ui/monitoring/resource_monitor.h"
 #include "modules/task/ui/filters/inference_filter_panel.h"
 #include "modules/task/ui/filters/task_inference_filter.h"
+#include "modules/task/ui/filters/od_inference_filter.h"
+#include <detection/od_model_factory.h>
 #include "modules/task/ui/pages/task_page_ui.h"
 
 #include <runtime/inference_route.h>
@@ -394,7 +396,8 @@ void InferenceWorkspace::set_service(TaskWorkspaceService* service) {
         return;
     }
 
-    filter_panel_->set_config(nullptr);
+    filter_panel_->set_config({});
+    od_filter_ = nullptr;
     filter_panel_->set_content(nullptr);
     model_browser_->set_models({});
     service_ = service;
@@ -410,9 +413,12 @@ void InferenceWorkspace::set_service(TaskWorkspaceService* service) {
     }
 
     std::unique_ptr<InferenceFilterContent> content = spec->create_content();
+    od_filter_ = dynamic_cast<OdInferenceFilterContent*>(content.get());
     filter_panel_->set_content(std::move(content));
-    jocelin::config::AiConfig& config = service_->task().inference_config;
-    filter_panel_->set_config(&config);
+    // Project saves can replace the TaskNode configuration while this page stays bound.
+    filter_panel_->set_config([this]() -> jocelin::config::AiConfig& {
+        return service_->task().inference_config;
+    });
     refresh();
 }
 
@@ -438,9 +444,6 @@ void InferenceWorkspace::refresh() {
     }
     const auto& task = service_->task();
     const bool detection = task.task == "od";
-    model_browser_->set_import_available(!detection);
-    batch_label_->setVisible(!detection);
-    batch_size_->setVisible(!detection);
     available_devices_ = jocelin::runtime::available_compute_devices();
     const auto task_type = jocelin::config::tool_type_from_string(task.task);
     std::vector<jocelin::model::ModelEntry> task_models;
@@ -803,11 +806,19 @@ void InferenceWorkspace::update_command_presentation() {
     const ModelWeightSelection checked = model_browser_->checked_weights();
     const jocelin::runtime::ComputeDevice* compute = selected_device();
     const jocelin::model::ModelWeight* weight = selected_weight(checked);
+    const jocelin::model::ModelEntry* checked_model = weight ? service_->find_model(checked.front().first) : nullptr;
+    if (od_filter_) {
+        const jocelin::model::ModelEntry* model = checked_model ? checked_model : model_browser_->current_model();
+        od_filter_->set_nms_available(model && model->model_index == jocelin::od_net::yolov8n_model_index,
+                                      service_->task().inference_config.od_nms_iou_threshold);
+    }
+    const bool show_batch_size = !od_filter_ || !weight || weight->format == jocelin::config::WeightType::LibTorch;
+    batch_label_->setVisible(show_batch_size);
+    batch_size_->setVisible(show_batch_size);
     const bool available = compute && weight && inference_weight_available(*weight, compute->device);
     QString checked_label;
-    if (weight) {
-        const jocelin::model::ModelEntry* model = service_->find_model(checked.front().first);
-        checked_label = tr("%1 · %2").arg(QString::fromStdString(model->name), checked.front().second);
+    if (checked_model) {
+        checked_label = tr("%1 · %2").arg(QString::fromStdString(checked_model->name), checked.front().second);
     } else if (checked.empty()) {
         checked_label = tr("No Weight branch checked");
     } else {

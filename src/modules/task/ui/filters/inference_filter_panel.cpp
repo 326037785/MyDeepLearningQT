@@ -87,7 +87,7 @@ void InferenceFilterPanel::connect_controls() {
             return;
         }
         QString error;
-        if (!content_->apply_to(*config_, error)) {
+        if (!content_->apply_to(config_(), error)) {
             error_->setText(error);
             error_->show();
             return;
@@ -107,17 +107,17 @@ void InferenceFilterPanel::set_content(std::unique_ptr<InferenceFilterContent> c
         // The layout reparents the widget, so Qt owns it from this point on.
         content_ = content.release();
         if (config_) {
-            content_->load(*config_);
+            content_->load(config_());
         }
     }
     error_->hide();
     setVisible(content_ != nullptr);
 }
 
-void InferenceFilterPanel::set_config(jocelin::config::AiConfig* config) {
-    config_ = config;
+void InferenceFilterPanel::set_config(std::function<jocelin::config::AiConfig&()> config) {
+    config_ = std::move(config);
     if (content_ && config_) {
-        content_->load(*config_);
+        content_->load(config_());
     }
     error_->hide();
 }

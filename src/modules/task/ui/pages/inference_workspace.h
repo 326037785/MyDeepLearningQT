@@ -26,6 +26,7 @@ namespace studio {
 class ClassificationCanvas;
 class ImageResultCanvas;
 class InferenceFilterPanel;
+class OdInferenceFilterContent;
 class ProjectModelBrowser;
 class TaskWorkspaceService;
 
@@ -65,6 +66,7 @@ private:
     std::vector<jocelin::model::ModelEntry> models_;
     ProjectModelBrowser* model_browser_ = nullptr;
     InferenceFilterPanel* filter_panel_ = nullptr;
+    OdInferenceFilterContent* od_filter_ = nullptr; // Owned by the filter panel.
     QListWidget* images_ = nullptr;
     QComboBox* sample_split_filter_ = nullptr;
     QLineEdit* sample_search_ = nullptr;

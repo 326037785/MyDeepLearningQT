@@ -1024,6 +1024,12 @@ QJsonObject config_to_json(const Node& node, std::vector<std::pair<QString, QByt
         } else if (config.task == "cls") {
             task_object.insert("cls_filter", QJsonObject{
                 {"cls_confidence_threshold", config.inference_config.cls_confidence_threshold}});
+        } else if (config.task == "od") {
+            const jocelin::config::AiConfig& filter = config.inference_config;
+            task_object.insert("od_filter", QJsonObject{
+                {"od_confidence_threshold", filter.od_confidence_threshold},
+                {"od_nms_iou_threshold", filter.od_nms_iou_threshold},
+                {"od_max_detections", filter.od_max_detections}});
         }
         return task_object;
     }
@@ -1086,6 +1092,7 @@ void config_from_json(Node& node, const QJsonObject& object, const QString& node
         QJsonObject task_fields = object;
         task_fields.remove("sg_filter");
         task_fields.remove("cls_filter");
+        task_fields.remove("od_filter");
         require_exact_fields(
             task_fields,
             {"task", "model_index", "model_scale",
@@ -1124,6 +1131,24 @@ void config_from_json(Node& node, const QJsonObject& object, const QString& node
             require_exact_fields(filter, {"cls_confidence_threshold"}, "Task CL filter");
             config.inference_config.cls_confidence_threshold =
                 required_number(filter, "cls_confidence_threshold", "Task CL filter");
+        }
+        if (object.contains("od_filter")) {
+            if (config.task != "od") {
+                invalid_document(context, "od_filter requires an OD Task");
+            }
+            const QString filter_context = "Task OD filter";
+            const QJsonObject filter = required_object(object, "od_filter", context);
+            require_exact_fields(filter, {"od_confidence_threshold", "od_nms_iou_threshold", "od_max_detections"},
+                                 filter_context);
+            const double confidence = required_number(filter, "od_confidence_threshold", filter_context);
+            const double nms_iou = required_number(filter, "od_nms_iou_threshold", filter_context);
+            const int maximum = required_integer(filter, "od_max_detections", filter_context);
+            if (!(confidence >= 0 && confidence <= 1 && nms_iou >= 0 && nms_iou <= 1 && maximum > 0)) {
+                invalid_document(filter_context, "thresholds must be in [0,1] and maximum detections must be positive");
+            }
+            config.inference_config.od_confidence_threshold = static_cast<float>(confidence);
+            config.inference_config.od_nms_iou_threshold = static_cast<float>(nms_iou);
+            config.inference_config.od_max_detections = maximum;
         }
         config.model_index =
             required_integer(

@@ -3,13 +3,13 @@
 #include "modules/task/integration/storage/model_weight_assets.h"
 #include "common/io/json_file_writer.h"
 #include "modules/workflow/ui/node_workspace.h"
-#include "modules/task/application/annotation/classification_annotation_state.h"
 #include "modules/task/application/catalog/model_spec_catalog.h"
 #include "modules/project/storage/project_storage.h"
 #include "modules/task/application/task_workspace_service.h"
 #include <common/model/model_weight_matcher.h>
 #include <checkpoint/checkpoint_catalog.h>
 #include <infer_network/ov/common/openvino_runtime.h>
+#include <infer_network/ov/od/od_native_export.h>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
@@ -23,6 +23,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -201,6 +202,7 @@ void ModelActions::import_model(int node_id) {
         }
         TaskWorkspaceService task_service(project_.active_workflow().document.graph, node_id);
         const auto& task = task_service.task();
+        const bool detection = task.task == "od";
         jocelin::config::AiConfig config;
         config.tool_type = jocelin::config::tool_type_from_string(task.task);
         config.model_index = task.model_index;
@@ -216,14 +218,8 @@ void ModelActions::import_model(int node_id) {
             classes.push_back({value.value("id").toString().toStdString(),
                 value.value("name").toString().toStdString(), value.value("mask_value").toInt()});
         }
-        if (classes.empty() && !inference_package) {
-            if (config.tool_type == jocelin::config::ToolType::Cls) {
-                for (const auto* value : classification_classes(task_service.binding().classes))
-                    classes.push_back({value->id, value->name, 0});
-            } else {
-                for (const auto& value : task_service.binding().classes)
-                    classes.push_back({value.id, value.name, value.mask_value});
-            }
+        if (classes.empty() && !inference_package && (!detection || raw_weights)) {
+            classes = task_service.training_classes();
         }
         config.num_classes = static_cast<int>(classes.size());
         if (inference_package && config.tool_type == jocelin::config::ToolType::Cls && classes.empty()) {
@@ -244,6 +240,9 @@ void ModelActions::import_model(int node_id) {
         }
         if (metadata) {
             config.tool_type = metadata->tool_type;
+            if (detection && config.tool_type == jocelin::config::ToolType::Od) {
+                classes = metadata->classes;
+            }
             config.model_index = metadata->model_index;
             config.model_scale = metadata->model_scale;
             config.image_width = metadata->image_width;
@@ -264,43 +263,95 @@ void ModelActions::import_model(int node_id) {
             QDialog dialog(dialog_parent_);
             dialog.setObjectName("importModelSpecDialog");
             dialog.setWindowTitle(tr("Choose target model"));
-            auto* layout = new QFormLayout(&dialog);
+            QFormLayout* layout = new QFormLayout(&dialog);
             layout->addRow(tr("Task"), new QLabel(QString::fromStdString(task.task), &dialog));
-            auto* spec = new QComboBox(&dialog);
+            QComboBox* spec = new QComboBox(&dialog);
             spec->setObjectName("importModelSpec");
-            for (const auto& option : model_spec_options) {
-                if (task.task != option.task) continue;
+            for (const ModelSpecOption& option : model_spec_options) {
+                if (task.task != option.task) {
+                    continue;
+                }
                 spec->addItem(tr("Capacity %1 / Index %2").arg(option.scale).arg(option.index), option.index);
                 spec->setItemData(spec->count() - 1, option.scale, Qt::UserRole + 1);
-                if (task.model_index == option.index && task.model_scale == option.scale)
+                if (task.model_index == option.index && task.model_scale == option.scale) {
                     spec->setCurrentIndex(spec->count() - 1);
+                }
             }
-            auto* width = new QSpinBox(&dialog);
-            auto* height = new QSpinBox(&dialog);
-            auto* count = new QSpinBox(&dialog);
-            width->setObjectName("importImageWidth");
-            height->setObjectName("importImageHeight");
-            count->setObjectName("importClassCount");
-            width->setRange(1, task.task == "cls" ? 1024 : 65536);
-            height->setRange(1, task.task == "cls" ? 1024 : 65536);
-            count->setRange(1, 65536);
-            width->setValue(config.image_width);
-            height->setValue(config.image_height);
-            count->setValue(std::max(2, config.num_classes));
+            QSpinBox* width = nullptr;
+            QSpinBox* height = nullptr;
+            QSpinBox* count = nullptr;
+            QComboBox* canvas_size = nullptr;
+            QListWidget* class_order = nullptr;
             layout->addRow(tr("Target model"), spec);
-            layout->addRow(tr("Input width"), width);
-            layout->addRow(tr("Input height"), height);
-            layout->addRow(task.task == "sg" ? tr("Output classes (including background)") : tr("Output classes"), count);
-            auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+            if (detection) {
+                if (classes.empty()) {
+                    throw std::runtime_error("add Task classes before importing an external OD state dictionary");
+                }
+                canvas_size = new QComboBox(&dialog);
+                class_order = new QListWidget(&dialog);
+                canvas_size->setObjectName("importOdCanvasSize");
+                for (const int size : {320, 640, 960}) {
+                    canvas_size->addItem(tr("%1 × %1").arg(size), size);
+                }
+                const int selected_size = canvas_size->findData(config.image_width);
+                canvas_size->setCurrentIndex(selected_size >= 0 ? selected_size : 1);
+                layout->addRow(tr("Input size"), canvas_size);
+                class_order->setObjectName("importOdClassOrder");
+                class_order->setDragDropMode(QAbstractItemView::InternalMove);
+                for (int row = 0; row < config.num_classes; ++row) {
+                    const jocelin::model::ModelClass& cls = classes[row];
+                    QListWidgetItem* item = new QListWidgetItem(QString::fromStdString(cls.name), class_order);
+                    item->setData(Qt::UserRole, row);
+                    item->setToolTip(QString::fromStdString(cls.id));
+                    item->setCheckState(Qt::Checked);
+                }
+                QLabel* ordering_hint = new QLabel(
+                    tr("Check the output classes and drag them into channel order, starting at channel 0."), &dialog);
+                ordering_hint->setWordWrap(true);
+                layout->addRow(ordering_hint);
+                layout->addRow(tr("Output classes"), class_order);
+            } else {
+                width = new QSpinBox(&dialog);
+                height = new QSpinBox(&dialog);
+                count = new QSpinBox(&dialog);
+                width->setObjectName("importImageWidth");
+                height->setObjectName("importImageHeight");
+                count->setObjectName("importClassCount");
+                width->setRange(1, task.task == "cls" ? 1024 : 65536);
+                height->setRange(1, task.task == "cls" ? 1024 : 65536);
+                count->setRange(1, 65536);
+                width->setValue(config.image_width);
+                height->setValue(config.image_height);
+                count->setValue(std::max(2, config.num_classes));
+                layout->addRow(tr("Input width"), width);
+                layout->addRow(tr("Input height"), height);
+                layout->addRow(task.task == "sg" ? tr("Output classes (including background)") : tr("Output classes"), count);
+            }
+            QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
             layout->addRow(buttons);
             connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
             connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-            if (dialog.exec() != QDialog::Accepted) return;
+            if (dialog.exec() != QDialog::Accepted) {
+                return;
+            }
             config.model_index = spec->currentData().toInt();
             config.model_scale = jocelin::config::model_scale_from_string(spec->currentData(Qt::UserRole + 1).toString().toStdString());
-            config.image_width = width->value();
-            config.image_height = height->value();
-            config.num_classes = count->value();
+            if (detection) {
+                config.image_width = config.image_height = canvas_size->currentData().toInt();
+                std::vector<jocelin::model::ModelClass> ordered;
+                for (int row = 0; row < class_order->count(); ++row) {
+                    const QListWidgetItem* item = class_order->item(row);
+                    if (item->checkState() == Qt::Checked) {
+                        ordered.push_back(classes.at(item->data(Qt::UserRole).toInt()));
+                    }
+                }
+                classes = std::move(ordered);
+                config.num_classes = static_cast<int>(classes.size());
+            } else {
+                config.image_width = width->value();
+                config.image_height = height->value();
+                config.num_classes = count->value();
+            }
         }
         config.normalize = metadata ? metadata->normalize : task_service.binding().preprocessing.normalize;
         const auto imported_task = jocelin::config::to_string(config.tool_type);
@@ -308,6 +359,9 @@ void ModelActions::import_model(int node_id) {
             throw std::runtime_error("imported model belongs to a different task repository");
         if (!supports_model_spec(imported_task, config.model_index, jocelin::config::to_string(config.model_scale)))
             throw std::runtime_error("imported model spec is not registered for this task");
+        if (detection && classes.empty()) {
+            throw std::runtime_error("OD import requires an ordered class table");
+        }
         const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmsszzz");
         const QString asset_directory = QDir(project_.node_models_directory(node_id))
             .filePath("imported/" + stamp);
@@ -330,19 +384,27 @@ void ModelActions::import_model(int node_id) {
         model.metric = object.value("metric").toDouble(0.0);
         model.creation_mode = jocelin::model::ModelCreationMode::Import;
         model.training_status = jocelin::model::ModelTrainingStatus::Imported;
-        const int last_class = config.tool_type == jocelin::config::ToolType::Cls
-            ? config.num_classes : config.num_classes - 1;
-        for (int label = 1; label <= last_class; ++label) {
-            const auto found = config.tool_type == jocelin::config::ToolType::Cls
-                ? (label <= static_cast<int>(classes.size()) ? classes.begin() + label - 1 : classes.end())
-                : std::find_if(classes.begin(), classes.end(),
-                    [label](const auto& value) { return value.mask_value == label; });
-            model.classes.push_back(found != classes.end() ? *found : jocelin::model::ModelClass{
-                "imported_" + std::to_string(label), "Class " + std::to_string(label), label});
+        if (detection) {
+            model.classes = std::move(classes);
+        } else {
+            const int last_class = config.tool_type == jocelin::config::ToolType::Cls
+                ? config.num_classes : config.num_classes - 1;
+            for (int label = 1; label <= last_class; ++label) {
+                const auto found = config.tool_type == jocelin::config::ToolType::Cls
+                    ? (label <= static_cast<int>(classes.size()) ? classes.begin() + label - 1 : classes.end())
+                    : std::find_if(classes.begin(), classes.end(),
+                        [label](const auto& value) { return value.mask_value == label; });
+                model.classes.push_back(found != classes.end() ? *found : jocelin::model::ModelClass{
+                    "imported_" + std::to_string(label), "Class " + std::to_string(label), label});
+            }
         }
         for (const auto& weight : import_weights) {
             const QFileInfo source_info(weight.source_path);
             const bool native = weight.format == jocelin::config::WeightType::LibTorch;
+            if (detection && !native &&
+                (weight.format != jocelin::config::WeightType::OpenVino || !jocelin::Ov::supports_od_network(config))) {
+                throw std::runtime_error("unsupported OD weight format for the imported model spec");
+            }
             const QString id = QString::fromStdString(weight.id);
             if (ProjectStorage::validated_relative_path(id, "model weight id") != id || QFileInfo(id).fileName() != id) {
                 throw std::runtime_error("model weight id must be a file name");
@@ -352,7 +414,8 @@ void ModelActions::import_model(int node_id) {
             const QString destination = QDir(asset_directory).filePath(filename);
             if (native) {
                 const auto report = jocelin::model::import_model_weights(
-                    config, weight.source_path.toStdString(), destination.toStdString());
+                    config, weight.source_path.toStdString(), destination.toStdString(),
+                    detection ? model.classes : std::vector<jocelin::model::ModelClass>{});
                 QFile report_file(QDir(asset_directory).filePath(QString::fromStdString(weight.id) + "-load-report.txt"));
                 if (!report_file.open(QIODevice::WriteOnly | QIODevice::Text))
                     throw std::runtime_error("cannot save model import report");

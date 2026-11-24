@@ -1,10 +1,12 @@
 #include "app/main_window.h"
+#include "modules/model_management/application/model_actions.h"
 #include "modules/project/application/project_manager.h"
 #include "modules/task/application/task_workspace_service.h"
 #include "modules/task/ui/task_workspace.h"
 #include "modules/workflow/ui/workflow_scene.h"
 
 #include <ATen/Parallel.h>
+#include <infer_network/ov/common/openvino_runtime.h>
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -19,6 +21,7 @@
 #include <QImage>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPainter>
@@ -30,6 +33,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 
 #include <iostream>
@@ -85,7 +89,9 @@ int main(int argc, char** argv) try {
     const int task_id = document.graph.add_task_node({"od"});
     studio::DatasetConfig& dataset = std::get<studio::DatasetConfig>(document.graph.node(dataset_id).config);
     for (const std::string sample_id : {"train-box", "train-empty", "validation", "test"}) {
-        const QString path = fixtures.filePath(QString::fromStdString(sample_id) + ".png");
+        const QString directory = fixtures.filePath(QString::fromStdString(sample_id));
+        require(QDir().mkpath(directory), "Could not create OD sample directory");
+        const QString path = QDir(directory).filePath("same-name.png");
         QImage image(96, 72, QImage::Format_RGB888);
         image.fill(QColor("#213647"));
         if (sample_id == "train-box" || sample_id == "validation") {
@@ -228,6 +234,20 @@ int main(int argc, char** argv) try {
     QWidget* cell = rows->itemWidget(rows->topLevelItem(0), 1);
     require(cell != nullptr, "OD model did not expose its LibTorch branch");
     control<QCheckBox>(*cell, "projectModelWeightDeleteCheckBox")->click();
+    control<QToolButton>(window, "inferenceFilterToggle")->click();
+    QDoubleSpinBox* confidence = control<QDoubleSpinBox>(window, "odFilterConfidence");
+    QDoubleSpinBox* nms_iou = control<QDoubleSpinBox>(window, "odFilterNmsIou");
+    require(confidence->isVisible() && nms_iou->isVisible() == !yolo26,
+        "OD Filter did not show the selected model's controls");
+    confidence->setValue(0.33);
+    if (!yolo26) {
+        nms_iou->setValue(0.44);
+    }
+    control<QSpinBox>(window, "odFilterMaxDetections")->setValue(19);
+    control<QPushButton>(window, "inferenceFilterApply")->click();
+    require(task().inference_config.od_confidence_threshold == 0.33f &&
+            task().inference_config.od_max_detections == 19,
+        "OD Filter did not apply confidence and maximum detections to the Task");
     QPushButton* infer = control<QPushButton>(window, "inferenceStartButton");
     require(infer->isVisible() && infer->isEnabled(), "OD inference could not be started");
     infer->click();
@@ -247,8 +267,48 @@ int main(int argc, char** argv) try {
         }
     }
     const QString details = control<QLabel>(window, "odAnnotationResultDetails")->text();
-    require(details.contains("0.25") && details.contains("NMS IoU") == !yolo26,
-        "OD Annotation did not receive the result of the same model and branch");
+    if (!details.contains("0.33") || details.contains("NMS IoU") == yolo26) {
+        throw std::runtime_error("OD Annotation showed unexpected details: " + details.toStdString());
+    }
+
+    const bool verify_conversion = !yolo26 && jocelin::Ov::cpu_runtime_available();
+    const std::string converted_id = "openvino_fp32";
+    if (verify_conversion) {
+        control<QPushButton>(window, "workspaceStep5Button")->click();
+        cell = rows->itemWidget(rows->topLevelItem(0), 1);
+        QTimer::singleShot(0, [&] {
+            QWidget* popup = QApplication::activePopupWidget();
+            if (!popup) {
+                popup = QApplication::activeModalWidget();
+            }
+            if (!popup) {
+                dialog_error = "OD conversion popup did not open";
+                return;
+            }
+            control<QPushButton>(*popup, "weightConversionOpenVino")->click();
+            control<QPushButton>(*popup, "weightConversionConfirm")->click();
+        });
+        control<QToolButton>(*cell, "projectModelConvertButton")->click();
+        wait_for([&] {
+            return jocelin::model::find_weight(*task().model_list.find(model_id), converted_id) != nullptr;
+        }, dialog_error, "OD OpenVINO conversion did not finish");
+        require(rows->topLevelItemCount() == 1, "OD conversion created another ModelList row");
+        cell = rows->itemWidget(rows->topLevelItem(0), 1);
+        QCheckBox* checked = control<QCheckBox>(*cell, "projectModelWeightDeleteCheckBox");
+        if (checked->isChecked()) {
+            checked->click();
+        }
+        QWidget* ir_cell = rows->itemWidget(rows->topLevelItem(0), 3);
+        require(ir_cell != nullptr, "OD OpenVINO branch is missing");
+        control<QCheckBox>(*ir_cell, "projectModelWeightDeleteCheckBox")->click();
+        require(infer->isEnabled() && device->currentData().toString() == "cpu" &&
+                !control<QSpinBox>(window, "inferenceBatchSize")->isVisible(),
+            "OD OpenVINO branch did not offer single-image CPU inference");
+        infer->click();
+        wait_for([&] { return task().runtime.inference_status != "running"; },
+            dialog_error, "OD OpenVINO inference did not finish");
+        require(task().runtime.inference_status == "completed", "OD OpenVINO inference did not commit a result");
+    }
 
     studio::ProjectManager reopened;
     reopened.open_project(project_file);
@@ -268,8 +328,58 @@ int main(int argc, char** argv) try {
         saved->detection_metrics.count("recall") == 1,
         "OD inference result and measured metrics did not reopen on the trained Weight branch");
     const auto& result = std::get<jocelin::result::od::OdResult>(saved->samples.front().result);
-    require(result.nms_iou_threshold.has_value() == !yolo26,
-        "OD inference result did not preserve its postprocessing settings");
+    const jocelin::config::AiConfig& filter = recovered.task().inference_config;
+    require(filter.od_confidence_threshold == 0.33f && filter.od_max_detections == 19 &&
+            filter.od_nms_iou_threshold == (yolo26 ? 0.50f : 0.44f) &&
+            result.confidence_threshold == 0.33f && result.max_detections == 19 &&
+            (yolo26 ? !result.nms_iou_threshold : result.nms_iou_threshold == 0.44f),
+        "OD Filter settings or effective result values did not survive reopening");
+    if (verify_conversion) {
+        const studio::InferenceResultSet* converted = recovered.inference_result(
+            QString::fromStdString(model_id), QString::fromStdString(converted_id));
+        require(converted && converted->samples.size() == 1 && converted->samples.front().source_sample_id == "validation",
+            "OD OpenVINO result did not reopen on the converted branch");
+    }
+
+    studio::ModelActions model_actions(reopened, &window);
+    model_actions.log = [](const QString&) {};
+    model_actions.status = [](const QString&, int) {};
+    const QString export_directory = fixtures.filePath("exported");
+    require(QDir().mkpath(export_directory), "Could not create OD export directory");
+    QString selected_path = export_directory;
+    dialogs.stop();
+    QTimer model_dialogs;
+    QObject::connect(&model_dialogs, &QTimer::timeout, [&] {
+        QWidget* modal = QApplication::activeModalWidget();
+        if (QFileDialog* file = qobject_cast<QFileDialog*>(modal)) {
+            control<QLineEdit>(*file, "fileNameEdit")->setText(selected_path);
+            QMetaObject::invokeMethod(file, "accept", Qt::QueuedConnection);
+        } else if (QMessageBox* message = qobject_cast<QMessageBox*>(modal)) {
+            dialog_error = message->text();
+            message->accept();
+        }
+    });
+    model_dialogs.start(5);
+    model_actions.export_model(task_id, QString::fromStdString(model_id));
+    model_dialogs.stop();
+    const QStringList packages = QDir(export_directory).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    require(dialog_error.isEmpty() && packages.size() == 1, "OD model package export failed");
+    selected_path = QDir(QDir(export_directory).filePath(packages.front())).filePath("model.json");
+    model_dialogs.start(5);
+    model_actions.import_model(task_id);
+    model_dialogs.stop();
+    require(dialog_error.isEmpty(), qPrintable(dialog_error));
+    const jocelin::model::ModelEntry& imported = recovered.models().back();
+    require(recovered.models().size() == 2 && imported.classes.size() == 2 &&
+            imported.classes[0].id == box_class && imported.classes[1].id == other_class,
+        "OD model package import did not preserve channel order or create a new row");
+    const jocelin::model::ModelWeight* imported_weight = jocelin::model::find_training_weight(imported);
+    require(imported_weight != nullptr, "OD model package import lost the LibTorch branch");
+    const auto imported_response = jocelin::inference::infer(recovered.build_inference_request(
+        jocelin::config::cpu_device(), imported, *imported_weight, {}));
+    const auto& imported_report = std::get<jocelin::result::od::OdInferenceResult>(imported_response.report);
+    require(imported_report.classes[0].id == box_class && imported_report.classes[1].id == other_class,
+        "OD model package inference did not use the ModelList class order");
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
