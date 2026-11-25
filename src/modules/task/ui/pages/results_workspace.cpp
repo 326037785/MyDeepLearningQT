@@ -339,8 +339,7 @@ void ResultsWorkspace::refresh_selected_result() {
     open_folder_->setEnabled(has_result);
     export_button_->setEnabled(has_result);
     const bool detection = service_ && service_->task().task == "od";
-    benchmark_label_->setText(detection ? tr("TP / FP / FN") :
-        service_ && service_->task().task == "cls" ? tr("Accuracy") : tr("Mean IoU"));
+    benchmark_label_->clear();
     table_->setColumnHidden(3, detection);
     table_->horizontalHeaderItem(2)->setText(detection ? tr("Top confidence") : tr("Confidence"));
     benchmark_->setText(QStringLiteral("—"));
@@ -355,18 +354,15 @@ void ResultsWorkspace::refresh_selected_result() {
 
     const bool classification = service_->task().task == "cls";
     if (classification) {
-        if (result_set->aggregate_metrics.available)
-            benchmark_->setText(QString::number(result_set->aggregate_metrics.accuracy, 'f', 4));
-        precision_->setText(metric_text(
-            result_set->aggregate_metrics.available,
-            result_set->aggregate_metrics.precision));
-        recall_->setText(metric_text(
-            result_set->aggregate_metrics.available,
-            result_set->aggregate_metrics.recall));
-        f1_->setText(metric_text(
-            result_set->aggregate_metrics.available,
-            result_set->aggregate_metrics.f1));
+        const jocelin::result::cls::ClsScopeMetrics& metrics = result_set->aggregate_metrics;
+        const jocelin::metric::MetricResult benchmark = metrics.benchmark();
+        benchmark_label_->setText(QString::fromStdString(benchmark.metric_name));
+        benchmark_->setText(metric_text(metrics.available, benchmark.primary_value));
+        precision_->setText(metric_text(metrics.available, metrics.precision));
+        recall_->setText(metric_text(metrics.available, metrics.recall));
+        f1_->setText(metric_text(metrics.available, metrics.f1));
     } else if (detection) {
+        benchmark_label_->setText(tr("TP / FP / FN"));
         const auto metric = [result_set](const char* key, int precision = 4) {
             const auto found = result_set->detection_metrics.find(key);
             return found == result_set->detection_metrics.end()
@@ -454,8 +450,10 @@ void ResultsWorkspace::refresh_sample_detail() {
     const auto* od = std::get_if<jocelin::result::od::OdResult>(&result.result);
     const bool classification = cls != nullptr;
     if (sg) {
+        const jocelin::metric::MetricResult benchmark = sg->metrics.benchmark();
+        benchmark_label_->setText(QString::fromStdString(benchmark.metric_name));
         benchmark_->setText(sg->metrics.available
-            ? QString::number(sg->metrics.mean_iou, 'f', 4) : QStringLiteral("—"));
+            ? QString::number(benchmark.primary_value, 'f', 4) : QStringLiteral("—"));
         precision_->setText(sg->metrics.available
             ? QString::number(sg->metrics.precision, 'f', 4) : QStringLiteral("—"));
         recall_->setText(sg->metrics.available

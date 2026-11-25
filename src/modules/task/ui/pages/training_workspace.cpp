@@ -447,7 +447,7 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     weight_decay_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     compact_control(weight_decay_);
     optimizer_ = new QComboBox(advanced_panel_);
-    optimizer_->addItems({"adam", "sgd"});
+    optimizer_->addItems({"adam", "sgd", "adamw", "adaptive"});
     compact_control(optimizer_);
     scheduler_ = new QComboBox(advanced_panel_);
     scheduler_->addItems({"cosine", "step"});
@@ -734,9 +734,15 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
 void TrainingWorkspace::update_advanced_presentation() {
     if (!advanced_toggle_ || !optimizer_ || !scheduler_ || !workers_) return;
     auto display_name = [](QString value) {
-        if (value.compare("sgd", Qt::CaseInsensitive) == 0)
+        if (value.compare("sgd", Qt::CaseInsensitive) == 0) {
             return QStringLiteral("SGD");
-        if (!value.isEmpty()) value[0] = value[0].toUpper();
+        }
+        if (value.compare("adamw", Qt::CaseInsensitive) == 0) {
+            return QStringLiteral("AdamW");
+        }
+        if (!value.isEmpty()) {
+            value[0] = value[0].toUpper();
+        }
         return value;
     };
     const QString optimizer = display_name(optimizer_->currentText());
@@ -775,6 +781,9 @@ void TrainingWorkspace::set_models(
 {
     models_ = models;
     populate_models();
+    if (!training_busy_) {
+        set_busy(false);
+    }
 }
 
 void TrainingWorkspace::populate_model_options() {
@@ -791,7 +800,7 @@ void TrainingWorkspace::populate_model_options() {
     int index = model_index_->findData(current);
     if (index < 0 && model_index_->count() > 0) index = 0;
     model_index_->setCurrentIndex(index);
-    model_index_->setEnabled(model_index_->count() > 1);
+    model_index_->setEnabled(!training_busy_ && model_index_->count() > 1);
 }
 
 void TrainingWorkspace::populate_models() {
@@ -809,7 +818,6 @@ void TrainingWorkspace::populate_models() {
     if (!active || active->training_status != jocelin::model::ModelTrainingStatus::Running) {
         chart_->reset(model_browser_->current_model());
     }
-    update_model_compatibility();
 }
 
 const jocelin::model::ModelEntry* TrainingWorkspace::controlled_model() const {
@@ -849,8 +857,13 @@ QString TrainingWorkspace::training_source_mode() const {
 }
 
 void TrainingWorkspace::update_model_compatibility() {
-    if (!model_browser_ || !source_status_) return;
-    model_browser_->setEnabled(true);
+    if (!model_browser_ || !source_status_) {
+        return;
+    }
+    const jocelin::model::ModelEntry* active = controlled_model();
+    const bool paused = active && active->training_status == jocelin::model::ModelTrainingStatus::Paused;
+    const bool can_start = !training_busy_ && !paused;
+    model_browser_->setEnabled(!training_busy_);
 
     if (service_) {
         for (const auto& model : models_) {
@@ -859,7 +872,7 @@ void TrainingWorkspace::update_model_compatibility() {
                 model.training_status == jocelin::model::ModelTrainingStatus::Completed ||
                 model.training_status == jocelin::model::ModelTrainingStatus::Stopped ||
                 model.training_status == jocelin::model::ModelTrainingStatus::Imported;
-            const bool eligible = lifecycle_eligible && training_weight &&
+            const bool eligible = !paused && lifecycle_eligible && training_weight &&
                 QFileInfo::exists(QString::fromStdString(training_weight->path));
             model_browser_->set_model_check_eligible(
                 QString::fromStdString(model.id), eligible);
@@ -867,13 +880,14 @@ void TrainingWorkspace::update_model_compatibility() {
     }
 
     const QString id = model_browser_->checked_model_id();
-    if (id.isEmpty()) {
+    if (paused || id.isEmpty()) {
         model_compatibility_severity_.clear();
-        source_status_->setText(tr("Source: New model"));
+        source_status_->setText(paused ? tr("Training paused · Resume to continue") : tr("Source: New model"));
         source_status_->setToolTip(
-            tr("No source model is selected; training will create a new model."));
+            paused ? tr("Resume the current training run.") :
+                     tr("No source model is selected; training will create a new model."));
         source_status_->setProperty("inlineWarning", false);
-        start_->setEnabled(true);
+        start_->setEnabled(can_start);
         return;
     }
     if (!service_) return;
@@ -927,7 +941,7 @@ void TrainingWorkspace::update_model_compatibility() {
     source_status_->setProperty("inlineWarning", severity != "compatible");
     source_status_->style()->unpolish(source_status_);
     source_status_->style()->polish(source_status_);
-    start_->setEnabled(severity != "incompatible");
+    start_->setEnabled(can_start && severity != "incompatible");
 }
 
 void TrainingWorkspace::commit_model_spec() {
@@ -991,24 +1005,19 @@ void TrainingWorkspace::refresh() {
                              .arg(model->metric, 0, 'g', 5));
     progress_->setValue(task.training.epochs > 0
         ? qBound(0, completed_epochs * 100 / task.training.epochs, 100) : 0);
-    const auto* training_weight = model
-        ? jocelin::model::find_training_weight(*model)
-        : nullptr;
-    const bool resumable =
-        model && model->training_status == jocelin::model::ModelTrainingStatus::Paused &&
-        training_weight &&
-        QFileInfo::exists(QString::fromStdString(training_weight->path));
-    resume_->setVisible(resumable);
-    resume_->setEnabled(resumable);
     rebuilding_ = false;
     update_advanced_presentation();
     QTimer::singleShot(
         0, this, [this] { update_training_content_height(); });
-    update_model_compatibility();
+    if (!training_busy_) {
+        set_busy(false);
+    }
 }
 
 void TrainingWorkspace::request_start() {
-    if (!start_requested) return;
+    if (!start_requested || !start_->isEnabled()) {
+        return;
+    }
     TrainingLaunchRequest request;
     request.mode = training_source_mode();
     if (request.mode != "new") {
@@ -1030,7 +1039,11 @@ void TrainingWorkspace::request_start() {
 }
 
 void TrainingWorkspace::set_busy(bool busy) {
-    start_->setEnabled(!busy);
+    training_busy_ = busy;
+    const jocelin::model::ModelEntry* model = controlled_model();
+    const bool paused = model && model->training_status == jocelin::model::ModelTrainingStatus::Paused;
+    const bool settings_locked = busy || paused;
+    start_->setEnabled(!settings_locked);
     start_->setVisible(!busy);
     stop_->setEnabled(busy);
     stop_->setVisible(busy);
@@ -1038,8 +1051,9 @@ void TrainingWorkspace::set_busy(bool busy) {
     pause_->setVisible(busy);
     resume_->setEnabled(false);
     resume_->setVisible(false);
+    model_browser_->setEnabled(!busy);
+    model_index_->setEnabled(!settings_locked && model_index_->count() > 1);
     for (auto* widget : {
-            static_cast<QWidget*>(model_index_),
             static_cast<QWidget*>(model_scale_),
             static_cast<QWidget*>(image_width_),
             static_cast<QWidget*>(image_height_),
@@ -1048,22 +1062,15 @@ void TrainingWorkspace::set_busy(bool busy) {
             static_cast<QWidget*>(epochs_),
             static_cast<QWidget*>(learning_rate_),
             static_cast<QWidget*>(use_gpu_),
-            static_cast<QWidget*>(output_directory_),
-            static_cast<QWidget*>(workers_),
-            static_cast<QWidget*>(weight_decay_),
-            static_cast<QWidget*>(optimizer_),
-            static_cast<QWidget*>(scheduler_),
-            static_cast<QWidget*>(model_browser_)})
-        widget->setEnabled(!busy);
+            static_cast<QWidget*>(advanced_panel_)}) {
+        widget->setEnabled(!settings_locked);
+    }
     if (!busy) {
         update_model_compatibility();
-        const auto* model = controlled_model();
         const auto* training_weight = model
             ? jocelin::model::find_training_weight(*model)
             : nullptr;
-        const bool resumable = model &&
-            model->training_status == jocelin::model::ModelTrainingStatus::Paused &&
-            training_weight &&
+        const bool resumable = paused && training_weight &&
             QFileInfo::exists(QString::fromStdString(training_weight->path));
         resume_->setVisible(resumable);
         resume_->setEnabled(resumable);

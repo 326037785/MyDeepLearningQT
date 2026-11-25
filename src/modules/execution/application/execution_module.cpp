@@ -570,6 +570,12 @@ void ExecutionModule::start_training(
         if (launch.mode != "new" && launch.mode != "inherit" &&
             launch.mode != "transfer" && launch.mode != "resume")
             throw std::runtime_error("unsupported training model source mode");
+        const ProjectModel* current_training =
+            service.find_model(QString::fromStdString(task.runtime.training_model_id));
+        if (launch.mode != "resume" && current_training &&
+            current_training->training_status == jocelin::model::ModelTrainingStatus::Paused) {
+            throw std::runtime_error("training is paused; resume the current run before starting another training");
+        }
         const ProjectModel* parent = nullptr;
         const ProjectModel* resume_model = nullptr;
         const jocelin::model::ModelWeight* parent_training_weight = nullptr;

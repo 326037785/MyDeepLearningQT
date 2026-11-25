@@ -231,5 +231,3 @@ Annotation package import 显式提供接收 Task 的新类别和标注。它保
 **删除收尾**：ProjectManager 协调当前 TaskNode 的删除与保存，Qt 更新当前 Model/Weight selection。ModelList 和 Workflow 引用共同记录删除结果，其他 TaskNode 保留各自资产。
 
 相关定义见 [project-overview.md](project-overview.md)。Annotation 的任务语义见 [annotation_spec.md](annotation_spec.md)。
-
-<!-- 迁移说明：本文档已按 Core/Qt 所有权边界清理不应由 Qt 对外声明的 Core 内部设计规格；当前 Qt 源码尚未同步调整。代码迁移应以本文档更新后的契约为准，不要因暂时存在的实现差异恢复旧规格。对应代码完成迁移后，删除本注释。 -->

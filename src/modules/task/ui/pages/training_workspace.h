@@ -69,6 +69,7 @@ private:
     void update_advanced_presentation();
     void update_training_content_height();
     TaskWorkspaceService* service_ = nullptr;
+    bool training_busy_ = false;
     QComboBox* model_index_ = nullptr;
     QComboBox* model_scale_ = nullptr;
     QSpinBox* image_width_ = nullptr;

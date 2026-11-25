@@ -999,12 +999,8 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
 
     jocelin::config::AiConfig backend;
     backend.tool_type = tool_type;
-    backend.runtime_mode = jocelin::config::RuntimeMode::Train;
     backend.model_index = config.model_index;
     backend.model_scale = model_scale;
-    backend.model_embed_dim = 768;
-    backend.model_depth = 12;
-    backend.model_num_heads = 12;
     backend.batch_size = config.training.batch_size;
     backend.bucket_capacity = std::max(1, source_dataset().bucket_capacity);
     backend.num_classes = detection ? static_cast<int>(detection_classes.size()) :
@@ -1033,8 +1029,6 @@ jocelin::training::TrainingRequest TaskWorkspaceService::build_training_request(
     backend.augment = config.training.augment;
     backend.normalize = !detection && binding().preprocessing.normalize;
     backend.bgr_to_rgb = true;
-    backend.loss_type = jocelin::config::LossType::Auto;
-    backend.metric_type = jocelin::config::MetricType::Auto;
 
     if (tool_type == jocelin::config::ToolType::Sg) {
         class_names.resize(static_cast<size_t>(backend.num_classes));
@@ -1150,12 +1144,8 @@ jocelin::inference::InferenceRequest TaskWorkspaceService::build_inference_reque
 
     jocelin::config::AiConfig backend = config.inference_config;
     backend.tool_type = model.task;
-    backend.runtime_mode = jocelin::config::RuntimeMode::Infer;
     backend.model_index = model.model_index;
     backend.model_scale = model.model_scale;
-    backend.model_embed_dim = 768;
-    backend.model_depth = 12;
-    backend.model_num_heads = 12;
     backend.batch_size = config.inference_batch_size;
     backend.num_classes = num_classes;
     backend.image_width = model.image_width;

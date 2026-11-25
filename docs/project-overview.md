@@ -180,5 +180,3 @@ Stopped keeps its completed-epoch weight availability rules.
 Only selected, annotated Train and Validation samples enter a Core training request. Test and Unassigned samples are inference-only; Unassigned means Test by default without rewriting the persisted assignment or its manual/automatic provenance. Derived validation copies only eligible Train samples. Prediction can use samples from any split and does not require annotation. The inference Test filter includes Unassigned; the separate Unassigned filter narrows that subset.
 
 OD keeps the current Core constraints: one image per sample, a Validation set containing ground-truth boxes, and explicitly reviewed empty targets. These constraints do not change the shared selection or split rules.
-
-<!-- 迁移说明：本文档已按 Core/Qt 所有权边界清理不应由 Qt 对外声明的 Core 内部设计规格；当前 Qt 源码尚未同步调整。代码迁移应以本文档更新后的契约为准，不要因暂时存在的实现差异恢复旧规格。对应代码完成迁移后，删除本注释。 -->

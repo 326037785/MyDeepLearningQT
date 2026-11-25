@@ -1712,12 +1712,14 @@ void SegmentationAnnotationWidget::refresh_inference_layers() {
             continue;
         }
         if (result_details_) {
+            const jocelin::metric::MetricResult benchmark = value->metrics.benchmark();
             const QString unavailable = QStringLiteral("—");
             result_details_->setText(
-                tr("Confidence: %1\nPredicted area: %2 px\nMean IoU: %3\nPrecision: %4\nRecall: %5\nF1: %6")
+                tr("Confidence: %1\nPredicted area: %2 px\n%3: %4\nPrecision: %5\nRecall: %6\nF1: %7")
                     .arg(value->mean_confidence, 0, 'f', 4)
                     .arg(value->predicted_area)
-                    .arg(value->metrics.available ? QString::number(value->metrics.mean_iou, 'f', 4) : unavailable)
+                    .arg(QString::fromStdString(benchmark.metric_name))
+                    .arg(value->metrics.available ? QString::number(benchmark.primary_value, 'f', 4) : unavailable)
                     .arg(value->metrics.available ? QString::number(value->metrics.precision, 'f', 4) : unavailable)
                     .arg(value->metrics.available ? QString::number(value->metrics.recall, 'f', 4) : unavailable)
                     .arg(value->metrics.available ? QString::number(value->metrics.f1, 'f', 4) : unavailable));

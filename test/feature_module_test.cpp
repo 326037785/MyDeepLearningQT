@@ -520,7 +520,7 @@ int main(int argc, char** argv) try {
         QEventLoop finished;
         execution.changed = [&] { finished.quit(); };
         execution.status = [&](const QString& text, int) {
-            if (scenario == 1 && text.startsWith("Training epoch ")) {
+            if ((scenario == 1 || scenario == 4) && text.startsWith("Training epoch ")) {
                 execution.stop();
             }
         };
@@ -533,7 +533,7 @@ int main(int argc, char** argv) try {
         require(training_error.isEmpty() && execution.is_running(), "CPU training did not start");
         if (scenario == 0) {
             execution.stop();
-        } else if (scenario >= 3) {
+        } else if (scenario == 3) {
             execution.pause();
         }
         finished.exec();
@@ -552,11 +552,13 @@ int main(int argc, char** argv) try {
                 stopped_model = QString::fromStdString(row->id);
             }
         } else {
-            const bool completed = scenario == 2;
-            require(row->training_status == (completed ? jocelin::model::ModelTrainingStatus::Completed
-                                                       : jocelin::model::ModelTrainingStatus::Paused) && checkpoint &&
-                QFileInfo(QString::fromStdString(checkpoint->path)).fileName() == (completed ? "best.pt" : "last.pt"),
-                "Completed or Paused selected the wrong checkpoint");
+            const bool paused = scenario == 3;
+            const auto expected_status = paused ? jocelin::model::ModelTrainingStatus::Paused :
+                scenario == 4 ? jocelin::model::ModelTrainingStatus::Stopped :
+                jocelin::model::ModelTrainingStatus::Completed;
+            require(row->training_status == expected_status && checkpoint &&
+                QFileInfo(QString::fromStdString(checkpoint->path)).fileName() == (paused ? "last.pt" : "best.pt"),
+                "Training selected the wrong checkpoint for its final status");
             if (scenario == 3) {
                 paused_model = QString::fromStdString(row->id);
             } else if (scenario == 4) {
