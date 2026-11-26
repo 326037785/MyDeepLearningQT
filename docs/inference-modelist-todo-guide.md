@@ -66,7 +66,7 @@ Core 的 `pipeline_contract` 覆盖来源设置恢复、缺失信息报错和显
 
 **继承与迁移来源**：Training 行内勾选支持 Completed、Imported，以及持有有效 LibTorch training weight 的 Stopped 模型。无可用训练权重的行不能作为训练来源。
 
-**Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Core 恢复训练状态，从下一个 epoch 继续。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
+**Resume**：用户选择 Paused 模型及其有效 LibTorch training checkpoint。Qt 按存档中的原始总 Epoch 和已完成 Epoch 检查剩余轮次。Core 恢复训练状态，从下一个 epoch 继续到原定的最后一轮。Stopped 表示本次训练终止，后续操作使用已有权重执行 Infer。
 
 **训练历史**：模型资产目录下的 `training_history.csv` 每个已完成 epoch 保存一行，包含训练和验证 loss、由 Core 对应 Task 提供的主指标名称及两组指标值。Qt 按记录中的指标名称和数值显示趋势，不在 Qt 中定义或选择各 Task 的评价标准。没有验证集时，验证字段为空。Resume 延续同一模型的 CSV，新的 checkpoint 和执行日志保存在模型目录下本次执行的子目录。Training 页选中模型行时读取 CSV 并显示趋势。缺少 CSV 的模型显示空曲线。
 

@@ -450,7 +450,7 @@ TrainingWorkspace::TrainingWorkspace(QWidget* parent) : QWidget(parent) {
     optimizer_->addItems({"adam", "sgd", "adamw", "adaptive"});
     compact_control(optimizer_);
     scheduler_ = new QComboBox(advanced_panel_);
-    scheduler_->addItems({"cosine", "step"});
+    scheduler_->addItems({"cosine", "step", "adaptive"});
     compact_control(scheduler_);
     advanced_form->addRow(tr("Workers"), workers_);
     advanced_form->addRow(tr("Weight decay"), weight_decay_);

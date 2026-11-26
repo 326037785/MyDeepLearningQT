@@ -10,6 +10,8 @@
 #include "modules/task/ui/pages/training_workspace.h"
 #include "modules/settings/application/ui_language.h"
 
+#include <checkpoint/checkpoint_catalog.h>
+
 #include <QAction>
 #include <QAbstractButton>
 #include <QApplication>
@@ -516,11 +518,18 @@ int main(int argc, char** argv) try {
     QString paused_model;
     QString stopped_model;
     for (int scenario = 0; scenario < 5; ++scenario) {
-        service.task().training.epochs = scenario == 2 ? 1 : 100;
+        service.task().training.epochs = scenario == 2 || scenario == 4 ? 1 : 100;
+        if (scenario == 3) {
+            service.task().training.scheduler = "adaptive";
+        }
+        QString resume_progress;
         QEventLoop finished;
         execution.changed = [&] { finished.quit(); };
         execution.status = [&](const QString& text, int) {
             if ((scenario == 1 || scenario == 4) && text.startsWith("Training epoch ")) {
+                if (scenario == 4) {
+                    resume_progress = text;
+                }
                 execution.stop();
             }
         };
@@ -561,9 +570,15 @@ int main(int argc, char** argv) try {
                 "Training selected the wrong checkpoint for its final status");
             if (scenario == 3) {
                 paused_model = QString::fromStdString(row->id);
+                const jocelin::checkpoint::CheckpointMetadata saved =
+                    jocelin::checkpoint::inspect_checkpoint(checkpoint->path);
+                require(saved.num_epochs == 100 && saved.scheduler_type == "cosine",
+                    "Qt Adaptive training saved the wrong total epochs or scheduler");
             } else if (scenario == 4) {
                 require(QString::fromStdString(row->id) == paused_model && row->completed_epochs >= 2,
                     "Resume did not continue the paused ModelEntry");
+                require(resume_progress.endsWith(" / 100") && service.task().training.epochs == 1,
+                    "Resume did not use the checkpoint epoch total for the current run");
             }
         }
         studio::ProjectManager verified;

@@ -186,7 +186,7 @@ int main(int argc, char** argv) try {
             }
             torch::serialize::OutputArchive archive;
             network->save(archive);
-            jocelin::checkpoint::write_training_metadata(archive, config, 0, false, false, {});
+            jocelin::checkpoint::write_training_metadata(archive, config, 0, {}, {}, {});
             std::ofstream stream(std::filesystem::u8path(checkpoint.toStdString()), std::ios::binary);
             require(stream.is_open(), "cannot create checkpoint");
             archive.save_to(stream);

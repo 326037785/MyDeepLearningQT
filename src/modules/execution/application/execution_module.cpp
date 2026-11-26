@@ -274,7 +274,7 @@ void ExecutionModule::training_completed(const jocelin::training::TrainingResult
             run["task"] = QString::fromStdString(task.task);
             run["capacity"] = QString::fromStdString(task.model_scale);
             run["model_index"] = task.model_index;
-            run["requested_epochs"] = task.training.epochs;
+            run["requested_epochs"] = error.isEmpty() ? result.effective_config.num_epochs : task.training.epochs;
         }
         write_json_file(
             QDir(active_training_run_directory_).filePath("run.json"), run);
@@ -629,9 +629,10 @@ void ExecutionModule::start_training(
                 resume_metadata.model_scale != model_scale)
                 throw std::runtime_error(
                     "paused checkpoint task or architecture does not match the current task");
-            if (resume_metadata.completed_epochs >= task.training.epochs)
+            if (resume_metadata.completed_epochs >= resume_metadata.num_epochs) {
                 throw std::runtime_error(
-                    "paused checkpoint has already reached the requested epoch count");
+                    "paused checkpoint has already reached its saved total epoch count");
+            }
         }
         jocelin::runtime::ComputeDevice device;
         if (!select_compute_device(dialog_parent_, &device)) return;
